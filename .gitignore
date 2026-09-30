@@ -1,0 +1,21 @@
+# Secretos y entornos locales — NUNCA commitear (repo publico)
+*.env
+!.env.example
+*.pem
+*.key
+*.crt
+acme.json
+
+# Datos locales de contenedores / volúmenes
+volumes/
+data/
+*.rdb
+*.dump
+*.aof
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
