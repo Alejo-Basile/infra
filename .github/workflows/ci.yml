@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: yamllint
+        run: |
+          pip install yamllint
+          yamllint -d relaxed .
+
+      - name: docker compose config
+        # Se activa solo cuando exista docker-compose.yml (S0-P1-03)
+        if: hashFiles('docker-compose.yml') != ''
+        run: docker compose -f docker-compose.yml config --quiet

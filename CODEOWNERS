@@ -1,0 +1,6 @@
+# Propietarios por defecto del repo (P1 = Platform/DevOps)
+* @Alejo-Basile
+
+# Las ADRs globales las revisan los 4 integrantes (P1, P2, P3, P4)
+# TODO: reemplazar @P3 por el username de P3 cuando se una
+/docs/adr/ @Alejo-Basile @ivann-02 @MaJuVer
