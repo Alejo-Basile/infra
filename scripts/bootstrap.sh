@@ -32,6 +32,12 @@ if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1
   fail=$((fail+1))
 fi
 
+# Registra el hook de pre-commit de gitleaks EN ESTE clone (los hooks viven
+# por-clone, no se versionan). En los demas repos: `gitleaks install` una vez.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks install --hook-type pre-commit || true
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "Entorno completo (${ok} herramientas). Siguiente paso: ./scripts/gen-certs.sh"
