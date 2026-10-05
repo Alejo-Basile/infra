@@ -1,0 +1,16 @@
+# S1-P1-11v — Inspección de índices de documents (2026-10-05T20:15:25-03:00)
+# Comando: db.documents.getIndexes()
+
+[
+  {
+    v: 2,
+    key: {
+      _id: 1
+    },
+    name: '_id_'
+  }
+]
+schema_versions: []
+total documents: 0
+PENDING_UPLOAD con expires_at < now+5min: 0
+PENDING_UPLOAD total: 0
