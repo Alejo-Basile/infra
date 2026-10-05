@@ -33,9 +33,21 @@ if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1
 fi
 
 # Registra el hook de pre-commit de gitleaks EN ESTE clone (los hooks viven
-# por-clone, no se versionan). En los demas repos: `gitleaks install` una vez.
-if command -v gitleaks >/dev/null 2>&1; then
-  gitleaks install --hook-type pre-commit || true
+# por-clone, no se versionan). En los demas repos: `./scripts/install-hooks.sh`
+# una vez por clone, o crear .git/hooks/pre-commit con `gitleaks git --staged`.
+if command -v gitleaks >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  hook="$(git rev-parse --git-dir)/hooks/pre-commit"
+  if [ ! -x "$hook" ]; then
+    cat > "$hook" <<'EOF'
+#!/usr/bin/env bash
+# Instalado por infra/scripts/bootstrap.sh (S0-P1-04)
+exec gitleaks git --staged --verbose
+EOF
+    chmod +x "$hook"
+    echo "  [OK]      hook pre-commit gitleaks registrado en $(git rev-parse --git-dir)/hooks/pre-commit"
+  else
+    echo "  [OK]      hook pre-commit ya existe (no se pisa)"
+  fi
 fi
 
 echo
