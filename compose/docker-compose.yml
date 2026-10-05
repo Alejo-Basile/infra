@@ -1,0 +1,327 @@
+# =============================================================================
+# Compose v2 de desarrollo — infraestructura de la migración a microservicios
+# SPEC.md v2.1 · plan-S0-P1.md (S0-P1-03 / 05 / 06 / 07)
+#
+# Perfiles:
+#   core   -> MongoDB (RS) + Redis (streams y ratelimit) + MinIO + initers
+#   full   -> core + Traefik + monolito (Strangler) + Prometheus/Grafana/Loki
+#   chaos  -> utilidades para matar procesos (base del game day S9)
+#
+# Uso:
+#   docker compose --profile core up -d
+#   docker compose --profile full up -d
+# =============================================================================
+
+name: infra
+
+x-hardening: &hardening
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+# Los entrypoints oficiales de mongo/redis/minio arrancan como root y bajan a
+# usuario no-root (setuid/chown): necesitan estas capabilities para arrancar.
+# El hardening completo (read_only, etc.) se audita en S2 (S1-P1-15).
+x-hardening-data: &hardening-data
+  cap_drop: ["ALL"]
+  cap_add: ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE"]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# REDES (S0-P1-05): ningún servicio de datos vive en `edge`.
+# -----------------------------------------------------------------------------
+networks:
+  edge: # salida a internet: solo Traefik
+    name: infra_edge
+  internal: # servicios de aplicacion, sin salida a internet
+    name: infra_internal
+    internal: true
+  data: # solo datos, sin salida a internet (Mongo, Redis, MinIO)
+    name: infra_data
+    internal: true
+
+volumes:
+  mongo-data:
+  redis-streams-data:
+  redis-ratelimit-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+
+services:
+  # ===========================================================================
+  # PERFIL CORE — datos
+  # ===========================================================================
+
+  # --- MongoDB Replica Set (SPEC 3.6): transacciones y Change Streams -------
+  mongo:
+    image: mongo:7.0
+    profiles: ["core", "full"]
+    <<: *hardening-data
+    command: ["--replSet", "rs0", "--bind_ip", "localhost,mongo", "--keyFile", "/etc/mongo/keyfile"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?definir en .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?definir en .env}
+    volumes:
+      - mongo-data:/data/db
+      # keyFile requerido por auth+replSet. Se genera con scripts/bootstrap.sh
+      # (openssl rand -base64 756) con dueño 999 y modo 400. NUNCA commitear.
+      - ./mongo/keyfile:/etc/mongo/keyfile:ro
+    networks: [data]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "-u", "${MONGO_INITDB_ROOT_USERNAME}", "-p", "${MONGO_INITDB_ROOT_PASSWORD}", "--eval", "db.hello().isWritablePrimary"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Inicializacion idempotente del RS y de los usuarios de aplicacion:
+  #  - app:    readWrite sobre MONGO_DATABASE (doc-service)
+  #  - worker: SOLO update sobre la coleccion documents (ADR-0006)
+  mongo-init:
+    image: mongo:7.0
+    profiles: ["core", "full"]
+    <<: *hardening-data
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_APP_USER: ${MONGO_APP_USER:?definir en .env}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?definir en .env}
+      MONGO_WORKER_USER: ${MONGO_WORKER_USER:?definir en .env}
+      MONGO_WORKER_PASSWORD: ${MONGO_WORKER_PASSWORD:?definir en .env}
+      MONGO_DATABASE: ${MONGO_DATABASE:-documents}
+    volumes:
+      - ./mongo/init.js:/init.js:ro
+    entrypoint: ["mongosh", "--host", "mongo:27017", "--quiet", "/init.js"]
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    restart: "no"
+
+  # --- Redis STREAMS (SPEC 3.5): AOF + noeviction — los trabajos NO se pierden
+  redis-streams:
+    image: redis:7.2
+    profiles: ["core", "full"]
+    <<: *hardening-data
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}"]
+    volumes:
+      - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-streams-data:/data
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- Redis RATE-LIMIT (SPEC 3.5): efimero, allkeys-lru, sin AOF ------------
+  redis-ratelimit:
+    image: redis:7.2
+    profiles: ["core", "full"]
+    <<: *hardening-data
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_RATELIMIT_PASSWORD:?definir en .env}"]
+    volumes:
+      - ./redis/ratelimit.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-ratelimit-data:/data
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_RATELIMIT_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- MinIO (SPEC 3.4): API S3 interna; exposicion publica SOLO via Traefik -
+  # NOTA: la imagen oficial minio/minio no esta accesible desde este entorno
+  # (Docker Hub deniega el pull). Se usa la imagen legacy de Bitnami con tag
+  # INMUTABLE, funcionalmente equivalente para desarrollo local.
+  minio:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    profiles: ["core", "full"]
+    <<: *hardening-data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?definir en .env}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+    volumes:
+      - minio-data:/bitnami/minio/data
+    networks: [data]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Buckets + identidades por servicio (minimo privilegio, S0-P1-05/S1-P1-05).
+  # Idempotente: el job se puede reejecutar sin efectos colaterales.
+  minio-init:
+    image: bitnamilegacy/minio-client:2025.7.21
+    profiles: ["core", "full"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      SVC_DOCSERVICE_ACCESS_KEY: ${SVC_DOCSERVICE_ACCESS_KEY:?definir en .env}
+      SVC_DOCSERVICE_SECRET_KEY: ${SVC_DOCSERVICE_SECRET_KEY:?definir en .env}
+      SVC_WORKER_ACCESS_KEY: ${SVC_WORKER_ACCESS_KEY:?definir en .env}
+      SVC_WORKER_SECRET_KEY: ${SVC_WORKER_SECRET_KEY:?definir en .env}
+    volumes:
+      - ./minio/init-buckets.sh:/init-buckets.sh:ro
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    restart: "no"
+
+  # ===========================================================================
+  # PERFIL FULL — gateway + monolito (Strangler) + observabilidad
+  # ===========================================================================
+
+  # --- Traefik v3: entrypoint UNICO. Hoy enruta el 100% al monolito y el S3.
+  # Cuando exista doc-service se activa el router /api/v2/documents (labels).
+  traefik:
+    image: traefik:v3.7
+    profiles: ["full"]
+    <<: *hardening
+    environment:
+      # El cliente Docker de Traefik negocia una API vieja; algunos daemons
+      # exigen >= 1.40. Se fija explicitamente (ajustar si el daemon varia).
+      DOCKER_API_VERSION: "1.44"
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-80}:80"
+      - "${TRAEFIK_HTTPS_PORT:-443}:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../traefik/dynamic:/etc/traefik/dynamic:ro
+      - ../traefik/certs:/etc/traefik/certs:ro
+    networks: [edge, internal, data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- Monolito FastAPI DETRAS del gateway (patron estrangulador, SPEC 2).
+  # Sin puerto publicado al host: todo el trafico entra por Traefik.
+  # La imagen se construye desde su propio repo: MONOLITO_IMAGE en .env.
+  monolito:
+    image: ${MONOLITO_IMAGE:-monolito:latest}
+    # Si la imagen no existe, se construye desde el repo del monolito
+    # (por defecto ../../../pdf-extractext; sobreescribir en .env)
+    build:
+      context: ${MONOLITO_BUILD_CONTEXT:-../../../pdf-extractext}
+    profiles: ["full"]
+    <<: *hardening
+    environment:
+      # Requeridas por el monolito (src/infrastructure/config/settings.py)
+      MONGO_USER: ${MONGO_APP_USER}
+      MONGO_PASS: ${MONGO_APP_PASSWORD}
+      MONGO_HOST: mongo
+      MONGO_PORT: "27017"
+      MONGO_DB: ${MONOLITO_MONGO_DB:-pdf-extractext}
+      max_size: "26214400"   # 25 MB (limite historico del monolito)
+      min_size: "1"
+    networks: [internal, data]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=infra_internal"
+      # Router legacy (baja prioridad): TODO lo que no sea /api/v2/documents.
+      # NOTA: NO lleva body-limit-1mb — el monolito recibe PDFs por el body
+      # (contrato v1). El buffering de 1MB es SOLO para las rutas JSON del
+      # contrato v2 (SPEC §3.1 / ADR-0011); se aplica en las labels del futuro
+      # doc-service, no aqui.
+      - "traefik.http.routers.legacy.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.legacy.priority=1"
+      - "traefik.http.routers.legacy.entrypoints=websecure"
+      - "traefik.http.routers.legacy.tls=true"
+      - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
+
+  # --- Observabilidad (SPEC 10) ---------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.4
+    profiles: ["full"]
+    <<: *hardening
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [internal, data]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
+
+  loki:
+    image: grafana/loki:3.4.2
+    profiles: ["full"]
+    <<: *hardening
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks: [internal]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    profiles: ["full"]
+    <<: *hardening
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?definir en .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [internal]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
+    depends_on:
+      - prometheus
+      - loki
+
+  # ===========================================================================
+  # PERFIL CHAOS — utilidades para pruebas de fallo (game day S9)
+  # ===========================================================================
+  pumba:
+    image: gaiaadm/pumba:0.11.0
+    profiles: ["chaos"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --help
+    networks: []
+    mem_limit: 64m
+    cpus: 0.1
+    pids_limit: 50
+    restart: "no"

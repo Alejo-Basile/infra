@@ -1,0 +1,13 @@
+# Certificados locales (mkcert) para api.localhost y s3.localhost.
+# Generados por infra/scripts/gen-certs.sh — NUNCA commitear los .crt/.key.
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/api.localhost.pem
+      keyFile: /etc/traefik/certs/api.localhost-key.pem
+    - certFile: /etc/traefik/certs/s3.localhost.pem
+      keyFile: /etc/traefik/certs/s3.localhost-key.pem
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/certs/api.localhost.pem
+        keyFile: /etc/traefik/certs/api.localhost-key.pem
