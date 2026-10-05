@@ -1,0 +1,26 @@
+# S1-P1-07a — Test formal de persistencia AOF (2026-10-05T20:22:13-03:00)
+
+## CONFIG GET appendonly
+appendonly
+yes
+
+## XADD mensaje de prueba
+ID=1791242533299-0
+
+## docker restart infra-redis-streams-1
+infra-redis-streams-1
+
+## tiempo de restart: 6s (+5s espera)
+
+## PING post-restart
+PONG
+
+## XRANGE post-restart (debe contener test-s1-aof)
+test-s1-aof
+object_key
+
+## limpieza (XDEL)
+1
+
+## healthcheck del contenedor
+infra-redis-streams-1 Up 31 seconds (healthy)
