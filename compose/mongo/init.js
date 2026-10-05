@@ -35,13 +35,22 @@ try {
 // --- Usuarios ----------------------------------------------------------------
 const appDb = db.getSiblingDB(dbName);
 
+// Idempotente y correctivo: si el usuario existe pero con roles distintos,
+// los corrige con updateUser (evita dejar privilegios de mas tras cambios).
 function upsertUser(db, user, pwd, roles) {
   const existing = db.getUser(user);
-  if (existing) {
-    print("Usuario ya existe:", user);
-  } else {
+  const expected = JSON.stringify(roles.map(r => r.role + "@" + r.db).sort());
+  if (!existing) {
     db.createUser({ user, pwd, roles });
     print("Usuario creado:", user);
+    return;
+  }
+  const actual = JSON.stringify(existing.roles.map(r => r.role + "@" + r.db).sort());
+  if (actual !== expected) {
+    db.updateUser(user, { roles });
+    print("Usuario actualizado (roles corregidos):", user, actual, "->", expected);
+  } else {
+    print("Usuario ya existe con roles correctos:", user);
   }
 }
 

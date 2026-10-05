@@ -1,0 +1,59 @@
+# S1-P1-10v — Verificación de roles Mongo (2026-10-05T20:23:36-03:00)
+
+## C.1: worker intenta insert (esperado: Unauthorized)
+FALLO: insert permitido
+
+## C.2a: APP inserta doc de prueba
+insert app OK
+
+## C.2b: worker hace find + update CONDICIONAL sobre doc existente
+{
+  _id: 'test-crud2',
+  status: 'PROCESSING'
+}
+matched: 1 modified: 1
+
+## C.2c: APP limpia doc de C.2
+deleted: 1
+
+## C.3: CRUD completo con APP
+{
+  _id: 'test-crud',
+  status: 'UPLOADED'
+}
+CRUD app OK, doc limpiado
+
+## Conteo final de residuos (esperado: 0)
+docs test-* residuales: 1
+
+# =============================================================
+# RE-EJECUCION post-fix (2026-10-05T20:28:17-03:00)
+# Causa raiz: usuario worker creado con rol readWrite
+#   - .env: MONGO_APP_USER y MONGO_WORKER_USER eran ambos 'devpass123'
+#     (misma familia de bug que SVC_* == root corregido en 12d0984)
+#   - init.js: upsertUser no corregia roles de usuarios existentes
+# Fix: init.js correctivo (updateUser si roles difieren) + usuarios
+#   'docservice'/'worker' creados por re-run de mongo-init (idempotente);
+#   usuario legacy 'devpass123' eliminado de la base documents.
+
+## C.1 (re-run): worker intenta insert (esperado: Unauthorized)
+OK insert denegado: Unauthorized
+
+## C.2 (re-run): APP inserta, worker find+update condicional, APP limpia
+insert app OK
+{
+  _id: 'test-crud2',
+  status: 'PROCESSING'
+}
+matched: 1 modified: 1
+deleted: 1
+
+## C.3 (re-run): CRUD completo con APP
+{
+  _id: 'test-crud',
+  status: 'UPLOADED'
+}
+CRUD app OK, doc limpiado
+
+## Conteo final de residuos (esperado: 0)
+docs test-* residuales: 0
