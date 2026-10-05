@@ -6,10 +6,10 @@ Repositorio de infraestructura del proyecto de migración a microservicios (ver 
 
 Contiene todo lo necesario para levantar y operar la plataforma de soporte a los servicios:
 
-- `docker-compose.yml` (Compose v2) con perfiles **`core`** (MongoDB + Redis + MinIO), **`full`** (+ Traefik, Prometheus, Grafana/Loki) y **`chaos`** (utilidades para pruebas de fallo).
-- Configuración de **Traefik** (entrypoint único, ACME, routers), **MinIO**, **Redis** (AOF + futuro Sentinel) y **MongoDB** (Replica Set).
-- `scripts/bootstrap.sh` para verificar toolchains (Docker, Go, Rust, `mc`, `trivy`, `gitleaks`).
-- Runbooks operativos (`runbooks/`) y **ADRs globales** (`docs/adr/`).
+- `compose/docker-compose.yml` (Compose v2) con perfiles **`core`** (MongoDB RS + Redis ×2 + MinIO), **`full`** (+ Traefik, monolito detrás del gateway, Prometheus, Grafana/Loki) y **`chaos`** (utilidades para pruebas de fallo).
+- Configuración de **Traefik** (`traefik/`), **MinIO**, **Redis** (AOF streams + LRU ratelimit) y **MongoDB** (Replica Set `rs0`).
+- `scripts/bootstrap.sh` (verificación de toolchains), `scripts/gen-certs.sh` (TLS local con mkcert) y `scripts/verify-networks.sh` (topología).
+- Runbooks operativos (`runbooks/`) y **ADRs globales** (`docs/adr/`, incluida **ADR-0016**: host dedicado de S3).
 
 ## Qué NO hace este repo
 
@@ -41,14 +41,56 @@ graph TD
 ./scripts/bootstrap.sh
 
 # 2. Copiar y completar variables (nunca commitear el .env real)
-cp .env.example .env
+cp .env.example .env   # y completar valores
 
-# 3. Levantar solo los datos
-docker compose --profile core up -d
+# 3. Generar TLS local (mkcert) — ver docs/adr/ADR-0016.md
+./scripts/gen-certs.sh
 
-# 4. Levantar el stack completo
-docker compose --profile full up -d
+# 4a. Solo datos (P2/P3)
+docker compose -f compose/docker-compose.yml --env-file .env --profile core up -d
+
+# 4b. Stack completo (gateway + monolito + observabilidad)
+docker compose -f compose/docker-compose.yml --env-file .env --profile full up -d
+
+# 5. Verificar la topologia de redes
+./scripts/verify-networks.sh
 ```
+
+## Topología de redes (S0-P1-05)
+
+| Red      | `internal` | Quién vive ahí                                     |
+|----------|------------|-----------------------------------------------------|
+| `edge`   | no         | Solo **Traefik** (punto de entrada público)         |
+| `internal` | sí       | Monolito, futuros doc-service / worker / rate-limiter |
+| `data`   | sí         | MongoDB, Redis ×2, MinIO (tráfico interno)          |
+
+Traefik pertenece a las tres (necesita alcanzar los backends); **ningún servicio de
+datos tiene ruta a internet** — verificación: `./scripts/verify-networks.sh`.
+
+Los dos **hostnames locales** (variante de ADR-0016): `api.localhost` (control, →
+monolito hoy, → doc-service en `/api/v2/documents/*` cuando exista) y `s3.localhost`
+(datos, → MinIO :9000; la consola :9001 **nunca** se enruta).
+
+## Mapa de puertos locales
+
+| Puerto | Servicio    | Nota                                  |
+|--------|-------------|---------------------------------------|
+| 80     | Traefik     | Redirige 308 → 443 (`TRAEFIK_HTTP_PORT` en `.env`) |
+| 443    | Traefik     | TLS mkcert: api.localhost, s3.localhost (`TRAEFIK_HTTPS_PORT`) |
+| 9090   | Prometheus  | UI local                              |
+| 3000   | Grafana     | UI local                              |
+
+MongoDB, Redis y MinIO **no** publican puertos al host (solo redes internas).
+
+## Notas de plataforma verificadas
+
+- **Imagen MinIO:** la oficial `minio/minio` puede no estar accesible desde algunos
+  entornos (Docker Hub deniega el pull anónimo). Se usa `bitnamilegacy/minio` con tag
+  inmutable, funcionalmente equivalente para dev. Ver comentario en el compose.
+- **Traefik v3.7:** se requiere una versión reciente si el daemon de Docker exige
+  API ≥ 1.40 (el cliente pinneado de v3.4 falla con dichos daemons).
+- **MongoDB con auth + Replica Set** requiere `compose/mongo/keyfile` (generado por
+  `openssl rand -base64 756`, dueño `999:999`, modo `400`; en `.gitignore`).
 
 ## Gobernanza
 
