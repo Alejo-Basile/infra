@@ -115,15 +115,16 @@ y escaneo de secretos del repo con `gitleaks` (pre-commit + job de CI en
 
 Defensa en dos capas:
 
-- **Local (primera capa):** hook de pre-commit por clone. Ejecutar **una vez**
-  en cada repositorio del proyecto:
+- **Local (primera capa):** hook de pre-commit por clone. En este repo,
+  `scripts/bootstrap.sh` lo registra automáticamente si `gitleaks` está
+  instalado. En los demás repos (o manualmente), una vez por clone
+  (gitleaks no tiene comando `install`; el hook es un `.git/hooks/pre-commit`
+  que ejecuta `gitleaks git --staged`):
 
   ```bash
-  gitleaks install   # registra .git/hooks/pre-commit en este clone
+  printf '#!/usr/bin/env bash\nexec gitleaks git --staged --verbose\n' \
+    > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
   ```
-
-  El hook vive en `.git/hooks` (no se versiona): `scripts/bootstrap.sh` lo
-  registra automáticamente en este repo si `gitleaks` está instalado.
 - **CI (segunda capa):** job `gitleaks` (`.github/workflows/gitleaks.yml`) que
   escanea el diff de cada PR y cada push a `main`. Repo público: no requiere
   licencia ni token extra.
