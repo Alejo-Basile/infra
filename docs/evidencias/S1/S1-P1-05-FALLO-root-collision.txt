@@ -1,0 +1,79 @@
+# Evidencia S1 — `S1-P1-05`: test de identidades MinIO (RESULTADO: FALLO REAL)
+
+**Fecha:** 2026-10-05 · **Ejecutor:** P1 · **Tarea:** `S1-P1-05a` (plan-P1-S1.md §4)
+
+## Resumen
+
+El test negativo **reveló una falla de configuración real** (no de la prueba): el usuario de
+servicio del worker pudo escribir en `raw-pdfs`, operación prohibida por `worker-extract`.
+
+## Causa raíz (doble)
+
+1. **`.env`: credenciales de servicio idénticas a root.** Comparación por igualdad (sin
+   imprimir secretos):
+   - `SVC_DOCSERVICE_ACCESS_KEY == MINIO_ROOT_USER` → IGUALES
+   - `SVC_WORKER_ACCESS_KEY == MINIO_ROOT_USER` → IGUALES
+   - `SVC_WORKER_SECRET_KEY == MINIO_ROOT_PASSWORD` → IGUALES
+
+   Por eso `mc admin user info root <SVC_WORKER_ACCESS_KEY>` devuelve *"The specified user
+   does not exist"* (nunca se creó la identidad: `init-buckets.sh` loguea "Usuario worker ya
+   existe" porque el `add` falló contra root) **y** la escritura del "worker" pasó: autenticó
+   como **root**, y root ignora las policies.
+
+   Viola el criterio de seguridad no negociable n.º 1 (`pasos-iniciales.md` §3.5: nunca la
+   cuenta root en una aplicación).
+
+2. **`init-buckets.sh` enmascaraba el fallo.** El fallback `|| mc admin policy set ...` usa
+   un comando deprecado que imprime `mc: <ERROR> Deprecated command...` **pero devuelve
+   éxito**, así que el script nunca se enteró de que nada quedó adjunto.
+
+## Secuencia del test (comandos y salidas clave)
+
+- Inventario de policies (OK): `docservice-rw` y `worker-extract` existen con las acciones
+  esperadas (ver `S1-P1-05-policies.txt`).
+- `mc admin user list root` → vacío (no hay usuarios de servicio).
+- `admin policy list root` → `worker-extract`, `docservice-rw` presentes.
+- `cp /etc/hostname w/raw-pdfs/forbidden.txt` con credenciales de worker → **exit=0** (FALLO).
+- Verificación con root: objeto `forbidden.txt` presente en `raw-pdfs`.
+- Limpieza: objeto eliminado; bucket verificado vacío tras el test.
+- Sanity check de la API admin: `admin policy attach` contra usuario inexistente retorna el
+  error correcto → **el attach funciona una vez que existan usuarios reales**.
+
+## Fix aplicado (config, no secretos)
+
+`compose/minio/init-buckets.sh` endurecido (commit aparte):
+- **Fail-fast**: aborta si cualquier `SVC_*` es igual a `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`.
+- Eliminado el fallback deprecado `policy set` que enmascaraba errores; ahora solo
+  `admin policy create` / `admin policy attach` con fallo ruidoso.
+
+## Acción requerida (bloqueante para cerrar `S1-P1-05`)
+
+**P1 (humano) debe regenerar credenciales distintas en `.env`** (los secretos no se
+commitean ni se generan automáticamente), p. ej.:
+
+```bash
+SVC_DOCSERVICE_ACCESS_KEY=doc-svc-$(openssl rand -hex 8)
+SVC_DOCSERVICE_SECRET_KEY=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 40)
+SVC_WORKER_ACCESS_KEY=worker-$(openssl rand -hex 8)
+SVC_WORKER_SECRET_KEY=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 40)
+```
+
+Luego:
+
+```bash
+docker compose -f compose/docker-compose.yml --env-file .env --profile core up -d \
+  --force-recreate minio-init
+docker logs infra-minio-init-1   # debe mostrar usuarios creados y policies adjuntadas
+# y REPETIR este test: el cp del worker a raw-pdfs debe devolver AccessDenied.
+```
+
+**Estado de la tarea: RESUELTA (05/10).** Se regeneraron las 4 credenciales `SVC_*` en
+`.env`, se recreó `minio-init` con el script endurecido (exit 0: usuarios creados, policies
+adjuntadas, verificación post-init OK) y se repitieron los tests — ver
+`S1-P1-05-accessdenied.txt`:
+- worker → `raw-pdfs`: **AccessDenied** ✅
+- worker → `extracted-txt`: OK + limpieza ✅
+- listado anónimo: **403 AccessDenied** ✅
+
+**DoD `S1-P1-04/05`: HECHO.** (Este archivo se conserva como registro del incidente y su fix:
+es la evidencia más valiosa de la semana para la defensa.)

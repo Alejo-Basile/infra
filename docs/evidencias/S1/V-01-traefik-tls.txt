@@ -1,0 +1,16 @@
+== a. Redirect web->websecure ==
+api  http : 301
+s3   http : 301
+
+== b. Cert por host: s3.localhost ==
+*  subject: CN=s3.localhost
+*  issuer: CN=s3.localhost
+health s3: 200
+
+== c. Cert por host: api.localhost + router legacy ==
+*  subject: CN=api.localhost
+*  issuer: CN=api.localhost
+api /docs (monolito): 200
+
+== d. Monolito sin puerto publicado ==
+(salida vacia = OK)
