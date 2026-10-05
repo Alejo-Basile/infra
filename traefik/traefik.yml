@@ -1,0 +1,49 @@
+# Traefik v3 — configuracion estatica (S0-P1-03 / S1-P1-01, variante local)
+# Entrypoint unico: api.localhost (control) y s3.localhost (datos, MinIO).
+# Variante LOCAL: TLS via mkcert (ver scripts/gen-certs.sh y ADR-0016).
+# En produccion esto se reemplaza por ACME (Let's Encrypt, staging primero).
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    http:
+      tls: true
+  # Puerto interno de metricas (solo red interna, sin publicar al host)
+  metrics:
+    address: ":8082"
+
+providers:
+  docker:
+    # Sin exposicion por defecto: cada servicio opta-in con traefik.enable=true
+    exposedByDefault: false
+    network: infra_internal
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+api:
+  # Dashboard SOLO en localhost del contenedor; no hay router que lo exponga.
+  dashboard: false
+
+ping: {} # healthcheck interno (traefik healthcheck --ping)
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      names:
+        # Propagacion de correlation_id (SPEC §10)
+        X-Correlation-Id: keep

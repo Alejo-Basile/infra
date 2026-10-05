@@ -1,0 +1,37 @@
+# Middlewares y routers declarativos (file provider) — S0-P1-03 / S1-P1-16
+http:
+  middlewares:
+    # Limite de tamano SOLO para endpoints JSON (SPEC §3.1 / ADR-0011):
+    # el PDF NO pasa por el gateway (subida directa a MinIO via URL
+    # prefirmada POST); el limite real del PDF vive en la politica
+    # content-length-range del presign, no aqui.
+    body-limit-1mb:
+      buffering:
+        maxRequestBodyBytes: 1048576   # 1 MB
+
+  routers:
+    # --- Exposicion publica de S3 (S1-P1-16, adelantada a semana 0) ---------
+    # Host dedicado: la firma SigV4 depende del host (SPEC §5.1, ADR-0016).
+    # Se enruta UNICAMENTE al puerto S3 (9000). La consola (9001) NUNCA.
+    s3-api:
+      rule: "Host(`s3.localhost`)"
+      entrypoints: [websecure]
+      tls: true
+      service: minio-s3
+      priority: 100
+
+    # --- Stub del contrato nuevo (Strangler, Fase 4) ------------------------
+    # Cuando exista doc-service, su servicio se declara por labels Docker con
+    # prioridad ALTA sobre el router legacy. Este stub documenta la regla.
+    # (Sin service activo todavia: el monolito sigue recibiendo el 100%.)
+
+  services:
+    minio-s3:
+      loadBalancer:
+        servers:
+          - url: "http://minio:9000"
+        # MinIO atiende el healthcheck S3
+        healthCheck:
+          path: /minio/health/live
+          interval: 10s
+          timeout: 3s
