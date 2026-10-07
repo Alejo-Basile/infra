@@ -192,6 +192,31 @@ services:
     pids_limit: 100
     restart: "no"
 
+  # Notificaciones de bucket (webhook) -> doc-service (SPEC §5.2).
+  # Separado de minio-init para que el perfil `core` no dependa del doc-service.
+  # Idempotente: re-aplica el target y el evento en cada `up`.
+  minio-notify-init:
+    image: bitnamilegacy/minio-client:2025.7.21
+    profiles: ["full"]
+    depends_on:
+      minio:
+        condition: service_healthy
+      doc-service:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
+      DOC_SERVICE_WEBHOOK_URL: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
+    volumes:
+      - ./minio/init-notifications.sh:/init-notifications.sh:ro
+    entrypoint: ["/bin/sh", "/init-notifications.sh"]
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    restart: "no"
+
   # ===========================================================================
   # PERFIL FULL — gateway + monolito (Strangler) + observabilidad
   # ===========================================================================
@@ -261,6 +286,71 @@ services:
       - "traefik.http.routers.legacy.entrypoints=websecure"
       - "traefik.http.routers.legacy.tls=true"
       - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
+
+  # --- doc-service (Go): contrato v2 + webhook de MinIO + reconciliador.
+  # Sin puerto publicado al host: la API entra por Traefik (router /api/v2) y
+  # el webhook entra por la red `data` (MinIO -> doc-service:8080).
+  # La imagen se construye desde su propio repo (DOC_SERVICE_BUILD_CONTEXT).
+  doc-service:
+    image: ${DOC_SERVICE_IMAGE:-doc-service:latest}
+    build:
+      context: ${DOC_SERVICE_BUILD_CONTEXT:-../../doc-service}
+    profiles: ["full"]
+    <<: *hardening
+    environment:
+      HTTP_PORT: "8080"
+      DEBUG: "false"
+      # Mongo (replica set rs0), usuario de aplicacion con readWrite sobre la base.
+      MONGO_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/${MONGO_DATABASE:-documents}?replicaSet=rs0
+      MONGO_DATABASE: ${MONGO_DATABASE:-documents}
+      # MinIO: cliente interno (I/O) + endpoint publico (firma de URLs, SPEC §5.1).
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
+      MINIO_ACCESS_KEY: ${SVC_DOCSERVICE_ACCESS_KEY:?definir en .env}
+      MINIO_SECRET_KEY: ${SVC_DOCSERVICE_SECRET_KEY:?definir en .env}
+      MINIO_BUCKET_RAW: raw-pdfs
+      MINIO_BUCKET_TXT: extracted-txt
+      MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
+      # Redis Streams (con password): publica los trabajos de extraccion.
+      REDIS_ADDR: redis-streams:6379
+      REDIS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+      REDIS_STREAM_KEY: ${REDIS_STREAM_KEY:-stream:pdf-processing}
+      # Proteccion de los endpoints /internal/*.
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?definir en .env}
+      # Reglas de negocio (deben respetar grace >= 2 x intervalo y minSafetyAge).
+      MAX_PDF_BYTES: "26214400"
+      RECONCILE_INTERVAL_MIN: "10"
+      DOC_UPLOAD_GRACE_MIN: "30"
+      MIN_SAFETY_AGE_MIN: "15"
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 300
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=infra_internal"
+      # Router v2 (prioridad ALTA sobre `legacy`): SOLO /api/v2 (SPEC §3.1).
+      - "traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2`)"
+      - "traefik.http.routers.docv2.priority=100"
+      - "traefik.http.routers.docv2.entrypoints=websecure"
+      - "traefik.http.routers.docv2.tls=true"
+      # Buffering de 1 MB SOLO para el JSON del contrato v2; el PDF sube directo
+      # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
+      - "traefik.http.routers.docv2.middlewares=body-limit-1mb@file"
+      - "traefik.http.services.docv2.loadbalancer.server.port=8080"
 
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
