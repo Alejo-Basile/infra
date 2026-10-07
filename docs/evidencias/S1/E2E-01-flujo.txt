@@ -1,0 +1,62 @@
+# E2E-01 — Flujo de subida prefirmada, pendiente -> UPLOADED (PENDIENTE)
+
+> Plantilla de evidencia. Rellenar con la salida real de `scripts/e2e-01.sh`
+> una vez aterricen CI-A/CI-B/CI-C/CI-D (ver mas abajo) y el stack `full` arranque.
+
+Entorno: stack `--profile full` (`infra-mongo-1`, `infra-redis-streams-1`,
+`infra-minio-1`, `infra-traefik-1`, `infra-doc-service-1`), hosts `api.localhost`
+y `s3.localhost` con mkcert (ADR-0016).
+
+## Comando
+
+```bash
+scripts/bootstrap.sh
+docker compose -f compose/docker-compose.yml --profile full up -d --build
+scripts/e2e-01.sh
+```
+
+## Salida esperada
+
+```
+== Preflight ==
+  [OK]   doc-service alcanzable via Traefik: https://api.localhost:8543/healthz
+== 1. POST .../api/v2/documents ==
+  [OK]   document_id = idempotency_key (...)
+== 2. Host publico de la URL prefirmada (CI-B) ==
+  [OK]   upload_url apunta a s3.localhost
+== 3. Estado inicial (Mongo / Redis) ==
+  [OK]   Mongo status = PENDING_UPLOAD
+== 4. Subida directa a MinIO ==
+  [OK]   objeto subido (... bytes)
+== 5. Transicion PENDING_UPLOAD -> UPLOADED (webhook de MinIO) ==
+  [OK]   Mongo status = UPLOADED
+== 6. Publicacion del trabajo en Redis Streams ==
+  [OK]   XADD observado: XLEN N -> N+1
+== 7. Idempotencia: repetir POST con la misma clave ==
+  [OK]   segundo POST devuelve 200 (existente)
+== 8. Deduplicacion: re-subir el mismo objeto ==
+  [OK]   webhook repetido NO genero trabajo nuevo (XLEN estable)
+E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
+```
+
+## Salida real
+
+```
+(pegar aqui)
+```
+
+## DoD
+
+- `PENDING_UPLOAD -> UPLOADED` SOLO tras existir el objeto en MinIO (webhook at-least-once).
+- La URL prefirmada se firma con el host publico `s3.localhost:<puerto>` (SigV4).
+- `XADD` + `WAIT`: el relay publica el trabajo; `XLEN` aumenta exactamente una vez.
+- Webhook repetido: `XLEN` estable (deduplicacion por transicion condicional).
+
+## Bloqueadores conocidos (2026-10-07)
+
+| ID   | Dueno | Descripcion |
+|------|-------|-------------|
+| CI-A | P2    | Redis con password: `config.RedisPassword` + `Options.Password` en `queue`/`lease`. |
+| CI-B | P2    | Presign con host publico (cliente secundario `s3.localhost:<puerto>`). |
+| CI-C | P1    | `Dockerfile` multi-stage del doc-service. |
+| CI-D | P2    | Parseo del payload real de MinIO (`s3` anidado en `Records[0]`, no en la raiz). |
