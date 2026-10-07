@@ -1,0 +1,49 @@
+S1-P2-07 / S1-P2-08 — Auto-recuperacion del watcher ante resume token invalido
+================================================================================
+Fecha: 2026-10-07
+Rama:  feat/s1-integracion-e2e  (commit local 7651b05, post #30 + #31 rehearsal)
+Entidad: doc-service/internal/adapters/changestream/watcher.go
+         doc-service/internal/adapters/mongo/resume_token.go
+
+Bug pre-existente (no del merge):
+  - El watcher reanuda el Change Stream desde el resume token persistido en
+    documents.change_stream_tokens._id="change_stream" (SPEC 5.3).
+  - Cuando Mongo rechaza ese token (opTime ya no existe en el oplog por
+    rotacion; o token corrupto en disco), el watcher entraba en un loop fatal
+    de backoff infinito "...cannot resume stream; the resume token was not
+    found..." sin auto-recuperarse, dejando el relay en silencio (docs en
+    UPLOADED sin XADD) mientras /healthz seguia 200.
+
+Fix:
+  - ResumeTokenStore.Delete(ctx): elimina el token persistido.
+  - watcher.Run: ante errResumeTokenInvalid descarta el token y reinicia el
+    stream fresco (resumed=false), con tope de maxConsecutiveResets=3 para
+    no entrar en tight-loop si el fallo persiste por otra causa.
+  - isResumeTokenInvalid: detecta "cannot resume stream", "Bad resume token",
+    "KeyString format error" y "resume token string was not a valid hex string"
+    (cubre wrappers "watch:" y "stream error:").
+  - TestWatcher_RecuperaTrasTokenInvalido (integracion): watcher real persiste
+    token, se corrompe su clusterTime (opTime 0,0), nuevo watcher se
+    auto-recupera (elimina token + reinicia fresco + procesa nuevo evento).
+
+Drill en stack real (infra_data):
+  1) Sembrado token invalido: {"_data":"zz-invalid-hex"}
+     (mongosh sobre documents.change_stream_tokens)
+  2) docker restart infra-doc-service-1
+  3) Logs doc-service:
+       WARN resume token invalidado: eliminado para reiniciar el stream fresco
+            error="(FailedToParse) resume token string was not a valid hex string"
+       WARN resume token invalidado: stream reiniciado fresco reset=1 max_resets=3
+       INFO change stream watcher iniciado collection=documents resumed=false
+  4) documents.change_stream_tokens: token restante = 0 (borrado solo)
+  5) Sin intervencion manual: watcher recuperado.
+
+Resultado E2E-01 con el fix (2 corridas consecutivas):
+  - Corrida 1: XLEN stream:pdf-processing 6 -> 7, 8/8 OK
+  - Corrida 2: XLEN 7 -> 8, 8/8 OK
+  - minio-notify-init idempotente (evento ya suscrito, re-run OK)
+
+Verificacion de la rama: go vet, gofmt limpio; go test ./... 11 paquetes OK
+(contenedor golang:1.24-alpine, red infra_data, MONGO_TEST_URI + REDIS_TEST_ADDR).
+Rehearsal del merge #30 + #31 (con fix) sobre origin/main: sin conflictos,
+build/vet/gofmt/test OK en /tmp/opencode/docservice-merge-rehearsal.
