@@ -1,0 +1,38 @@
+# S1-P1-09v — Change Stream emite en < 1 s (2026-10-06T23:59:16-03:00)
+
+Entorno: replica set `rs0` de un solo nodo (**PRIMARY**, `state=1`) en `infra-mongo-1`.
+Usuario: `MONGO_APP_USER` (rol `readWrite` acotado a la base `documents`).
+Colección: `documents` — sin validador (`options: {}`).
+
+## Filtro del relay (SPEC §5.3)
+
+```js
+db.documents.watch(
+  [{ $match: { operationType: "update", "fullDocument.status": "UPLOADED" } }],
+  { fullDocument: "updateLookup", maxAwaitTimeMS: 500 }
+)
+```
+
+## Método
+
+Por cada corrida se inserta un documento `test-s1-09-N` en `PENDING_UPLOAD` (evento
+`insert`, no matchea el filtro) y se mide `Date.now()` desde el `update` a `UPLOADED`
+hasta que el cursor entrega el evento. 3 corridas. El documento de prueba se borra al
+final de cada corrida.
+
+## Salida
+
+`docker exec -i infra-mongo-1 mongosh --quiet -u "$MONGO_APP_USER" -p "$MONGO_APP_PASSWORD" --authenticationDatabase documents documents --eval "$(cat watch-latency.js)"`
+
+```
+run 1: latencia_ms=9  doc=test-s1-09-1 op=update fullDocument.status=UPLOADED
+run 2: latencia_ms=4  doc=test-s1-09-2 op=update fullDocument.status=UPLOADED
+run 3: latencia_ms=4  doc=test-s1-09-3 op=update fullDocument.status=UPLOADED
+limpieza: documentos test-* restantes = 0
+```
+
+## DoD
+
+3/3 corridas con latencia < 1000 ms (máximo 9 ms). El evento `update -> UPLOADED` se
+entrega en el Change Stream en < 1 s sobre el replica set real. Limpieza verificada:
+0 documentos `test-*` residuales.
