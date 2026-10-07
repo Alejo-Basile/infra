@@ -47,11 +47,19 @@ docker exec infra-mongo-1 mongosh --quiet \
   sí se subió antes de que el reconciliador lo evalúe) → escalar a P2 el mismo día con la
   salida de esta consulta.
 
-## Estado de las migraciones (verificación S1-P1-11v, 2026-10-05)
+## Estado de las migraciones (actualizado 2026-10-07)
 
-`db.schema_versions.find()` está **vacío** y `getIndexes()` solo muestra `_id_`:
-las migraciones de P2 (`S1-P2-05`, `internal/adapters/mongo/migrations.go` — índices
-`status`, `updated_at` y TTL sobre `expires_at`) **no están aplicadas** aún en esta
-instancia. Verificarlas re-ejecutando `getIndexes()` una vez que el doc-service corra
-su migrador (idempotente) al arrancar. **No crear los índices a mano**: viven en las
-migraciones versionadas de P2.
+El 2026-10-07, durante el primer intento de arranque del `doc-service` (imagen CI-C,
+antes de morir por CI-A/Redis NOAUTH), el migrador idempotente de P2 (`S1-P2-05`,
+`internal/adapters/mongo/migrations.go`) **se aplicó**: `getIndexes()` confirma
+`status_1`, `updated_at_1` y `expires_at_1` con `expireAfterSeconds: 0` (TTL). El
+chequeo 2026-10-05 (`S1-P1-11v`) que reportaba solo `_id_` quedó obsoleto.
+
+```bash
+# Ejecutar con .env cargado. Esperado: los 3 índices + _id_.
+docker exec infra-mongo-1 mongosh --quiet \
+  -u "$MONGO_APP_USER" -p "$MONGO_APP_PASSWORD" --authenticationDatabase documents \
+  documents --eval 'db.documents.getIndexes().map(i => i.name)'
+```
+
+**No crear los índices a mano**: viven en las migraciones versionadas de P2 y son idempotentes.
