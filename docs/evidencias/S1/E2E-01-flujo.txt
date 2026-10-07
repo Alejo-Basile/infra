@@ -1,7 +1,7 @@
-# E2E-01 — Flujo de subida prefirmada, pendiente -> UPLOADED (PENDIENTE)
+# E2E-01 — Flujo de subida prefirmada, pendiente -> UPLOADED (OK)
 
-> Plantilla de evidencia. Rellenar con la salida real de `scripts/e2e-01.sh`
-> una vez aterricen CI-A/CI-B/CI-C/CI-D (ver mas abajo) y el stack `full` arranque.
+> Evidencia real de `scripts/e2e-01.sh` contra el stack `full`, con
+> CI-A/CI-B/CI-C/CI-D aterrizados (2026-10-07).
 
 Entorno: stack `--profile full` (`infra-mongo-1`, `infra-redis-streams-1`,
 `infra-minio-1`, `infra-traefik-1`, `infra-doc-service-1`), hosts `api.localhost`
@@ -42,8 +42,51 @@ E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
 ## Salida real
 
 ```
-(pegar aqui)
+== Preflight ==
+  [OK]   tool: curl
+  [OK]   tool: jq
+  [OK]   tool: openssl
+  [OK]   tool: docker
+  [OK]   doc-service alcanzable via Traefik: https://api.localhost:8543/healthz
+
+== 1. POST https://api.localhost:8543/api/v2/documents (idempotency_key=7bde7b8351e2987ec24553a33dc9ad13) ==
+  [OK]   document_id = idempotency_key (7bde7b8351e2987ec24553a33dc9ad13)
+  [OK]   expires_in = 900s
+== 2. Host publico de la URL prefirmada (CI-B) ==
+  [OK]   upload_url apunta a s3.localhost
+== 3. Estado inicial (Mongo / Redis) ==
+  [OK]   Mongo status = PENDING_UPLOAD
+  XLEN(stream:pdf-processing) antes = 3
+== 4. Subida directa a MinIO (multipart POST prefirmado) ==
+  [OK]   objeto subido (69 bytes)
+== 5. Transicion PENDING_UPLOAD -> UPLOADED (webhook de MinIO) ==
+  [OK]   Mongo status = UPLOADED
+== 6. Publicacion del trabajo en Redis Streams (relay/change stream) ==
+  [OK]   XADD observado: XLEN 3 -> 4
+== 7. Idempotencia: repetir POST con la misma clave ==
+  [OK]   segundo POST devuelve 200 (existente)
+== 8. Deduplicacion: re-subir el mismo objeto (segundo ObjectCreated:Put) ==
+  [OK]   objeto re-subido (mismo key)
+  [OK]   webhook repetido NO genero trabajo nuevo (XLEN estable en 4)
+
+E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
 ```
+
+## Notas de implementacion (hallazgos corregidos durante la corrida)
+
+1. PresignPost: la firma de la POST policy SigV4 NO depende del Host header
+   (se firma el documento, no el request). Se firma con el cliente interno
+   `minio:9000` y la URL resultante se re-escibe al host publico
+   `s3.localhost:8543`. Evita el round-trip DNS a `s3.localhost` desde el
+   contenedor (que no resuelve) y mantiene la firma valida.
+2. La policy `docservice-rw` de MinIO le faltaba `s3:PutObject` en `raw-pdfs/*`:
+   sin ese permiso MinIO responde `AccessDenied` a la subida prefirmada (la URL
+   se genera bien, pero el PUT se rechaza). Se corrigio en
+   `compose/minio/init-buckets.sh` y se re-aplico la policy en vivo.
+3. webhook target: se declaro via `MINIO_NOTIFY_WEBHOOK_*` en el servicio `minio`
+   del compose, de modo que el target existe desde el arranque y NO dependa de
+   `mc admin service restart` (que sin TTY no aplica la config). El job
+   `minio-notify-init` ahora confirma el target activo y solo re-suscribe.
 
 ## DoD
 
@@ -52,11 +95,6 @@ E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
 - `XADD` + `WAIT`: el relay publica el trabajo; `XLEN` aumenta exactamente una vez.
 - Webhook repetido: `XLEN` estable (deduplicacion por transicion condicional).
 
-## Bloqueadores conocidos (2026-10-07)
-
-| ID   | Dueno | Descripcion |
-|------|-------|-------------|
-| CI-A | P2    | Redis con password: `config.RedisPassword` + `Options.Password` en `queue`/`lease`. |
-| CI-B | P2    | Presign con host publico (cliente secundario `s3.localhost:<puerto>`). |
-| CI-C | P1    | `Dockerfile` multi-stage del doc-service. |
-| CI-D | P2    | Parseo del payload real de MinIO (`s3` anidado en `Records[0]`, no en la raiz). |
+Estado: CERCADO (2026-10-07). Los bloqueadores CI-A/CI-B/CI-D se resolvieron en
+`doc-service` (`feat/s1-integracion-e2e`); CI-C (Dockerfile multi-stage) sigue en
+su PR propio (`feat/s1-dockerfile`), el Dockerfile se uso localmente para el build.

@@ -156,6 +156,12 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?definir en .env}
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      # Webhook declarativo -> doc-service (SPEC §5.2 / S3-P2-05).
+      # Bitnami aplica MINIO_NOTIFY_WEBHOOK_* al arrancar: el target existe sin
+      # depender de `mc admin service restart` (que sin TTY no aplica la config).
+      MINIO_NOTIFY_WEBHOOK_ENABLE_DOCSERVICE: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_DOCSERVICE: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE: ${MINIO_WEBHOOK_SECRET:?definir en .env}
     volumes:
       - minio-data:/bitnami/minio/data
     networks: [data]
@@ -351,6 +357,12 @@ services:
       # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
       - "traefik.http.routers.docv2.middlewares=body-limit-1mb@file"
       - "traefik.http.services.docv2.loadbalancer.server.port=8080"
+      # Healthcheck expuesto al edge (preflight de E2E-01): solo /healthz.
+      - "traefik.http.routers.docv2health.rule=Host(`api.localhost`) && Path(`/healthz`)"
+      - "traefik.http.routers.docv2health.priority=110"
+      - "traefik.http.routers.docv2health.entrypoints=websecure"
+      - "traefik.http.routers.docv2health.tls=true"
+      - "traefik.http.routers.docv2health.service=docv2"
 
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
