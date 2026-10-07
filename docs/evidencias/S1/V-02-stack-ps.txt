@@ -1,0 +1,10 @@
+NAME                      STATUS
+infra-grafana-1           Up 2 hours
+infra-loki-1              Up 2 hours
+infra-minio-1             Up 2 hours (healthy)
+infra-mongo-1             Up 2 hours (healthy)
+infra-monolito-1          Up 2 hours (healthy)
+infra-prometheus-1        Up 2 hours
+infra-redis-ratelimit-1   Up 2 hours (healthy)
+infra-redis-streams-1     Up 2 hours (healthy)
+infra-traefik-1           Up 2 hours (healthy)
