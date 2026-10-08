@@ -1,0 +1,16 @@
+== S1-P1-02b — EntityTooLarge: MinIO rechaza la subida que excede el tope declarado ==
+fecha: 2026-10-08T01:58:13Z
+
+Setup: create declara size_bytes=10485760 (10MB, valido). La policy content-length-range
+(max = maxPDFBytes = 26214400 = 25MB) la emite MinIO. Body real enviado: 30000000 bytes (30MB).
+
+POST prefirmado con body de 30MB (multipart, campos de la policy) -> HTTP EntityTooLarge
+
+Respuesta de MinIO:
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>EntityTooLarge</Code><Message>Your proposed upload exceeds the maximum allowed object size.</Message><BucketName>raw-pdfs</BucketName><Resource>/raw-pdfs/</Resource><Region>us-east-1</Region><RequestId>18DC6B449430E81D</RequestId><HostId>dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8</HostId></Error>
+Consecuencias (DoD):
+  - El objeto NO se escribio en raw-pdfs (mc stat -> Object does not exist).
+  - El doc sigue PENDING_UPLOAD en Mongo (sin webhook ObjectCreated:Put).
+  - El tope real lo impone MinIO via policy; declarar size_bytes bajo no habilita
+    subir mas del maxPDFBytes (26214400). No hay trust en el campo size_bytes del create.
