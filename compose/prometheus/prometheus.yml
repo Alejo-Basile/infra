@@ -1,17 +1,12 @@
-# Prometheus — scrape por servicio (SPEC §10 / S1-P1-12, base minima S0)
-# NADA de labels con cardinalidad no controlada (nunca document_id como label).
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 5s
 
 scrape_configs:
-  - job_name: prometheus
-    static_configs:
-      - targets: ["localhost:9090"]
-
   - job_name: traefik
+    metrics_path: /metrics
     static_configs:
       - targets: ["traefik:8082"]
-
-  # Futuros (Fase 2/3): doc-service y extraction-worker exponen /metrics.
-  # Se agregan aqui cuando existan los servicios.
+  - job_name: doc-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["doc-service:8080"]
