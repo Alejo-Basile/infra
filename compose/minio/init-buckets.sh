@@ -30,7 +30,9 @@ done
 echo "Buckets listos: raw-pdfs, extracted-txt"
 
 # --- Policies -----------------------------------------------------------------
-# doc-service: lectura de extracted-txt + presign/lectura de raw-pdfs (emite URLs)
+# doc-service: emite URLs presignadas POST de subida a raw-pdfs (ESCRIBE via
+# POST policy) y lee extracted-txt. Requiere s3:PutObject en raw-pdfs, si no
+# MinIO rechaza la subida prefirmada con AccessDenied (E2E-01 paso 4).
 cat > /tmp/policy-docservice.json <<'EOF'
 {
   "Version": "2012-10-17",
@@ -42,6 +44,11 @@ cat > /tmp/policy-docservice.json <<'EOF'
         "arn:aws:s3:::raw-pdfs", "arn:aws:s3:::raw-pdfs/*",
         "arn:aws:s3:::extracted-txt", "arn:aws:s3:::extracted-txt/*"
       ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": ["arn:aws:s3:::raw-pdfs/*"]
     }
   ]
 }
