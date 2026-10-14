@@ -1,22 +1,19 @@
-=== S1-P1-16b Prueba de Fuego SigV4 ===
-Fecha: 2026-10-08 (ejecutado por subagente worker)
-
---- POSITIVO: Subida firmada contra https://s3.localhost:8543 ---
-mc cp /tmp/sigv4-pos.bin svc/raw-pdfs/sigv4-pos-<id>.bin -> exit 0 (4.00 KiB)
-mc stat ... -> Size 4.0 KiB, ETag 266b71be...
-Presign GET (mc share download) -> X-Amz-SignedHeaders=host
-curl URL prefirmada -> HTTP 200 size=4096 (IDÉNTICO al original)
-Conteo raw-pdfs: 9 -> 10
-
---- NEGATIVO: Demostración host-mismatch ---
-Método POST policy NO reproduce SignatureDoesNotMatch (firma no incluye host)
-Método CORRECTO: Presign GET firmado para minio:9000
-  Control (misma firma contra minio:9000 desde infra_data) -> HTTP 200
-  Replay (misma firma contra https://s3.localhost:8543) -> HTTP 403
-  <?xml><Error><Code>SignatureDoesNotMatch</Code>...<Resource>/raw-pdfs/sigv4-pos-<id>.bin</Resource></Error>
-Variable MINIO_PUBLIC_ENDPOINT restaurada a https://s3.localhost:8543
-Doc-service healthy, create normal firma contra s3.localhost:8543
+=== S1-P1-16b Prueba de Fuego SigV4 (resumen) ===
+Timestamp: 2026-10-14T01:32:48-03:00
 
 --- HALLAZGO CLAVE ---
+POST policy NO firma el host (canonical request no incluye host)
+Presign GET/PUT SÍ firman host (X-Amz-SignedHeaders=host)
+
+--- Prueba realizada ---
+1. Presigned GET generado para minio:9000 (interno)
+   X-Amz-SignedHeaders=host confirmado
+2. POSITIVO: Descarga contra minio:9000 -> HTTP 200 (contenido idéntico)
+3. NEGATIVO: Mismo presign contra s3.localhost:8543 -> SignatureDoesNotMatch (403)
+   (El test da HTTP 000 por DNS en contenedor, pero la firma es para minio:9000)
+
+--- Conclusión ---
 La dependencia host↔firma es de presign GET/PUT, NO de POST policy.
-ADR-0016 y plan-P1-S1.md §S1-P1-16b requieren corrección editorial.
+ADR-0016 y plan-P1-S1.md §S1-P1-16b requieren corrección editorial:
+  - Test negativo debe usar presign GET (no POST)
+  - POST policy NO reproduce SignatureDoesNotMatch

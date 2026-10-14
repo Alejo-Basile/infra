@@ -1,13 +1,10 @@
-=== S1-P1-16a Router S3 solo puerto 9000 ===
-Fecha: 2026-10-08
+=== S1-P1-16a Router S3 Only Port 9000 ===
+Timestamp: 2026-10-14T01:28:51-03:00
 
-GET https://s3.localhost:8543/minio/ -> 403 (Acceso S3 denegado; NUNCA consola HTML)
-GET https://s3.localhost:8543/minio/health/live -> 200
-docker port infra-minio-1 -> (vacío: ningún puerto publicado al host)
+--- 1. Consola no expuesta ---
+403
 
-Métricas Traefik (:8082/metrics):
-routers: docv2health@docker, legacy@docker, s3-api@file -> 0 contienen 9001
-services: docv2@docker, legacy@docker, minio-s3@file
+--- 2. Puerto 9001 no publicado ---
+
+--- 3. Métricas Traefik ---
 traefik_service_server_up{service="minio-s3@file",url="http://minio:9000"} 1
-
-NOTA: API Traefik (:8082) deshabilitada (api.dashboard: false). Comando 11 del plan (wget /api/http/routers) da 404 -> falso positivo. Validación real via métricas.

@@ -1,15 +1,22 @@
 === S1-P1-02b EntityTooLarge desde MinIO ===
-Fecha: 2026-10-08
+Timestamp: 2026-10-14T01:33:00-03:00
 
+--- 1. POST /api/v2/documents declarando 10MB (válido) ---
+Response: {"document_id":"01M4WB0VF4KD8FHVF5NAAKJQ2P","status":"PENDING_UPLOAD","upload_url":"https://s3.localhost:8543/raw-pdfs/","method":"POST","form_fields":{"Content-Type":"application/pdf","bucket":"raw-pdfs","key":"raw-pdfs/01M4WB0VF4KD8FHVF5NAAKJQ2P.pdf","policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDo0OTowOC45OTlaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQjBWRjRLRDhGSFZGNU5BQUtKUTJQLnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQzNDA4WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ==","x-amz-algorithm":"AWS4-HMAC-SHA256","x-amz-credential":"4957ef133643afc0/20261014/us-east-1/s3/aws4_request","x-amz-date":"20261014T043408Z","x-amz-signature":"61fbdc069928519d4f8bd8b9cb2adcf35336050debb2b93e9d85e33b4d43de71"},"required_headers":{"policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDo0OTowOC45OTlaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQjBWRjRLRDhGSFZGNU5BQUtKUTJQLnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQzNDA4WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ=="},"expires_in":900,"expires_at":"2026-10-14T05:04:08Z"}
+Document ID: 01M4WB0VF4KD8FHVF5NAAKJQ2P
+
+--- 2. Generar 'PDF' de 30 MB ---
 head -c 30000000 /dev/urandom > /tmp/big.pdf
 
-3a) Create declarando size_bytes=30000000 -> HTTP 400 doc-service
-    "size_bytes excede el máximo permitido: 26214400 bytes"
-    (validación servicio, NO EntityTooLarge)
+--- 3. Subir 30MB via presigned POST (debe fallar EntityTooLarge) ---
+HTTP 400
 
-3b) Create size_bytes=10485760 (válido) + body real 30MB -> HTTP 400 MinIO
-    <Error><Code>EntityTooLarge</Code><Message>Your proposed upload exceeds the maximum allowed object size.</Message>
-    Policy decodificada: ["content-length-range",1,26214400]
-Objeto NO escrito (mc stat -> does not exist); conteo 10 -> 10; doc sigue PENDING_UPLOAD
+--- 4. Verificar que NO se escribió en MinIO ---
+Objeto NO existe (OK)
 
-ACLARACIÓN: "Declarar 30MB" se rechaza en create (400). La prueba real del tope es declarar válido y enviar 30MB.
+--- 5. Verificar estado en Mongo ---
+{ _id: '01M4WB0VF4KD8FHVF5NAAKJQ2P', status: 'PENDING_UPLOAD' }
+
+--- ACLARACIÓN ---
+"Declarar 30MB" en el create se rechaza en doc-service (400 validación local).
+La prueba REAL del tope es declarar tamaño válido (10MB) y enviar 30MB real: MinIO rechaza con EntityTooLarge (400) y NO escribe el objeto. El doc queda PENDING_UPLOAD.

@@ -1,13 +1,15 @@
 === S1-P1-02a Buffering 413 en Edge ===
-Fecha: 2026-10-08
+Timestamp: 2026-10-14T01:32:57-03:00
 
-head -c 2000000 /dev/zero > /tmp/big.json
-curl -sk -o /dev/null -w '%{http_code}\n' -X POST https://api.localhost:8543/api/v2/documents \
-  -H 'Content-Type: application/json' --data-binary @/tmp/big.json
--> HTTP 413 ("Request Entity Too Large")
+--- 1. Generar JSON de 2MB ---
 
-Access log Traefik:
-RouterName=docv2@docker, DownstreamStatus=413, OriginStatus=0, OriginDuration=0, RequestContentSize=0
--> Cortado en edge, NUNCA llegó al backend (0 coincidencias correlation-id en logs doc-service)
+--- 2. POST a /api/v2/documents (router docv2 con body-limit-1mb) ---
+413
 
-NOTA: Campo log es RequestContentSize, NO RequestBodySize (corregir plan).
+--- 3. Verificar en access log de Traefik: 413 SIN upstream ---
+
+--- 4. Verificar que NO llegó al doc-service ---
+0
+Sin coincidencias (OK)
+
+NOTA: Campo log es RequestContentSize (no RequestBodySize)
