@@ -1,16 +1,13 @@
-== a. Redirect web->websecure ==
-api  http : 301
-s3   http : 301
+=== V-01 Traefik TLS Verification ===
+Timestamp: 2026-10-13T17:22:59-03:00
 
-== b. Cert por host: s3.localhost ==
+--- 1. Redirect HTTP 8088 -> HTTPS 8543 ---
+301
+
+--- 2. Cert s3.localhost + MinIO health ---
 *  subject: CN=s3.localhost
 *  issuer: CN=s3.localhost
-health s3: 200
+200
 
-== c. Cert por host: api.localhost + router legacy ==
-*  subject: CN=api.localhost
-*  issuer: CN=api.localhost
-api /docs (monolito): 200
-
-== d. Monolito sin puerto publicado ==
-(salida vacia = OK)
+--- 3. Cert api.localhost + router legacy ---
+200

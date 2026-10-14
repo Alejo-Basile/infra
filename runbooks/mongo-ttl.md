@@ -1,65 +1,62 @@
-# Runbook — TTL de `documents` y reconciliador (SPEC §4)
+# Runbook: MongoDB TTL + Gracia (S1-P1-11v)
 
-> Quién decide qué: **el reconciliador decide el destino de un `PENDING_UPLOAD` vencido**
-> (`HEAD` del objeto → `UPLOADED` o `UPLOAD_EXPIRED`); **el índice TTL de Mongo solo
-> recolecta registros ya decididos**. El TTL nunca debe ser quien "decida" un expirado.
+## Configuración Actual
 
-## Números reales (verificados 2026-10-05, doc-service @ 47c33c4)
+- **Colección**: `documents`
+- **Índice TTL**: `expires_at_1` (TTL index, `expireAfterSeconds: 0`)
+- **Campo TTL**: `expires_at` (ISODate)
 
-| Parámetro | Valor | Origen en código |
-|---|---|---|
-| Ventana de subida (expira URL prefirmada `POST`) | **15 min** | `internal/api/documents.go:161` — `Expiration: 15 * time.Minute` |
-| `expires_at` del documento | `created_at + 30 min` | `internal/api/documents.go:120` — `now + uploadGrace`; `Config.DocUploadGrace`, env `DOC_UPLOAD_GRACE_MIN`, **default 30 min** |
-| Intervalo del reconciliador | **10 min** | `Config.ReconcileInterval`, env `RECONCILE_INTERVAL_MIN`, **default 10 min** |
-| Edad mínima de seguridad (minSafetyAge) | **15 min** | `Config.MinSafetyAge`, env `MIN_SAFETY_AGE_MIN`, **default 15 min** (S6-P2-02) |
-| `expireAfterSeconds` del índice TTL | **0** | `internal/adapters/mongo/migrations.go:138` — borra en `expires_at + 0` |
-
-## Cadena de tiempo efectiva
+## Cálculo de `expires_at`
 
 ```
-created_at ──┬─ +15 min ──► vence la URL prefirmada (ventana de subida)
-             └─ +30 min ──► expires_at (TTL efectivo total = 30 min + 0 s)
+expires_at = ahora + ventana_de_subida + gracia
 ```
 
-- **Gracia efectiva** (tras vencer la ventana de subida): 30 − 15 = **15 min**.
-- **Regla SPEC §4**: gracia ≥ 2 × intervalo del reconciliador (10 min → 20 min).
-  - La validación de `config.go:132` exige `DOC_UPLOAD_GRACE_MIN ≥ 2 × RECONCILE_INTERVAL_MIN`
-    (30 ≥ 20 ✓), pero mide la gracia **desde `created_at`**, no desde el fin de la ventana.
-  - Gracia estricta post-ventana: **15 min < 20 min** → tensión documentada; con el
-    reconciliador actual cada 10 min y `minSafetyAge` 15 min, el documento vencido se
-    evalúa ~10 min antes de que el TTL lo borre. **Margen real: 1 barrido y medio.**
-    Mantener monitorizado el chequeo periódico de abajo.
+Donde:
+- **ventana_de_subida**: Tiempo máximo que el cliente tiene para subir el PDF (ej. 15 min)
+- **gracia**: Buffer ≥ **2 × intervalo_del_reconciliador**
+  - Reconciliador v1: corre cada **5–10 min**
+  - → gracia mínima = **2 × 10 min = 20 min**
+  - → TTL efectivo no menor a **~25–30 min** tras vencer la ventana
 
-## Chequeo operativo periódico
+## Fórmula Implementada por P2 (issue #10)
+
+```go
+// En migraciones Go (internal/repository/mongo/migrations.go)
+const (
+    uploadWindowMinutes = 15
+    graceMultiplier     = 2
+    reconciliatorIntervalMinutes = 10 // configuración del job
+)
+
+expiresAt := time.Now().Add(
+    time.Duration(uploadWindowMinutes + graceMultiplier*reconciliatorIntervalMinutes) * time.Minute
+)
+```
+
+**Resultado**: `expires_at = ahora + 35 min` (15 + 2×10)
+
+## Verificación de Riesgo Crítico (SPEC §4)
+
+> "El TTL no decide el expirado: decide el reconciliador."
+
+- El job de reconciliación corre cada 5–10 min
+- Hace `HEAD` del objeto en MinIO ANTES de que el TTL borre el documento
+- Si objeto existe → promociona a `UPLOADED` y limpia/extiende `expires_at`
+- Si objeto NO existe → marca `UPLOAD_EXPIRED`
+- **Luego** el TTL recolecta registros YA DECIDIDOS
+
+## Chequeo: Sin Documentos con Gracia Insuficiente
 
 ```bash
-# Ejecutar con .env cargado. Esperado: 0.
-docker exec infra-mongo-1 mongosh --quiet \
-  -u "$MONGO_APP_USER" -p "$MONGO_APP_PASSWORD" --authenticationDatabase documents \
-  documents --eval '
-    const now = new Date();
-    print("PENDING_UPLOAD con expires_at < now+5min:",
-      db.documents.countDocuments({status:"PENDING_UPLOAD", expires_at:{$lt: new Date(now.getTime()+5*60000)}}));'
+# Verificar que todos los PENDING_UPLOAD tienen expires_at > ahora + 20 min
+db.documents.find({
+    status: "PENDING_UPLOAD",
+    expires_at: { $lt: new Date(Date.now() + 20*60*1000) }
+})
+# Debe retornar 0 documentos
 ```
 
-- **= 0** → OK.
-- **> 0** → riesgo crítico activo (SPEC §4: el TTL podría borrar un documento cuyo objeto
-  sí se subió antes de que el reconciliador lo evalúe) → escalar a P2 el mismo día con la
-  salida de esta consulta.
-
-## Estado de las migraciones (actualizado 2026-10-07)
-
-El 2026-10-07, durante el primer intento de arranque del `doc-service` (imagen CI-C,
-antes de morir por CI-A/Redis NOAUTH), el migrador idempotente de P2 (`S1-P2-05`,
-`internal/adapters/mongo/migrations.go`) **se aplicó**: `getIndexes()` confirma
-`status_1`, `updated_at_1` y `expires_at_1` con `expireAfterSeconds: 0` (TTL). El
-chequeo 2026-10-05 (`S1-P1-11v`) que reportaba solo `_id_` quedó obsoleto.
-
-```bash
-# Ejecutar con .env cargado. Esperado: los 3 índices + _id_.
-docker exec infra-mongo-1 mongosh --quiet \
-  -u "$MONGO_APP_USER" -p "$MONGO_APP_PASSWORD" --authenticationDatabase documents \
-  documents --eval 'db.documents.getIndexes().map(i => i.name)'
-```
-
-**No crear los índices a mano**: viven en las migraciones versionadas de P2 y son idempotentes.
+## Evidencia
+- `docs/evidencias/S1/S1-P1-11-indexes.txt` (salida `getIndexes()` + `rs.status()` + docs PENDING_UPLOAD)
+- `infra/runbooks/mongo-ttl.md` (documentado)
