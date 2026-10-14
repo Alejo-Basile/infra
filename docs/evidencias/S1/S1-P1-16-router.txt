@@ -1,0 +1,15 @@
+== S1-P1-16a — Router S3 SOLO al puerto 9000 (DoD de exposicion) ==
+fecha: 2026-10-08T01:46:37Z
+
+[1] Consola NO expuesta por el entrypoint publico:
+  GET https://s3.localhost:8543/minio/  -> HTTP 403
+  (403 de MinIO S3 = acceso denegado; NUNCA el panel HTML de :9001)
+
+[2] MinIO no publica 9001 (ni ningun puerto) al host:
+  PortBindings(HostConfig) = {}
+
+[3] Ningun router de Traefik apunta al 9001:
+  routers con '9001' = 0 (0 = OK: sin vuelo de la consola)
+
+[4] El unico router S3 es 's3-api' -> minio:9000 (declarado en traefik/dynamic/middlewares.yml):
+  DoD OK: exposicion S3 solo por host dedicado s3.localhost:8543, consola cerrada.

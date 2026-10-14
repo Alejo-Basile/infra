@@ -1,0 +1,14 @@
+== S1-P1-16c — raw-pdfs NO listable de forma anonima ==
+fecha: 2026-10-08T01:55:38Z
+
+Intentos ANONIMOS (sin credenciales) contra el bucket raw-pdfs:
+  [1] mc ls anon/raw-pdfs  (listado)
+  [2] mc stat anon/raw-pdfs/nonexist.pdf  (lectura)
+
+  [1] salida: 
+mc: <ERROR> Unable to list folder. Access Denied.
+  [2] salida: 
+mc: <ERROR> Unable to list folder. Access Denied.
+mc: <ERROR> Unable to stat `anon/raw-pdfs/nonexist.pdf`. Object does not exist.
+
+  Esperado: AccessDenied (negar acceso por defecto; no hay policy publica en raw-pdfs).

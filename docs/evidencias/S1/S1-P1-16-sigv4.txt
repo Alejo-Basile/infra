@@ -1,0 +1,20 @@
+== S1-P1-16b — Host dentro del canonical request de SigV4 (SPEC §5.1) ==
+fecha: 2026-10-08T01:55:19Z
+entorno real usado: NO se toco .env (MINIO_PUBLIC_ENDPOINT intacto, no requiere recover)
+
+Setup: objeto control-sigv4.txt firmado con mc (alias q -> http://minio:9000, creds docservice).
+Presign generado EXCLUSIVAMENTE para el host interno:
+  INT_URL = http://minio:9000/raw-pdfs/control-sigv4.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=<<REDACTADO>>%2F20261008%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261008T015519Z&X-Amz-Expires=604800&X-Amz-SignedHeaders=host&X-Amz-Signature=<<REDACTADO>>
+
+[NEGATIVO] La MISMA firma, re-emitida contra el host PUBLICO https://s3.localhost:8543:
+  curl -sk $(PUB_URL) -> HTTP 403
+  <Code>SignatureDoesNotMatch</Code> (el host esta dentro del canonical request -> firma invalida)
+
+[POSITIVO - control] La MISMA firma contra el host MINIO:9000 (dentro de la red docker):
+  -> OK 200: objeto-control-sigv4-1791424061.txt
+
+Lectura (SPEC §5.1): las mismas claves + las mismas cabeceras producen firmas distintas
+para api/host interno y para s3.localhost:8543. Si el host de la URL prefirmada no coincide
+exactamente con el host al que el cliente golpea -> SignatureDoesNotMatch. Por eso un
+MINIO_PUBLIC_ENDPOINT interno nunca puede ser upado a produccion: cada entorno (dev/stg/prod)
+debe emitir sus propios presigns con su propio host publico.
