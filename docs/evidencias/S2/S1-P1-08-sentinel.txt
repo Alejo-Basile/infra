@@ -1,0 +1,329 @@
+# Evidencia S1-P1-08 — Topología de Streams con Redis Sentinel
+
+- Fecha: 2026-10-14T13:08:54-03:00
+- Rama: feat/infra-s2-sentinel
+- Entorno: local / académico (ADR-0016)
+- Contrato: plan-S2-P1.md §4, tarea S1-P1-08
+- Perfil Compose nuevo: `sentinel` (el perfil `full` no cambia su comportamiento)
+
+## Objetivo
+
+Que Redis Streams deje de ser punto único de fallo: primario `redis-streams` +
+2 réplicas + 3 Sentinels (quorum 2), sin alterar el endpoint del cliente en el
+perfil `full`.
+
+## Archivos creados / modificados
+
+- `compose/redis/sentinel.conf.tmpl` (nuevo): plantilla SIN secretos;
+  `${REDIS_STREAMS_PASSWORD}` se sustituye en runtime.
+- `compose/redis/sentinel-entrypoint.sh` (nuevo, +x): renderiza `/tmp/sentinel.conf`
+  con `sed` y arranca `redis-server /tmp/sentinel.conf --sentinel`.
+- `compose/docker-compose.yml`: 2 volúmenes nuevos + 5 servicios con perfil `sentinel`.
+- `.env.example`: `SENTINEL_HOSTS`, `SENTINEL_MASTER_NAME`.
+
+Servicios nuevos:
+`redis-streams-replica-1`, `redis-streams-replica-2`, `sentinel-1`,
+`sentinel-2`, `sentinel-3`.
+
+Config efectiva de Sentinel (shell dentro de un contenedor; password enmascarado):
+
+```
+port 26379
+dir "/tmp"
+sentinel resolve-hostnames yes
+sentinel announce-hostnames yes
+sentinel monitor myprimary redis-streams 6379 2
+sentinel auth-pass myprimary ***
+sentinel down-after-milliseconds myprimary 5000
+sentinel failover-timeout myprimary 30000
+sentinel parallel-syncs myprimary 1
+```
+
+## 1. Validación de la configuración Compose
+
+```
+$ cd compose
+$ docker compose --env-file ../.env config --quiet
+(sin salida; exit 0)
+```
+
+El perfil `sentinel` agrupa únicamente los 5 servicios nuevos:
+
+```
+$ docker compose --env-file ../.env --profile sentinel config --services
+redis-streams-replica-1
+redis-streams-replica-2
+sentinel-1
+sentinel-2
+sentinel-3
+```
+
+## 2. Replicación (INFO replication del primario)
+
+```
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning INFO replication
+role:master
+connected_slaves:2
+slave0:ip=redis-streams-replica-1,port=6379,state=online,offset=6122,lag=0
+slave1:ip=redis-streams-replica-2,port=6379,state=online,offset=6122,lag=0
+```
+
+Las réplicas se anuncian por NOMBRE de host (no por IP 172.x) gracias a
+`--replica-announce-ip` (ver Hallazgo 1).
+
+## 3. Descubrimiento por Sentinel
+
+```
+$ docker exec infra-sentinel-N-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name myprimary   (antes del failover)
+sentinel-1 -> redis-streams 6379
+sentinel-2 -> redis-streams 6379
+sentinel-3 -> redis-streams 6379
+```
+
+`sentinel-1` ve 2 peers (= 3 Sentinels en total):
+
+```
+$ docker exec infra-sentinel-1-1 redis-cli -p 26379 SENTINEL sentinels myprimary | grep -c '^name$'
+2
+```
+
+## 4. Replicación funcional (no solo TCP)
+
+```
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning XADD stream:pdf-processing '*' document_id test-s1-08 object_key k correlation_id c schema_version 1
+1791993452612-0
+
+$ docker exec infra-redis-streams-replica-1-1 redis-cli -a *** --no-auth-warning XRANGE stream:pdf-processing - +
+1791993452612-0
+document_id
+test-s1-08
+object_key
+k
+correlation_id
+c
+schema_version
+1
+
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning XDEL stream:pdf-processing 1791993452612-0
+1
+```
+
+La entrada de prueba fue legible ÍNTEGRA en la réplica (todos sus campos):
+la replicación es funcional, no solo una conexión TCP.
+
+## 5. Ensayo de failover (cronometrado)
+
+```
+XLEN_before=10
+T0=1791993746 (2026-10-14T13:02:26-03:00)
+
+$ docker stop infra-redis-streams-1
+infra-redis-streams-1
+
+$ # polling SENTINEL get-master-addr-by-name myprimary cada 2s
+[+2s] redis-streams:6379
+[+5s] redis-streams:6379
+[+7s] redis-streams:6379
+[+9s] redis-streams-replica-1:6379
+
+T1=1791993755
+GET-MASTER-AFTER=redis-streams-replica-1:6379
+
+$ docker exec infra-redis-streams-replica-1-1 redis-cli -a *** --no-auth-warning XADD stream:pdf-processing '*' document_id post-failover-test
+1791993755576-0
+
+XLEN_after=11
+logico_esperado=XLEN_before+1=11
+```
+
+- Recuperación: 9s  (< 30s)
+- Mensajes perdidos: 0  (verificado: XLEN_before=10 + 1 escritura post-failover = 11,
+  y el maestro nuevo reportó XLEN=11)
+
+Nota de honestidad: la replicación es asíncrona; el valor 0 es el resultado medido
+en este ensayo (no había escrituras en vuelo al detener el primario). No se promete
+"0 mensajes perdidos" como garantía (plan-S2-P1.md §8.1).
+
+El mensaje de prueba `post-failover-test` (id 1791993755576-0) se eliminó al final
+con `XDEL` para no contaminar la cola real; `XLEN` volvió a 10.
+
+## 6. Reincorporación del primario anterior
+
+```
+$ docker start infra-redis-streams-1
+infra-redis-streams-1
+... (15s)
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning INFO replication
+role:slave
+master_host:redis-streams-replica-1
+master_port:6379
+master_link_status:down
+slave_repl_offset:0
+
+$ docker exec infra-redis-streams-replica-1-1 redis-cli ... INFO replication
+role:master
+connected_slaves:1
+slave0:ip=redis-streams-replica-2,port=6379,state=online,offset=16618,lag=0
+```
+
+El log de `sentinel-1` confirmó la conversión del primario anterior a réplica:
+
+```
++convert-to-slave slave redis-streams:6379 redis-streams 6379 @ myprimary redis-streams-replica-1 6379
+```
+
+Hallazgo: el primario anterior vuelve como `role:slave`, pero su enlace queda en
+`down` porque Sentinel NO propaga `masterauth` al nodo degradado (ver Hallazgo 2).
+
+## Hallazgo 1 — `--replica-announce-ip` es necesario
+
+`sentinel resolve-hostnames yes` + `sentinel announce-hostnames yes` NO bastan por
+sí solos. Sentinel descubre las réplicas desde el `INFO replication` del primario,
+que reporta IP; al promover una réplica, la anunciaba como IP efímera:
+
+```
+[+8s] 172.22.0.12:6379        <- failover con SOLO announce-hostnames (roto)
+```
+
+Se añadió a cada réplica del perfil `sentinel`:
+
+```
+--replica-announce-ip redis-streams-replica-1     (y -2)
+```
+
+Con esto el primario reporta `ip=redis-streams-replica-1` en `INFO replication` y,
+tras el failover, los Sentinels anuncian el nombre:
+
+```
+[+9s] redis-streams-replica-1:6379    <- failover CON --replica-announce-ip (correcto)
+```
+
+Esto cumple el requisito crítico (no anunciar IPs efímeras a los clientes) y es la
+causa del fallo clásico de Compose + Sentinel.
+
+## Hallazgo 2 (PENDIENTE de decisión) — `masterauth` en el primario
+
+Al degradarse, `redis-streams` queda sin `masterauth` (a diferencia de las réplicas,
+que lo reciben por línea de comandos), por lo que no puede autenticarse contra el
+nuevo primario y su enlace permanece `down`:
+
+```
+# MASTER aborted replication with an error: NOAUTH Authentication required.
+```
+
+Sentinel envía `SLAVEOF` (`+convert-to-slave`) pero no ejecuta
+`CONFIG SET masterauth` sobre el nodo degradado.
+
+Prueba del remedio (runtime, NO persistente):
+
+```
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning CONFIG SET masterauth ***
+$ docker exec infra-redis-streams-1 redis-cli -a *** --no-auth-warning INFO replication
+role:slave
+master_host:redis-streams-replica-1
+master_link_status:up
+slave_repl_offset:44744
+```
+
+Corrección propuesta (FUERA de la superficie de edición autorizada de esta tarea,
+pendiente de aprobación): añadir `--masterauth "${REDIS_STREAMS_PASSWORD}"` (y
+opcionalmente `--replica-announce-ip redis-streams`) al comando del servicio
+`redis-streams`. En un primario ambas opciones son inertes, de modo que no alteran
+el comportamiento observable del perfil `full`.
+
+## 7. Topología final (tras el ensayo)
+
+- Primario (nuevo): `redis-streams-replica-1:6379` — las 3 Sentinels lo anuncian.
+- Réplica: `redis-streams-replica-2:6379`.
+- Primario anterior `redis-streams`: degradado a réplica de
+  `redis-streams-replica-1` (enlace `up` solo tras aplicar `masterauth` en runtime).
+- Sentinels: `sentinel-1`, `sentinel-2`, `sentinel-3` en el puerto 26379, quorum 2.
+
+Estado de los 15 contenedores (`docker compose --profile full --profile sentinel ps`):
+10 del stack base + 5 nuevos, todos `Up` (`healthy` donde aplica). El stack base
+(`--profile full`) permanece sin cambios y saludable.
+
+## 8. Contrato del cliente (P2/P3)
+
+```
+SENTINEL_HOSTS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+SENTINEL_MASTER_NAME=myprimary
+```
+
+Los clientes Sentinel-aware resuelven `myprimary` en cada reconexión (con backoff
++ jitter).
+
+`redis-streams:6379` sigue siendo el endpoint directo del perfil `full` hasta que
+P2/P3 adopten clientes Sentinel-aware; este cambio no los altera.
+
+--- Re-ensayo con Opción A (masterauth + replica-announce-ip en redis-streams) ---
+
+Fecha: 2026-10-14T18:05:30-03:00
+Rama: feat/infra-s2-sentinel
+
+Cambio aplicado a redis-streams (servicio profiles ["core","full"]):
+- Se añadieron: --masterauth "${REDIS_STREAMS_PASSWORD}" y --replica-announce-ip "redis-streams".
+Verificación grep:
+  compose/docker-compose.yml line 120 → command incluye ambos flags.
+
+Validación Compose:
+  docker compose --env-file ../.env config --quiet → exit 0, sin salida.
+
+Paso 3: docker compose --env-file ../.env --profile full up -d --force-recreate redis-streams
+  Estado tras recreación: redis-streams reinició. Ya era esclavo de redis-streams-replica-1;
+  con masterauth configurado, el enlace quedó master_link_status:up tras converger.
+
+INFO replication (redis-streams tras reincorporación):
+  role:slave
+  master_host:redis-streams-replica-1
+  master_port:6379
+  master_link_status:up
+  slave_repl_offset:642779
+
+Maestro actual (SENTINEL): redis-streams-replica-1:6379
+Replicas conectadas (al maestro actual): slave0=redis-streams-replica-2:6379 (state=online), slave1=redis-streams:6379 (state=online)
+
+## 4. FULL re-drill (con redis-streams preparado con Option A)
+
+(a) Maestro actual (SENTINEL get-master-addr-by-name): redis-streams-replica-1:6379
+(b) XLEN antes (en infra-redis-streams-replica-1-1): 11
+    T0 = 1792012206
+    docker stop infra-redis-streams-replica-1-1
+Polling get-master-addr-by-name (cada 2s):
+  [+2s] redis-streams-replica-1:6379
+  [+5s] redis-streams-replica-1:6379
+  [+7s] redis-streams-replica-1:6379
+  [+9s] redis-streams:6379
+
+GET-MASTER-AFTER = redis-streams:6379 (nuevo maestro)
+T1 = ~1792012215 → Recuperación: 9s
+Nuevo maestro contenedor: infra-redis-streams-1
+POST-failover XADD: id 1792012215190-0 (document_id post-failover-3)
+XLEN_after = 12
+logico_esperado = 11+1=12
+Mensajes perdidos: 0
+
+docker start infra-redis-streams-replica-1-1
+Verificación rejoin link up (poll cada 2s, hasta 20s):
+  [+1s] master_link_status:down
+  [+2s] master_link_status:down
+  [+3s] master_link_status:down
+  [+4s] master_link_status:up
+
+Estado tras rejoin: redis-streams-replica-1 es esclavo de redis-streams, master_link_status:up. OK.
+INFO replication (redis-streams ahora maestro): role:master, connected_slaves:2 (slave0=redis-streams-replica-2, slave1=redis-streams-replica-1), ambos online.
+
+(c) Failback a redis-streams como maestro original: ya realizado (redis-streams fue promovido y quedó como maestro). SENTINEL tras failover: redis-streams 6379 en los 3 sentinels.
+
+El mensaje post-failover-3 fue eliminado con XDEL; XLEN volvió a 11.
+
+## Verificación final
+- Base stack (--profile full): todos Up/healthy (doc-service, grafana, loki, minio, mongo, monolito, prometheus, redis-ratelimit, redis-streams, redis-streams-replica-1).
+- Perfil sentinel: Up/healthy (replica-2, sentinel-1,2,3).
+- Rejoin con masterauth: master_link_status:up en ambos casos tras la reincorporación.
+
+## DoD actualizado (honesto)
+- Failover < 30 s: 9s ✓
+- Mensajes perdidos: 0 (medido, no garantizado) ✓
+- Reincorporación con enlace activo: master_link_status:up tras reincorporarse ✓
+- Topología: 3 Sentinels quorum 2, 2 réplicas; redis-streams master tras failback ✓
