@@ -7,122 +7,159 @@
   "graphTooltip": 0,
   "id": null,
   "links": [],
+  "liveNow": false,
   "panels": [
     {
       "datasource": "Loki",
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1}
+        }
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "id": 1,
-      "options": {
-        "showLabels": true,
-        "showTime": true,
-        "wrapLogMessage": true
-      },
+      "options": {"showLegend": true, "tooltip": {"mode": "single"}},
       "targets": [
         {
-          "expr": "{service=\"doc-service\"} |= \"<document_id>\"",
+          "datasource": "Loki",
+          "expr": "{service=\"doc-service\"} |= \"01M4WA35JFVFAZV1M2246354VW\"",
           "refId": "A"
         }
       ],
-      "title": "Recorrido por document_id (Loki)",
+      "title": "Loki: Logs doc-service por document_id",
       "type": "logs"
     },
     {
       "datasource": "Prometheus",
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}, {"color": "red", "value": 400}]
+          },
+          "unit": "short"
+        }
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
       "id": 2,
-      "options": {},
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto"},
       "targets": [
         {
-          "expr": "rate(docservice_api_documents_created_total[1m])",
+          "datasource": "Prometheus",
+          "expr": "traefik_service_requests_total{service=~\"docv2.*\"}",
           "refId": "A"
-        },
-        {
-          "expr": "rate(docservice_webhook_events_total[1m])",
-          "refId": "B"
         }
       ],
-      "title": "doc-service counters (rate 1m)",
-      "type": "timeseries"
+      "title": "Traefik: Requests totales docv2",
+      "type": "stat"
     },
     {
       "datasource": "Prometheus",
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 10}]
+          },
+          "unit": "short"
+        }
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
       "id": 3,
-      "options": {},
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto"},
       "targets": [
         {
-          "expr": "up{job=\"doc-service\"}",
+          "datasource": "Prometheus",
+          "expr": "redis_stream_length{stream=\"stream:pdf-processing\"}",
           "refId": "A"
         }
       ],
-      "title": "doc-service scrape up",
-      "type": "timeseries"
+      "title": "Redis: XLEN stream:pdf-processing",
+      "type": "stat"
     },
     {
       "datasource": "Prometheus",
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]
+          },
+          "unit": "short"
+        }
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 4},
       "id": 4,
-      "options": {},
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto"},
       "targets": [
         {
-          "expr": "up{job=\"traefik\"}",
+          "datasource": "Prometheus",
+          "expr": "mongo_documents_total",
           "refId": "A"
         }
       ],
-      "title": "Traefik scrape up",
+      "title": "Mongo: Total documents",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1}
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 4},
+      "id": 5,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(traefik_service_requests_total{service=~\"docv2.*\"}[5m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Traefik: Request rate docv2 (5m)",
       "type": "timeseries"
     }
   ],
-  "schemaVersion": 36,
+  "refresh": "10s",
+  "schemaVersion": 38,
   "style": "dark",
-  "tags": [
-    "docservice",
-    "s1"
-  ],
+  "tags": ["s1", "doc-service", "e2e"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {"selected": false, "text": "All", "value": "$__all"},
+        "datasource": "Prometheus",
+        "definition": "label_values(traefik_service_requests_total, service)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Service",
+        "multi": false,
+        "name": "service",
+        "options": [],
+        "query": {"query": "label_values(traefik_service_requests_total, service)", "refId": "StandardVariableQuery"},
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
   },
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
-  "title": "doc-service dashboard v1",
-  "uid": "docservice-v1",
-  "version": 1
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "S1 Dashboard v1: Recorrido document_id",
+  "uid": "s1-dashboard-v1",
+  "version": 1,
+  "weekStart": ""
 }
