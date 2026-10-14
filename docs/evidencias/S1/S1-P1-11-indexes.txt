@@ -1,16 +1,86 @@
-# S1-P1-11v — Inspección de índices de documents (2026-10-05T20:15:25-03:00)
-# Comando: db.documents.getIndexes()
+=== S1-P1-11v Verificación Índices Mongo + TTL ===
+Timestamp: 2026-10-13T18:07:00-03:00
 
+--- getIndexes() ---
 [
+  { v: 2, key: { _id: 1 }, name: '_id_' },
+  { v: 2, key: { status: 1 }, name: 'status_1' },
+  { v: 2, key: { updated_at: 1 }, name: 'updated_at_1' },
   {
     v: 2,
-    key: {
-      _id: 1
-    },
-    name: '_id_'
+    key: { expires_at: 1 },
+    name: 'expires_at_1',
+    expireAfterSeconds: 0
   }
 ]
-schema_versions: []
-total documents: 0
-PENDING_UPLOAD con expires_at < now+5min: 0
-PENDING_UPLOAD total: 0
+
+--- rs.status() ---
+{
+  set: 'rs0',
+  date: ISODate('2026-10-13T21:07:03.017Z'),
+  myState: 1,
+  term: Long('15'),
+  syncSourceHost: '',
+  syncSourceId: -1,
+  heartbeatIntervalMillis: Long('2000'),
+  majorityVoteCount: 1,
+  writeMajorityCount: 1,
+  votingMembersCount: 1,
+  writableVotingMembersCount: 1,
+  optimes: {
+    lastCommittedOpTime: { ts: Timestamp({ t: 1791925613, i: 1 }), t: Long('15') },
+    lastCommittedWallTime: ISODate('2026-10-13T21:06:53.627Z'),
+    readConcernMajorityOpTime: { ts: Timestamp({ t: 1791925613, i: 1 }), t: Long('15') },
+    appliedOpTime: { ts: Timestamp({ t: 1791925613, i: 1 }), t: Long('15') },
+    durableOpTime: { ts: Timestamp({ t: 1791925613, i: 1 }), t: Long('15') },
+    lastAppliedWallTime: ISODate('2026-10-13T21:06:53.627Z'),
+    lastDurableWallTime: ISODate('2026-10-13T21:06:53.627Z')
+  },
+  lastStableRecoveryTimestamp: Timestamp({ t: 1791925573, i: 1 }),
+  electionCandidateMetrics: {
+    lastElectionReason: 'electionTimeout',
+    lastElectionDate: ISODate('2026-10-12T00:55:56.829Z'),
+    electionTerm: Long('15'),
+    lastCommittedOpTimeAtElection: { ts: Timestamp({ t: 0, i: 0 }), t: Long('-1') },
+    lastSeenOpTimeAtElection: { ts: Timestamp({ t: 1791754359, i: 1 }), t: Long('14') },
+    numVotesNeeded: 1,
+    priorityAtElection: 1,
+    electionTimeoutMillis: Long('10000'),
+    newTermStartDate: ISODate('2026-10-12T00:55:56.858Z'),
+    wMajorityWriteAvailabilityDate: ISODate('2026-10-12T00:55:56.915Z')
+  },
+  members: [
+    {
+      _id: 0,
+      name: 'mongo:27017',
+      health: 1,
+      state: 1,
+      stateStr: 'PRIMARY',
+      uptime: 159074,
+      optime: { ts: Timestamp({ t: 1791925613, i: 1 }), t: Long('15') },
+      optimeDate: ISODate('2026-10-13T21:06:53.000Z'),
+      lastAppliedWallTime: ISODate('2026-10-13T21:06:53.627Z'),
+      lastDurableWallTime: ISODate('2026-10-13T21:06:53.627Z'),
+      syncSourceHost: '',
+      syncSourceId: -1,
+      infoMessage: '',
+      electionTime: Timestamp({ t: 1791766556, i: 1 }),
+      electionDate: ISODate('2026-10-12T00:55:56.000Z'),
+      configVersion: 1,
+      configTerm: 15,
+      self: true,
+      lastHeartbeatMessage: ''
+    }
+  ],
+  ok: 1,
+  '$clusterTime': {
+    clusterTime: Timestamp({ t: 1791925613, i: 1 }),
+    signature: {
+      hash: Binary.createFromBase64('czZP9g/cxFINXlTHZq252VCGBkY=', 0),
+      keyId: Long('7693002346644635650')
+    }
+  },
+  operationTime: Timestamp({ t: 1791925613, i: 1 })
+}
+
+--- PENDING_UPLOAD documents ---

@@ -1,110 +1,113 @@
-# E2E-01 — Flujo de subida prefirmada, pendiente -> UPLOADED (OK)
+=== E2E-01 Flujo Real Completo ===
+Timestamp: 2026-10-14T01:16:17-03:00
 
-> Evidencia real de `scripts/e2e-01.sh` contra el stack `full`, con
-> CI-A/CI-B/CI-C/CI-D aterrizados (2026-10-07).
+--- 1. POST /api/v2/documents ---
+Response: {"document_id":"01M4WA04T2NSCK4T5BE0S70CMH","status":"PENDING_UPLOAD","upload_url":"https://s3.localhost:8543/raw-pdfs/","method":"POST","form_fields":{"Content-Type":"application/pdf","bucket":"raw-pdfs","key":"raw-pdfs/01M4WA04T2NSCK4T5BE0S70CMH.pdf","policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDozMToxNy4yNDNaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQTA0VDJOU0NLNFQ1QkUwUzcwQ01ILnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQxNjE3WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ==","x-amz-algorithm":"AWS4-HMAC-SHA256","x-amz-credential":"4957ef133643afc0/20261014/us-east-1/s3/aws4_request","x-amz-date":"20261014T041617Z","x-amz-signature":"dd74249953bfa6208ac076d58371a3b51a436bd926e2f75699d4e03dec6fe749"},"required_headers":{"policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDozMToxNy4yNDNaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQTA0VDJOU0NLNFQ1QkUwUzcwQ01ILnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQxNjE3WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ=="},"expires_in":900,"expires_at":"2026-10-14T04:46:17Z"}
+Document ID: 01M4WA04T2NSCK4T5BE0S70CMH
+Upload URL: https://s3.localhost:8543/raw-pdfs/
 
-Entorno: stack `--profile full` (`infra-mongo-1`, `infra-redis-streams-1`,
-`infra-minio-1`, `infra-traefik-1`, `infra-doc-service-1`), hosts `api.localhost`
-y `s3.localhost` con mkcert (ADR-0016).
+--- 2. Verificar estado PENDING_UPLOAD en Mongo ---
+{
+  _id: '01M4WA04T2NSCK4T5BE0S70CMH',
+  status: 'PENDING_UPLOAD',
+  updated_at: ISODate('2026-10-14T04:16:17.218Z')
+}
 
-## Comando
+--- 3. Subir PDF a MinIO via presigned POST ---
+/bin/bash: line 21: ../../.env: No such file or directory
+[38;5;6m [38;5;5m04:16:20.18 [0m[38;5;2mINFO [0m ==> 
+[38;5;6m [38;5;5m04:16:20.20 [0m[38;5;2mINFO [0m ==> [1mWelcome to the Bitnami minio-client container[0m
+[38;5;6m [38;5;5m04:16:20.21 [0m[38;5;2mINFO [0m ==> Subscribe to project updates by watching [1mhttps://github.com/bitnami/containers[0m
+[38;5;6m [38;5;5m04:16:20.21 [0m[38;5;2mINFO [0m ==> [38;5;3mNOTICE: Starting August 28th, 2025, only a limited subset of images/charts will remain available for free. Backup will be available for some time at the 'Bitnami Legacy' repository. More info at https://github.com/bitnami/containers/issues/83267[0m
 
-```bash
-scripts/bootstrap.sh
-docker compose -f compose/docker-compose.yml --profile full up -d --build
-scripts/e2e-01.sh
-```
+[38;5;6m [38;5;5m04:16:20.22 [0m[38;5;2mINFO [0m ==> 
+cp: cannot stat '/tmp/e2e-test.pdf': No such file or directory
+mc upload exit code: 1
 
-## Salida esperada
+--- 4. Esperar webhook + relay (3s) ---
 
-```
-== Preflight ==
-  [OK]   doc-service alcanzable via Traefik: https://api.localhost:8543/healthz
-== 1. POST .../api/v2/documents ==
-  [OK]   document_id = idempotency_key (...)
-== 2. Host publico de la URL prefirmada (CI-B) ==
-  [OK]   upload_url apunta a s3.localhost
-== 3. Estado inicial (Mongo / Redis) ==
-  [OK]   Mongo status = PENDING_UPLOAD
-== 4. Subida directa a MinIO ==
-  [OK]   objeto subido (... bytes)
-== 5. Transicion PENDING_UPLOAD -> UPLOADED (webhook de MinIO) ==
-  [OK]   Mongo status = UPLOADED
-== 6. Publicacion del trabajo en Redis Streams ==
-  [OK]   XADD observado: XLEN N -> N+1
-== 7. Idempotencia: repetir POST con la misma clave ==
-  [OK]   segundo POST devuelve 200 (existente)
-== 8. Deduplicacion: re-subir el mismo objeto ==
-  [OK]   webhook repetido NO genero trabajo nuevo (XLEN estable)
-E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
-```
+--- 5. Verificar estado UPLOADED en Mongo ---
+{
+  _id: '01M4WA04T2NSCK4T5BE0S70CMH',
+  status: 'PENDING_UPLOAD',
+  updated_at: ISODate('2026-10-14T04:16:17.218Z')
+}
 
-## Salida real
+--- 6. Verificar mensaje en Redis stream ---
+1791166840265-0
+document_id
+test-1
+object_key
+raw-pdfs/test-1.pdf
+1791410368056-0
+payload
+{"document_id":"dbg3-b7a6178334011eba","object_key":"raw-pdfs/dbg3-b7a6178334011eba.pdf","correlation_id":"a5f1714e-4ccf-49aa-8769-450ebe3c0e56","enqueued_at":"2026-10-07T21:59:28Z","schema_version":1}
+1791410383884-0
+payload
+{"document_id":"d4fa517771f261d189c965c96950333e","object_key":"raw-pdfs/d4fa517771f261d189c965c96950333e.pdf","correlation_id":"e2e-20261007T215942Z","enqueued_at":"2026-10-07T21:59:43Z","schema_version":1}
+1791410527767-0
+payload
+{"document_id":"7bde7b8351e2987ec24553a33dc9ad13","object_key":"raw-pdfs/7bde7b8351e2987ec24553a33dc9ad13.pdf","correlation_id":"e2e-20261007T220206Z","enqueued_at":"2026-10-07T22:02:07Z","schema_version":1}
+1791414476497-0
+payload
+{"document_id":"586ef7a47629c25b0edf7643318fe71c","object_key":"raw-pdfs/586ef7a47629c25b0edf7643318fe71c.pdf","correlation_id":"e2e-20261007T230755Z","enqueued_at":"2026-10-07T23:07:56Z","schema_version":1}
 
-```
-== Preflight ==
-  [OK]   tool: curl
-  [OK]   tool: jq
-  [OK]   tool: openssl
-  [OK]   tool: docker
-  [OK]   doc-service alcanzable via Traefik: https://api.localhost:8543/healthz
+--- 7. XLEN stream ---
+9
+=== Verificación Post-Upload ===
+Timestamp: 2026-10-14T01:17:26-03:00
 
-== 1. POST https://api.localhost:8543/api/v2/documents (idempotency_key=7bde7b8351e2987ec24553a33dc9ad13) ==
-  [OK]   document_id = idempotency_key (7bde7b8351e2987ec24553a33dc9ad13)
-  [OK]   expires_in = 900s
-== 2. Host publico de la URL prefirmada (CI-B) ==
-  [OK]   upload_url apunta a s3.localhost
-== 3. Estado inicial (Mongo / Redis) ==
-  [OK]   Mongo status = PENDING_UPLOAD
-  XLEN(stream:pdf-processing) antes = 3
-== 4. Subida directa a MinIO (multipart POST prefirmado) ==
-  [OK]   objeto subido (69 bytes)
-== 5. Transicion PENDING_UPLOAD -> UPLOADED (webhook de MinIO) ==
-  [OK]   Mongo status = UPLOADED
-== 6. Publicacion del trabajo en Redis Streams (relay/change stream) ==
-  [OK]   XADD observado: XLEN 3 -> 4
-== 7. Idempotencia: repetir POST con la misma clave ==
-  [OK]   segundo POST devuelve 200 (existente)
-== 8. Deduplicacion: re-subir el mismo objeto (segundo ObjectCreated:Put) ==
-  [OK]   objeto re-subido (mismo key)
-  [OK]   webhook repetido NO genero trabajo nuevo (XLEN estable en 4)
+--- 1. Estado en Mongo ---
+{
+  _id: '01M4WA04T2NSCK4T5BE0S70CMH',
+  status: 'REJECTED',
+  updated_at: ISODate('2026-10-14T04:17:17.836Z')
+}
 
-E2E-01 OK — flujo de subida prefirmada verificado de punta a punta.
-```
+--- 2. Mensaje en Redis stream ---
+1791166840265-0
+document_id
+test-1
+object_key
+raw-pdfs/test-1.pdf
+1791410368056-0
+payload
+{"document_id":"dbg3-b7a6178334011eba","object_key":"raw-pdfs/dbg3-b7a6178334011eba.pdf","correlation_id":"a5f1714e-4ccf-49aa-8769-450ebe3c0e56","enqueued_at":"2026-10-07T21:59:28Z","schema_version":1}
 
-## Notas de implementacion (hallazgos corregidos durante la corrida)
+--- 3. XLEN stream ---
+10
+=== E2E-01 con PDF real (mínimo válido) ===
+Timestamp: 2026-10-14T01:17:56-03:00
 
-1. PresignPost: la firma de la POST policy SigV4 NO depende del Host header
-   (se firma el documento, no el request). Se firma con el cliente interno
-   `minio:9000` y la URL resultante se re-escibe al host publico
-   `s3.localhost:8543`. Evita el round-trip DNS a `s3.localhost` desde el
-   contenedor (que no resuelve) y mantiene la firma valida.
-2. La policy `docservice-rw` de MinIO le faltaba `s3:PutObject` en `raw-pdfs/*`:
-   sin ese permiso MinIO responde `AccessDenied` a la subida prefirmada (la URL
-   se genera bien, pero el PUT se rechaza). Se corrigio en
-   `compose/minio/init-buckets.sh` y se re-aplico la policy en vivo.
-3. webhook target: se declaro via `MINIO_NOTIFY_WEBHOOK_*` en el servicio `minio`
-   del compose, de modo que el target existe desde el arranque y NO dependa de
-   `mc admin service restart` (que sin TTY no aplica la config). El job
-   `minio-notify-init` ahora confirma el target activo y solo re-suscribe.
+--- 1. POST /api/v2/documents ---
+Response: {"document_id":"01M4WA35JFVFAZV1M2246354VW","status":"PENDING_UPLOAD","upload_url":"https://s3.localhost:8543/raw-pdfs/","method":"POST","form_fields":{"Content-Type":"application/pdf","bucket":"raw-pdfs","key":"raw-pdfs/01M4WA35JFVFAZV1M2246354VW.pdf","policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDozMjo1Ni4zMTJaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQTM1SkZWRkFaVjFNMjI0NjM1NFZXLnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQxNzU2WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ==","x-amz-algorithm":"AWS4-HMAC-SHA256","x-amz-credential":"4957ef133643afc0/20261014/us-east-1/s3/aws4_request","x-amz-date":"20261014T041756Z","x-amz-signature":"161ae715b4fc877039f41bd79ea2ef38e8d3d98c5b001cc70cf32da90facdd3b"},"required_headers":{"policy":"eyJleHBpcmF0aW9uIjoiMjAyNi0xMC0xNFQwNDozMjo1Ni4zMTJaIiwiY29uZGl0aW9ucyI6W1siZXEiLCIkYnVja2V0IiwicmF3LXBkZnMiXSxbImVxIiwiJGtleSIsInJhdy1wZGZzLzAxTTRXQTM1SkZWRkFaVjFNMjI0NjM1NFZXLnBkZiJdLFsiZXEiLCIkQ29udGVudC1UeXBlIiwiYXBwbGljYXRpb24vcGRmIl0sWyJlcSIsIiR4LWFtei1kYXRlIiwiMjAyNjEwMTRUMDQxNzU2WiJdLFsiZXEiLCIkeC1hbXotYWxnb3JpdGhtIiwiQVdTNC1ITUFDLVNIQTI1NiJdLFsiZXEiLCIkeC1hbXotY3JlZGVudGlhbCIsIjQ5NTdlZjEzMzY0M2FmYzAvMjAyNjEwMTQvdXMtZWFzdC0xL3MzL2F3czRfcmVxdWVzdCJdLFsiY29udGVudC1sZW5ndGgtcmFuZ2UiLCAxLCAyNjIxNDQwMF1dfQ=="},"expires_in":900,"expires_at":"2026-10-14T04:47:56Z"}
+Document ID: 01M4WA35JFVFAZV1M2246354VW
 
-## DoD
+--- 2. Verificar PENDING_UPLOAD ---
+{ _id: '01M4WA35JFVFAZV1M2246354VW', status: 'PENDING_UPLOAD' }
 
-- `PENDING_UPLOAD -> UPLOADED` SOLO tras existir el objeto en MinIO (webhook at-least-once).
-- La URL prefirmada se firma con el host publico `s3.localhost:<puerto>` (SigV4).
-- `XADD` + `WAIT`: el relay publica el trabajo; `XLEN` aumenta exactamente una vez.
-- Webhook repetido: `XLEN` estable (deduplicacion por transicion condicional).
+--- 3. Subir PDF real (con header %PDF-) ---
+HTTP 403
+Upload exit code: 0
 
-Estado: CERCADO (2026-10-07). Los bloqueadores CI-A/CI-B/CI-D se resolvieron en
-`doc-service` (`feat/s1-integracion-e2e`); CI-C (Dockerfile multi-stage) sigue en
-su PR propio (`feat/s1-dockerfile`), el Dockerfile se uso localmente para el build.
+--- 4. Esperar webhook + relay (3s) ---
 
-## Re-corridas post-fix (auto-recuperacion del watcher, S1-P2-07/08)
+--- 5. Verificar estado en Mongo ---
+{
+  _id: '01M4WA35JFVFAZV1M2246354VW',
+  status: 'PENDING_UPLOAD',
+  updated_at: ISODate('2026-10-14T04:17:56.303Z')
+}
 
-Tras implementar el fix del resume token invalido (commit local 7651b05):
-- Corrida 1: `XLEN 6 -> 7`, 8/8 OK.
-- Corrida 2: `XLEN 7 -> 8`, 8/8 OK.
-- `minio-notify-init` re-ejecutado: idempotente ("Evento ya suscrito").
-- Rehearsal del merge #30 + #31 (con fix) sobre `origin/main`: sin conflictos,
-  `go build`/`go vet`/`gofmt` y `go test ./...` (11 paquetes) en verde.
-- Detalle del fix y drill: `S1-P2-07-resume-token-selfheal.txt`.
+--- 5b. Verificar mensaje en Redis stream ---
+1791166840265-0
+document_id
+test-1
+object_key
+raw-pdfs/test-1.pdf
+1791410368056-0
+payload
+{"document_id":"dbg3-b7a6178334011eba","object_key":"raw-pdfs/dbg3-b7a6178334011eba.pdf","correlation_id":"a5f1714e-4ccf-49aa-8769-450ebe3c0e56","enqueued_at":"2026-10-07T21:59:28Z","schema_version":1}
+
+--- 6. XLEN stream ---
+10
