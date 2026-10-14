@@ -44,6 +44,8 @@ networks:
 volumes:
   mongo-data:
   redis-streams-data:
+  redis-streams-replica-1-data:
+  redis-streams-replica-2-data:
   redis-ratelimit-data:
   minio-data:
   prometheus-data:
@@ -111,7 +113,11 @@ services:
     image: redis:7.2
     profiles: ["core", "full"]
     <<: *hardening-data
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}"]
+    # `--masterauth` y `--replica-announce-ip` son inertes mientras sea primario,
+    # pero necesarios si Sentinel lo degrada a replica tras un failover: sin
+    # masterauth el enlace de replicacion queda en `down` (NOAUTH) y sin
+    # announce-ip anunciaria una IP efimera 172.x.
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams"]
     volumes:
       - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-streams-data:/data
@@ -121,6 +127,116 @@ services:
     pids_limit: 100
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- Redis STREAMS replicas (S1-P1-08, plan-S2-P1.md §4) -------------------
+  # Replicas del primario de Streams. Usan la MISMA config que el primario
+  # (streams.conf: AOF everysec + noeviction) y su propio volumen. Sentinel
+  # puede promoverlas ante la caida del primario. Perfil `sentinel`: no altera
+  # el perfil `full` (el endpoint del cliente sigue siendo redis-streams:6379).
+  redis-streams-replica-1:
+    image: redis:7.2
+    profiles: ["sentinel"]
+    <<: *hardening-data
+    # `--replica-announce-ip` con el NOMBRE del contenedor: sin esto el primario
+    # reporta la IP efimera de la replica en INFO, Sentinel la aprende como IP y
+    # al promover una replica anuncia 172.x a los clientes (el permiso de
+    # `sentinel announce-hostnames` solo aplica a direcciones conocidas por
+    # hostname). Con el hostname anunciado, el failover es estable.
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--replicaof", "redis-streams", "6379", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams-replica-1"]
+    volumes:
+      - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-streams-replica-1-data:/data
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  redis-streams-replica-2:
+    image: redis:7.2
+    profiles: ["sentinel"]
+    <<: *hardening-data
+    # Igual que replica-1: anuncia su hostname para que Sentinel no propague IPs.
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--replicaof", "redis-streams", "6379", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams-replica-2"]
+    volumes:
+      - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-streams-replica-2-data:/data
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- Sentinels (S1-P1-08, plan-S2-P1.md §4): quorum 2 de 3 ---------------
+  # Monitorean el primario logico `myprimary`. `resolve-hostnames` y
+  # `announce-hostnames` (en sentinel.conf.tmpl) evitan el fallo clasico de
+  # Compose + Sentinel: anunciar IPs efimeras 172.x en lugar de los nombres.
+  # El password NO vive en ningun archivo commiteado: sentinel-entrypoint.sh
+  # sustituye ${REDIS_STREAMS_PASSWORD} en /tmp/sentinel.conf al arrancar.
+  sentinel-1:
+    image: redis:7.2
+    profiles: ["sentinel"]
+    <<: *hardening-data
+    environment:
+      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+    entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
+      - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
+    networks: [data]
+    mem_limit: 128m
+    pids_limit: 50
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  sentinel-2:
+    image: redis:7.2
+    profiles: ["sentinel"]
+    <<: *hardening-data
+    environment:
+      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+    entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
+      - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
+    networks: [data]
+    mem_limit: 128m
+    pids_limit: 50
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  sentinel-3:
+    image: redis:7.2
+    profiles: ["sentinel"]
+    <<: *hardening-data
+    environment:
+      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+    entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
+      - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
+    networks: [data]
+    mem_limit: 128m
+    pids_limit: 50
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
       interval: 10s
       timeout: 3s
       retries: 6

@@ -1,10 +1,11 @@
-NAME                      STATUS
-infra-grafana-1           Up 2 hours
-infra-loki-1              Up 2 hours
-infra-minio-1             Up 2 hours (healthy)
-infra-mongo-1             Up 2 hours (healthy)
-infra-monolito-1          Up 2 hours (healthy)
-infra-prometheus-1        Up 2 hours
-infra-redis-ratelimit-1   Up 2 hours (healthy)
-infra-redis-streams-1     Up 2 hours (healthy)
-infra-traefik-1           Up 2 hours (healthy)
+NAME                      STATUS                  <no value>
+infra-doc-service-1       Up 43 hours (healthy)   healthy
+infra-grafana-1           Up 43 hours             
+infra-loki-1              Up 43 hours             
+infra-minio-1             Up 43 hours (healthy)   healthy
+infra-mongo-1             Up 43 hours (healthy)   healthy
+infra-monolito-1          Up 43 hours (healthy)   healthy
+infra-prometheus-1        Up 43 hours             
+infra-redis-ratelimit-1   Up 43 hours (healthy)   healthy
+infra-redis-streams-1     Up 43 hours (healthy)   healthy
+infra-traefik-1           Up 43 hours (healthy)   healthy

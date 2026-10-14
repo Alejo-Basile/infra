@@ -1,26 +1,16 @@
-# S1-P1-07a — Test formal de persistencia AOF (2026-10-05T20:22:13-03:00)
+=== S1-P1-07a Test Formal Persistencia AOF Redis ===
+Timestamp: 2026-10-13T18:07:54-03:00
 
-## CONFIG GET appendonly
-appendonly
-yes
+--- 1. XADD mensaje de prueba ---
+Mensaje insertado con ID: 1791925675085-0
 
-## XADD mensaje de prueba
-ID=1791242533299-0
-
-## docker restart infra-redis-streams-1
+--- 2. Reiniciar contenedor redis-streams ---
 infra-redis-streams-1
+Esperando 10 segundos para que el contenedor esté healthy...
 
-## tiempo de restart: 6s (+5s espera)
-
-## PING post-restart
-PONG
-
-## XRANGE post-restart (debe contener test-s1-aof)
+--- 3. Verificar persistencia con XRANGE ---
 test-s1-aof
-object_key
 
-## limpieza (XDEL)
+--- 4. Limpiar mensaje de prueba (XDEL) ---
 1
-
-## healthcheck del contenedor
-infra-redis-streams-1 Up 31 seconds (healthy)
+Limpieza completada
