@@ -1,0 +1,21 @@
+# S1-P1-14 — Backups verificados restaurando — evidencia (2026-10-17)
+
+## Paso 1: Snapshot
+docker exec infra-mongo-1 mongodump -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --oplog --archive=/tmp/mongo-backup-2026-10-17-1651.archive
+Resultado: OK (2.9K archive, admin.system.users=1 doc, admin.system.version=2 docs, oplog=1 entry)
+
+## Paso 2: Restore en contenedor limpio
+docker run -d --name infra-mongo-restore-test --network infra_data -v infra_mongo-restore-test:/data/db mongo:7.0
+docker cp /tmp/mongo-backup-2026-10-17-1651.archive infra-mongo-restore-test:/tmp/
+docker exec infra-mongo-restore-test mongorestore --archive=/tmp/mongo-backup-2026-10-17-1651.archive --oplogReplay
+Resultado: 0 document(s) failed to restore, applied 1 oplog entries
+
+## Paso 3: Verificación de integridad
+Base viva - documents.documents.countDocuments: 0
+Base restaurada - documents.documents.countDocuments: 0
+Base restaurada - admin.system.users.countDocuments: 1
+Resultado: CONTADORES COINCIDEN (0==0, usuario root restaurado)
+
+## Limpieza
+Contenedor de prueba eliminado, volumen infra_mongo-restore-test eliminado.
+Base viva NO fue tocada en ningún momento.
