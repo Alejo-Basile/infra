@@ -49,8 +49,25 @@ volumes:
   redis-ratelimit-data:
   minio-data:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
   loki-data:
+
+secrets:
+  mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
+  mongo_app_password: { file: ../secrets/mongo_app_password.txt }
+  mongo_worker_password: { file: ../secrets/mongo_worker_password.txt }
+  redis_streams_password: { file: ../secrets/redis_streams_password.txt }
+  redis_streams_password_json: { file: ../secrets/redis_streams_password.json }
+  redis_ratelimit_password: { file: ../secrets/redis_ratelimit_password.txt }
+  minio_root_password: { file: ../secrets/minio_root_password.txt }
+  minio_webhook_secret: { file: ../secrets/minio_webhook_secret.txt }
+  internal_token: { file: ../secrets/internal_token.txt }
+  grafana_admin_password: { file: ../secrets/grafana_admin_password.txt }
+  svc_docservice_access_key: { file: ../secrets/svc_docservice_access_key.txt }
+  svc_docservice_secret_key: { file: ../secrets/svc_docservice_secret_key.txt }
+  svc_worker_access_key: { file: ../secrets/svc_worker_access_key.txt }
+  svc_worker_secret_key: { file: ../secrets/svc_worker_secret_key.txt }
 
 services:
   # ===========================================================================
@@ -63,9 +80,10 @@ services:
     profiles: ["core", "full"]
     <<: *hardening-data
     command: ["--replSet", "rs0", "--bind_ip", "localhost,mongo", "--keyFile", "/etc/mongo/keyfile"]
+    secrets: [mongo_initdb_root_password]
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?definir en .env}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?definir en .env}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_initdb_root_password
     volumes:
       - mongo-data:/data/db
       # keyFile requerido por auth+replSet. Se genera con scripts/bootstrap.sh
@@ -76,7 +94,7 @@ services:
     cpus: 1.0
     pids_limit: 200
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "-u", "${MONGO_INITDB_ROOT_USERNAME}", "-p", "${MONGO_INITDB_ROOT_PASSWORD}", "--eval", "db.hello().isWritablePrimary"]
+      test: ["CMD-SHELL", "mongosh --quiet -u $${MONGO_INITDB_ROOT_USERNAME} -p $$(cat /run/secrets/mongo_initdb_root_password) --authenticationDatabase admin --eval 'db.hello().isWritablePrimary'"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -113,11 +131,12 @@ services:
     image: redis:7.2
     profiles: ["core", "full"]
     <<: *hardening-data
+    secrets: [redis_streams_password, redis_streams_password_json]
     # `--masterauth` y `--replica-announce-ip` son inertes mientras sea primario,
     # pero necesarios si Sentinel lo degrada a replica tras un failover: sin
     # masterauth el enlace de replicacion queda en `down` (NOAUTH) y sin
     # announce-ip anunciaria una IP efimera 172.x.
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams"]
+    entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams"]
     volumes:
       - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-streams-data:/data
@@ -126,7 +145,7 @@ services:
     cpus: 0.5
     pids_limit: 100
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_streams_password)\" --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -145,7 +164,13 @@ services:
     # al promover una replica anuncia 172.x a los clientes (el permiso de
     # `sentinel announce-hostnames` solo aplica a direcciones conocidas por
     # hostname). Con el hostname anunciado, el failover es estable.
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--replicaof", "redis-streams", "6379", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams-replica-1"]
+    secrets: [redis_streams_password, redis_streams_password_json]
+    # `--replica-announce-ip` con el NOMBRE del contenedor: sin esto el primario
+    # reporta la IP efimera de la replica en INFO, Sentinel la aprende como IP y
+    # al promover una replica anuncia 172.x a los clientes (el permiso de
+    # `sentinel announce-hostnames` solo aplica a direcciones conocidas por
+    # hostname). Con el hostname anunciado, el failover es estable.
+    entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --replicaof redis-streams 6379 --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams-replica-1"]
     volumes:
       - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-streams-replica-1-data:/data
@@ -154,7 +179,7 @@ services:
     cpus: 0.5
     pids_limit: 100
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_streams_password)\" --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -164,7 +189,8 @@ services:
     profiles: ["sentinel"]
     <<: *hardening-data
     # Igual que replica-1: anuncia su hostname para que Sentinel no propague IPs.
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_STREAMS_PASSWORD:?definir en .env}", "--replicaof", "redis-streams", "6379", "--masterauth", "${REDIS_STREAMS_PASSWORD}", "--replica-announce-ip", "redis-streams-replica-2"]
+    secrets: [redis_streams_password, redis_streams_password_json]
+    entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --replicaof redis-streams 6379 --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams-replica-2"]
     volumes:
       - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-streams-replica-2-data:/data
@@ -173,7 +199,7 @@ services:
     cpus: 0.5
     pids_limit: 100
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAMS_PASSWORD}", "--no-auth-warning", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_streams_password)\" --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -188,8 +214,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    secrets: [redis_streams_password, redis_streams_password_json]
     environment:
-      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+      REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
     entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
     volumes:
       - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
@@ -198,7 +225,7 @@ services:
     mem_limit: 128m
     pids_limit: 50
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_streams_password)\" --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -207,8 +234,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    secrets: [redis_streams_password, redis_streams_password_json]
     environment:
-      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+      REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
     entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
     volumes:
       - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
@@ -217,7 +245,7 @@ services:
     mem_limit: 128m
     pids_limit: 50
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -226,8 +254,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    secrets: [redis_streams_password, redis_streams_password_json]
     environment:
-      REDIS_STREAMS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+      REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
     entrypoint: ["/bin/sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
     volumes:
       - ./redis/sentinel.conf.tmpl:/usr/local/etc/redis/sentinel.conf.tmpl:ro
@@ -236,7 +265,7 @@ services:
     mem_limit: 128m
     pids_limit: 50
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -246,7 +275,8 @@ services:
     image: redis:7.2
     profiles: ["core", "full"]
     <<: *hardening-data
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_RATELIMIT_PASSWORD:?definir en .env}"]
+    secrets: [redis_ratelimit_password]
+    entrypoint: ["/bin/sh", "-c", "export REDIS_RATELIMIT_PASSWORD=$$(cat /run/secrets/redis_ratelimit_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_RATELIMIT_PASSWORD"]
     volumes:
       - ./redis/ratelimit.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-ratelimit-data:/data
@@ -255,7 +285,7 @@ services:
     cpus: 0.25
     pids_limit: 100
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_RATELIMIT_PASSWORD}", "--no-auth-warning", "ping"]
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -268,10 +298,13 @@ services:
     image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     profiles: ["core", "full"]
     <<: *hardening-data
+    secrets: [minio_root_password]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?definir en .env}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      # S1-P1-13: scrape Prometheus sin token en local (red `data` interna).
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
       # Webhook declarativo -> doc-service (SPEC §5.2 / S3-P2-05).
       # Bitnami aplica MINIO_NOTIFY_WEBHOOK_* al arrancar: el target existe sin
       # depender de `mc admin service restart` (que sin TTY no aplica la config).
@@ -298,13 +331,19 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    secrets:
+      - minio_root_password
+      - svc_docservice_access_key
+      - svc_docservice_secret_key
+      - svc_worker_access_key
+      - svc_worker_secret_key
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      SVC_DOCSERVICE_ACCESS_KEY: ${SVC_DOCSERVICE_ACCESS_KEY:?definir en .env}
-      SVC_DOCSERVICE_SECRET_KEY: ${SVC_DOCSERVICE_SECRET_KEY:?definir en .env}
-      SVC_WORKER_ACCESS_KEY: ${SVC_WORKER_ACCESS_KEY:?definir en .env}
-      SVC_WORKER_SECRET_KEY: ${SVC_WORKER_SECRET_KEY:?definir en .env}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      SVC_DOCSERVICE_ACCESS_KEY_FILE: /run/secrets/svc_docservice_access_key
+      SVC_DOCSERVICE_SECRET_KEY_FILE: /run/secrets/svc_docservice_secret_key
+      SVC_WORKER_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
+      SVC_WORKER_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
     volumes:
       - ./minio/init-buckets.sh:/init-buckets.sh:ro
     entrypoint: ["/bin/sh", "/init-buckets.sh"]
@@ -325,10 +364,13 @@ services:
         condition: service_healthy
       doc-service:
         condition: service_started
+    secrets:
+      - minio_root_password
+      - minio_webhook_secret
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      MINIO_WEBHOOK_SECRET_FILE: /run/secrets/minio_webhook_secret
       DOC_SERVICE_WEBHOOK_URL: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
     volumes:
       - ./minio/init-notifications.sh:/init-notifications.sh:ro
@@ -419,6 +461,16 @@ services:
       context: ${DOC_SERVICE_BUILD_CONTEXT:-../../doc-service}
     profiles: ["full"]
     <<: *hardening
+    secrets:
+      - mongo_app_password
+      - svc_docservice_access_key
+      - svc_docservice_secret_key
+      - redis_streams_password
+      - minio_webhook_secret
+      - internal_token
+    volumes:
+      - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
     environment:
       HTTP_PORT: "8080"
       DEBUG: "false"
@@ -428,14 +480,12 @@ services:
       # MinIO: cliente interno (I/O) + endpoint publico (firma de URLs, SPEC §5.1).
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
-      MINIO_ACCESS_KEY: ${SVC_DOCSERVICE_ACCESS_KEY:?definir en .env}
-      MINIO_SECRET_KEY: ${SVC_DOCSERVICE_SECRET_KEY:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
       REDIS_ADDR: redis-streams:6379
-      REDIS_PASSWORD: ${REDIS_STREAMS_PASSWORD:?definir en .env}
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
       REDIS_STREAM_KEY: ${REDIS_STREAM_KEY:-stream:pdf-processing}
       # Proteccion de los endpoints /internal/*.
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:?definir en .env}
@@ -489,11 +539,63 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
       - prometheus-data:/prometheus
     networks: [internal, data]
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+
+  # --- Alertmanager (S1-P1-13, plan-S2-P1.md §4) -------------------------------
+  # Receiver local (log/store); en staging/prod se agrega webhook/email aqui.
+  # Solo red `internal`: no necesita egress (internal:true) ni llegar a `data`.
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    profiles: ["full"]
+    <<: *hardening
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [internal]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 50
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # --- redis-exporter (S1-P1-13): expone Streams para QueueDepth/PEL/DLQ ------
+  # redis_stream_length solo aparece con check-single-streams (v1.90+).
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.93.0
+    profiles: ["full"]
+    <<: *hardening
+    secrets: [redis_streams_password, redis_streams_password_json]
+    environment:
+      REDIS_ADDR: redis://redis-streams:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
+      REDIS_EXPORTER_CHECK_SINGLE_STREAMS: ${REDIS_STREAM_KEY:-stream:pdf-processing}
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 50
+    read_only: true
+    depends_on:
+      redis-streams:
+        condition: service_healthy
+    # Sin healthcheck: la imagen Alpine del exporter no tiene shell ni
+    # utilerias (sh/ps/pgrep/nc). Proteccion real: restart + Prometheus job down.
 
   loki:
     image: grafana/loki:3.4.2
@@ -507,6 +609,9 @@ services:
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
 
   grafana:
     image: grafana/grafana:11.6.0
@@ -514,9 +619,10 @@ services:
     <<: *hardening
     ports:
       - "3000:3000"
+    secrets: [grafana_admin_password]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?definir en .env}
+      GF_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/grafana_admin_password
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana-data:/var/lib/grafana
@@ -525,6 +631,9 @@ services:
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
     depends_on:
       - prometheus
       - loki
