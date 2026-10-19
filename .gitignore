@@ -19,3 +19,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Secretos en archivos — NUNCA commitear
+secrets/*
+!secrets/.gitkeep
