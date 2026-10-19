@@ -1,0 +1,17 @@
+# S1-P1-13 — Alertmanager local/academico (plan-S2-P1.md §4).
+# Entorno local: receiver `default` sin notificador externo (log/store).
+# En staging/prod se agrega webhook/email aqui sin tocar las reglas.
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  receiver: "default"
+
+receivers:
+  - name: "default"
+
+inhibit_rules: []
