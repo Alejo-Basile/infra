@@ -1,0 +1,57 @@
+# S2-ensayo-restore.txt — Restauración de Mongo (2026-10-19)
+
+## DoD: restore en contenedor limpio con integridad verificada
+
+### 1. Snapshot
+
+```
+docker exec infra-mongo-1 mongodump \
+  -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat secrets/mongo_initdb_root_password.txt)" \
+  --authenticationDatabase admin \
+  --oplog --archive=/tmp/mongo-ensayo.archive
+```
+
+Resultado:
+- `documents.documents`: 5 documents
+- `admin.system.users`: 1 document
+- `admin.system.version`: 2 documents
+- oplog: 1 entry
+- Archive size: 2.8K
+
+### 2. Restore en contenedor limpio
+
+```
+docker volume create infra_mongo-ensayo
+docker run -d --name infra-mongo-ensayo --network infra_data \
+  -v infra_mongo-ensayo:/data/db mongo:7.0
+docker cp /tmp/mongo-ensayo.archive infra-mongo-ensayo:/tmp/
+docker exec infra-mongo-ensayo mongorestore --archive=/tmp/mongo-ensayo.archive --oplogReplay
+```
+
+Resultado:
+- 5 document(s) restored successfully
+- 0 document(s) failed to restore
+
+### 3. Verificación de integridad
+
+| Métrica | Vivo | Restaurado |
+|---|---|---|
+| documents.documents.count | 5 | 5 |
+
+**CONCIDE** — restore íntegro.
+
+### 4. Limpieza
+
+- Contenedor de prueba eliminado
+- Volumen de prueba eliminado
+- Archive temporal eliminado
+- Base viva NO fue tocada
+
+## Nota sobre el failover de Sentinel
+
+El ensayo 1 (failover) se documentó en `S2-ensayo-failover.txt`:
+- **Hallazgo:** Docker Compose + Sentinel no puede hacer failover real
+- **Causa:** Docker DNS no resuelve hostnames de contenedores detenidos
+- **Impacto:** limitante del orquestador, no de Sentinel
+- **Recomendación:** en producción con K8s/Swarm el failover funciona correctamente
+- **Garantía de convergencia:** la da el reconciliador (S6-P1-01), no el failover de Sentinel

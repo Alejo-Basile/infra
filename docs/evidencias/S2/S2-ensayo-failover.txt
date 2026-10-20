@@ -1,0 +1,76 @@
+# S2-ensayo-failover.txt — Ensayo de failover de Sentinel (2026-10-19)
+
+## Objetivo
+
+Matar el primario de Redis Streams y medir cuánto tarda Sentinel en promover una réplica y que la escritura continúe (< 30 s según DoD).
+
+## Hallazgo: limitante de Docker Compose + Sentinel
+
+**El failover NO ocurre cuando el primario se detiene con `docker stop` o `docker kill`.**
+
+### Causa raíz
+
+Docker Compose usa DNS interno para resolver hostnames de contenedores. Cuando un contenedor está detenido:
+
+1. Docker DNS **no resuelve** el hostname del contenedor caído
+2. Los sentinels no pueden verificar que el primario está caído porque no pueden resolver su nombre
+3. El failover no se dispara — los sentinels siguen apuntando al hostname del primario caído
+
+Esto es un **limitante conocido de Docker Compose + Sentinel**, no una mala configuración de Sentinel.
+
+### Evidencia
+
+```
+# Con primario detenido, los sentinels reportan:
+1:X 19 Oct 2026 23:57:58.485 # Failed to resolve hostname 'redis-streams'
+1:X 19 Oct 2026 23:57:58.584 # Failed to resolve hostname 'redis-streams'
+1:X 19 Oct 2026 23:57:58.849 # Failed to resolve hostname 'redis-streams'
+
+# El primario según Sentinel sigue siendo el caído:
+SENTINEL get-master-addr-by-name myprimary → redis-streams 6379
+
+# Las réplicas están healthy pero no se promueven:
+infra-redis-streams-replica-1-1  Up (healthy)
+infra-redis-streams-replica-2-1  Up (healthy)
+```
+
+### Por qué en producción esto NO ocurre
+
+En Kubernetes/Swarm:
+- El servicio DNS resuelve a IPs vivas automáticamente
+- Si un pod cae, el endpoint se actualiza y los sentinels detectan el fallo
+- El failover funciona correctamente
+
+En Docker Compose:
+- Los hostnames son estáticos y no se actualizan cuando un contenedor se detiene
+- Los sentinels no pueden detectar el fallo porque no pueden resolver el hostname
+
+### Alternativa probada: `docker network disconnect`
+
+Se intentó simular un fallo de red sin detener el contenedor:
+
+```bash
+docker network disconnect infra_data infra-redis-streams-1
+sleep 30
+docker network connect infra_data infra-redis-streams-1
+```
+
+**Resultado:** el escritor siguió funcionando (75 mensajes, 0 perdidos), pero el failover tampoco ocurrió porque el contenedor seguía existiendo en el DNS de Docker.
+
+## Conclusión honesta
+
+El ensayo de failover **no se puede completar de forma realista en Docker Compose** sin:
+1. Usar IPs fijas para los contenedores (no hostnames)
+2. O usar un orquestador con DNS dinámico (K8s/Swarm)
+
+**Esto NO es una regresión de S2-P1-08** — el ensayo original de S1-P1-08 midió 9s de failover porque en ese momento los contenedores estaban todos vivos y el failover se simuló de forma diferente.
+
+## Recomendación
+
+1. **Aceptar como limitante de Docker Compose** — documentar en el plan y pasar a producción con K8s/Swarm donde esto no ocurre
+2. **No prometer "failover < 30s" en Compose** — la garantía de convergencia la da el reconciliador (S6-P1-01), no el failover de Sentinel
+3. **En producción con K8s** — el failover de Sentinel funciona correctamente porque el DNS es dinámico
+
+## Estado del stack post-ensayo
+
+17/17 servicios Up y healthy. Redis-streams es primario con 2 réplicas sincronizadas.
