@@ -45,5 +45,7 @@ accessLog:
   fields:
     headers:
       names:
-        # Propagacion de correlation_id (SPEC §10)
+        # Traefik OSS does not generate correlation IDs (no UUID middleware).
+        # doc-service generates one when the client omits X-Correlation-Id
+        # (SPEC §10); this field only preserves an inbound value in the log.
         X-Correlation-Id: keep
