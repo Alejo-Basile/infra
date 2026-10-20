@@ -456,9 +456,7 @@ services:
   # el webhook entra por la red `data` (MinIO -> doc-service:8080).
   # La imagen se construye desde su propio repo (DOC_SERVICE_BUILD_CONTEXT).
   doc-service:
-    image: ${DOC_SERVICE_IMAGE:-doc-service:latest}
-    build:
-      context: ${DOC_SERVICE_BUILD_CONTEXT:-../../doc-service}
+    image: ${DOC_SERVICE_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_TAG:-latest}
     profiles: ["full"]
     <<: *hardening
     secrets:
@@ -471,6 +469,7 @@ services:
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["/usr/local/bin/api"]
     environment:
       HTTP_PORT: "8080"
       DEBUG: "false"

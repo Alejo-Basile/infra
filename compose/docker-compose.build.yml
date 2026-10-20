@@ -1,0 +1,7 @@
+# Override SOLO para desarrollo local (S3-P1-01): reconstruye doc-service
+# desde el checkout local sin pisar el tag publicado en GHCR.
+services:
+  doc-service:
+    image: doc-service:local
+    build:
+      context: ${DOC_SERVICE_BUILD_CONTEXT:-../../doc-service}
