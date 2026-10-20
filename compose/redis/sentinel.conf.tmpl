@@ -1,0 +1,20 @@
+# Sentinel para el primario de Streams (S1-P1-08, plan-S2-P1.md §4)
+# Plantilla SIN secretos: sentinel-entrypoint.sh reemplaza
+# ${REDIS_STREAMS_PASSWORD} con `sed` al arrancar (la imagen redis:7.2 no
+# incluye `envsubst`; verificado). El password nunca se commitea.
+
+port 26379
+dir /tmp
+
+# CRITICO en Docker Compose: sin resolve/announce-hostnames los Sentinels
+# anuncian IPs efimeras 172.x a los clientes y el failover queda roto para
+# cualquier cliente que se reconecte (falla clasica de Compose + Sentinel).
+sentinel resolve-hostnames yes
+sentinel announce-hostnames yes
+
+# Monitoreo del primario: nombre logico `myprimary`, quorum 2 de 3 nodos.
+sentinel monitor myprimary redis-streams 6379 2
+sentinel auth-pass myprimary ${REDIS_STREAMS_PASSWORD}
+sentinel down-after-milliseconds myprimary 5000
+sentinel failover-timeout myprimary 30000
+sentinel parallel-syncs myprimary 1
