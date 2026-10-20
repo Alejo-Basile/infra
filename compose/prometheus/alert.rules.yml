@@ -1,0 +1,102 @@
+# S1-P1-13 — Alertas accionables (plan-S2-P1.md §4).
+# Cada alerta trae la ACCION en annotations (description/runbook), no solo el sintoma.
+# Senales:
+# - Queue/PEL/DLQ via redis-exporter con check-single-streams (redis_stream_length).
+#   PEL usa redis_stream_group_pending si el exporter lo expone; si queda NoData,
+#   ver nota DocsNonTerminal/PEL abajo (requiere exporter custom en S3).
+# - HighErrorRate/LatencyP95High via Traefik (doc-service solo expone 2 counters,
+#   sin http_requests_total ni histograma — deuda S3, no se toca Go en S2).
+# - MinioDiskHigh via /minio/v2/metrics/cluster (MINIO_PROMETHEUS_AUTH_TYPE=public).
+# - RedisMemHigh via redis_memory_used_bytes/max_bytes (streams.conf: 192mb noeviction).
+groups:
+  - name: s1-p1-13-streams
+    interval: 15s
+    rules:
+      - alert: QueueDepthHigh
+        expr: redis_stream_length{stream="stream:pdf-processing"} > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cola pdf-processing con mas de 500 mensajes por 5m"
+          description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N (cuando exista en S3; hoy revisar consumidores). Ver runbook failover-redis."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: PELBacklog
+        expr: redis_stream_group_pending{stream="stream:pdf-processing"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PEL pendiente mayor a 100 por 10m"
+          description: "Revisar workers caidos; ejecutar XAUTOCLAIM para reasignar mensajes huerfanos. Si la metrica queda NoData, el exporter no expone PEL: contar con redis-cli XPENDING manual."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: DLQNotEmpty
+        expr: redis_stream_length{stream="stream:pdf-processing-dlq"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ con mensajes (fallos definitivos de extraccion)"
+          description: "Revisar mensajes con XRANGE, corregir causa raiz y reintentar. No borrar sin diagnosticar."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: RedisMemHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis streams sobre 80 por ciento de maxmemory (192mb)"
+          description: "Revisar consumidores lentos. NO subir maxmemory: con noeviction la escritura debe fallar y alertarse, nunca desalojar mensajes del stream."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+  - name: s1-p1-13-http
+    interval: 15s
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(traefik_service_requests_total{code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tasa de 5xx sobre 1 por ciento por 5m (via Traefik)"
+          description: "Revisar logs del servicio (Loki/Grafana); si coincide con un deploy, hacer rollback. Proxy Traefik porque doc-service aun no expone http_requests_total (deuda S3)."
+          runbook_url: "infra/runbooks/restore-mongo.md"
+
+      - alert: LatencyP95High
+        expr: histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 sobre 500ms por 5m (via Traefik)"
+          description: "Revisar Mongo/Redis (lentas); considerar escalar doc-service. Proxy Traefik porque doc-service aun no expone histograma (deuda S3)."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+  - name: s1-p1-13-infra
+    interval: 30s
+    rules:
+      - alert: MinioDiskHigh
+        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.7
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disco MinIO sobre 70 por ciento (critico 85 por ciento)"
+          description: "Purgar huerfanos via reconciliador/lifecycle; si supera 85 por ciento ampliar volumen minio-data urgente."
+          runbook_url: "infra/runbooks/restore-mongo.md"
+
+      - alert: DocsNonTerminal
+        # Deuda honestamente declarada: ningun exporter expone hoy este gauge.
+        # El reconciliador (S3) debe exponer docservice_docs_non_terminal.
+        # Hasta entonces: conteo manual via mongosh (ver evidencia S1-P1-13-alerts.txt).
+        expr: docservice_docs_non_terminal > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Documentos en estado intermedio sobre umbral por 15m"
+          description: "Revisar reconciliador; forzar sweep. Si la metrica esta en NoData, contar manual: db.documents.countDocuments({status: {$in: ['UPLOADED','PROCESSING']}})."
+          runbook_url: "infra/runbooks/restore-mongo.md"

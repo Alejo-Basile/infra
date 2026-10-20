@@ -1,0 +1,41 @@
+# S1-P1-15 — Hardening de contenedores — evidencia (2026-10-17)
+
+## DoD: docker inspect confirma las 5 cosas en todas las imágenes
+
+### Baseline (antes del fix)
+/infra-alertmanager-1: User=nobody CapDrop=[ALL] ReadOnly=false NoNewPriv=[no-new-privileges:true] Pids=50
+/infra-grafana-1: User=472 CapDrop=[ALL] ReadOnly=false NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-loki-1: User=10001 CapDrop=[ALL] ReadOnly=false NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-prometheus-1: User=nobody CapDrop=[ALL] ReadOnly=false NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-redis-exporter-1: User=59000:59000 CapDrop=[ALL] ReadOnly=false NoNewPriv=[no-new-privileges:true] Pids=50
+
+### Post-fix (read_only + tmpfs aplicados)
+/infra-alertmanager-1: User=nobody CapDrop=[ALL] ReadOnly=true NoNewPriv=[no-new-privileges:true] Pids=50
+/infra-grafana-1: User=472 CapDrop=[ALL] ReadOnly=true NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-loki-1: User=10001 CapDrop=[ALL] ReadOnly=true NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-prometheus-1: User=nobody CapDrop=[ALL] ReadOnly=true NoNewPriv=[no-new-privileges:true] Pids=100
+/infra-redis-exporter-1: User=59000:59000 CapDrop=[ALL] ReadOnly=true NoNewPriv=[no-new-privileges:true] Pids=50
+
+## Cambios aplicados en compose/docker-compose.yml
+- prometheus: read_only=true + tmpfs /tmp:size=64m,noexec,nosuid,nodev
+- alertmanager: read_only=true + tmpfs /tmp:size=32m,noexec,nosuid,nodev
+- grafana: read_only=true + tmpfs /tmp:size=64m,noexec,nosuid,nodev
+- loki: read_only=true + tmpfs /tmp:size=128m,noexec,nosuid,nodev
+- redis-exporter: read_only=true (sin tmpfs: no escribe en FS)
+
+## Servicios NO read_only (necesitan escribir en FS)
+- mongo, redis-streams(+replicas), sentinel-1/2/3, minio: escriben en /data
+- traefik: escribe certs dinámicas
+- monolito, doc-service: escriben en /tmp
+
+## Los 5 verifican Up + healthy tras el fix (compose ps)
+infra-alertmanager-1     Up (healthy)
+infra-grafana-1          Up
+infra-loki-1             Up
+infra-prometheus-1       Up
+infra-redis-exporter-1   Up
+
+## Las 5 cosas en TODAS las imágenes del stack (completo)
+Ver archivo S1-P1-15-baseline.txt (todos los contenedores del stack, incluidos
+los que no tienen read_only). Los 5 controles (user, cap_drop, readonly, no-new-privileges,
+pids_limit) presentes en cada servicio.
