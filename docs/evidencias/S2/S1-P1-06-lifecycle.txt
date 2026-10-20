@@ -1,0 +1,145 @@
+S1-P1-06 — Lifecycle (retención) en los buckets MinIO
+=======================================================
+Fecha: 2026-10-14T12:14:22-03:00
+Rama: feat/infra-s2-lifecycle
+Autor: infra (S2-P1, plan-S2-P1.md §4)
+
+Propósito
+---------
+Dejar reglas de lifecycle (expiración) en los buckets `raw-pdfs` y `extracted-txt` de MinIO,
+de forma versionada e idempotente, y documentar hasta dónde llega lo verificable hoy.
+
+Decisiones de retención (registradas en plan-S2-P1.md §4):
+  - raw-pdfs:      expira objetos a los 7 días  (RAW_PDFS_EXPIRE_DAYS, default 7).
+  - extracted-txt: expira objetos a los 30 días (EXTRACTED_TXT_EXPIRE_DAYS, default 30).
+    (Valor de negocio ajustable por entorno sin tocar el script.)
+
+Script: compose/minio/lifecycle-buckets.sh (separado de init-buckets.sh a propósito:
+identidades != política de datos). Idempotente: consulta `mc ilm rule ls --json` y solo
+agrega la regla si no existe una con la misma expiración.
+
+Nota de red: mc corre contra la red interna `infra_data` (nunca por Traefik).
+
+
+Estado inicial (antes de aplicar)
+---------------------------------
+$ docker run --rm --network infra_data --entrypoint mc \
+    -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/raw-pdfs
+mc: <ERROR> Unable to get lifecycle. The lifecycle configuration does not exist.
+(exit=1; en --json: Code NoSuchLifecycleConfiguration — no había ninguna regla en ningún bucket)
+
+
+1) Primera ejecución del script (aplica las reglas)
+--------------------------------------------------
+$ docker run --rm --network infra_data --entrypoint sh \
+    -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    -v "$PWD/compose/minio:/scripts:ro" \
+    bitnamilegacy/minio-client:2025.7.21 /scripts/lifecycle-buckets.sh
+
+Lifecycle configuration rule added with ID `db7pnsbf61i004epe9ig` to local/raw-pdfs.
+Lifecycle agregado: local/raw-pdfs expira a los 7 dias.
+Lifecycle configuration rule added with ID `db7pnsbf61i00958n5ng` to local/extracted-txt.
+Lifecycle agregado: local/extracted-txt expira a los 30 dias.
+--- Reglas activas ---
+== local/raw-pdfs ==
+│ db7pnsbf61i004epe9ig │ Enabled │ -      │ -    │              7 │ false               │
+== local/extracted-txt ==
+│ db7pnsbf61i00958n5ng │ Enabled │ -      │ -    │             30 │ false               │
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+(exit=0)
+
+
+2) Segunda ejecución del script (prueba de idempotencia)
+--------------------------------------------------------
+$ <mismo comando que (1)>
+
+Lifecycle ya presente: local/raw-pdfs expira a los 7 dias (sin cambios).
+Lifecycle ya presente: local/extracted-txt expira a los 30 dias (sin cambios).
+--- Reglas activas ---
+== local/raw-pdfs ==
+│ db7pnsbf61i004epe9ig │ Enabled │ -      │ -    │              7 │ false               │
+== local/extracted-txt ==
+│ db7pnsbf61i00958n5ng │ Enabled │ -      │ -    │             30 │ false               │
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+(exit=0)
+
+Conteo de reglas por bucket (no debe duplicar):
+$ for b in raw-pdfs extracted-txt; do n=$($MC ilm rule ls --json local/$b | grep -o '"ID"' | wc -l); echo "local/$b: $n regla(s)"; done
+local/raw-pdfs: 1 regla(s)
+local/extracted-txt: 1 regla(s)
+
+=> El segundo run NO agregó reglas nuevas: los IDs son idénticos a los del primer run.
+   Idempotencia verificada.
+
+
+3) Reglas activas (estado final)
+--------------------------------
+$ docker run --rm --network infra_data --entrypoint mc \
+    -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/raw-pdfs
+┌──────────────────────┬─────────┬────────┬──────┬────────────────┬─────────────────────┐
+│ ID                   │ STATUS  │ PREFIX │ TAGS │ DAYS TO EXPIRE │ EXPIRE DELETEMARKER │
+├──────────────────────┼─────────┼────────┼──────┼────────────────┼─────────────────────┤
+│ db7pnsbf61i004epe9ig │ Enabled │ -      │ -    │              7 │ false               │
+└──────────────────────┴─────────┴────────┴──────┴────────────────┴─────────────────────┘
+
+$ ... ilm rule ls local/extracted-txt
+│ db7pnsbf61i00958n5ng │ Enabled │ -      │ -    │             30 │ false               │
+
+
+4) Prueba manual de borrado (observación honesta)
+-------------------------------------------------
+Subida del objeto de prueba (timestamp 2026-10-14T12:13:05-03:00):
+$ mc cp /tmp/lifecycle-test.txt local/raw-pdfs/lifecycle-test.txt
+`/tmp/lifecycle-test.txt` -> `local/raw-pdfs/lifecycle-test.txt`
+33 B / 33 B, 00m00s
+
+Cobertura de la regla sobre el objeto (mc stat):
+$ mc stat local/raw-pdfs/lifecycle-test.txt
+Name      : lifecycle-test.txt
+Date      : 2026-10-14 15:13:05 UTC
+Size      : 33 B
+ETag      : 5de5e2aaa65781e48d5cb8c4543c8c90
+Type      : file
+Expiration: 2026-10-22 00:00:00 UTC (lifecycle-rule-id: db7pnsbf61i004epe9ig)
+Metadata  : Content-Type: text/plain
+
+=> El objeto ESTÁ cubierto por la regla activa: MinIO calculó su expiración
+   (2026-10-22 00:00:00 UTC = fecha de subida + 7 días, redondeada a medianoche UTC)
+   y la atribuye al rule-id de raw-pdfs.
+
+Re-chequeo tras esperar 60 s (timestamp 2026-10-14T12:14:13-03:00):
+$ mc stat local/raw-pdfs/lifecycle-test.txt
+Expiration: 2026-10-22 00:00:00 UTC (lifecycle-rule-id: db7pnsbf61i004epe9ig)
+$ mc ls local/raw-pdfs/lifecycle-test.txt
+[2026-10-14 15:13:05 UTC]    33B STANDARD lifecycle-test.txt
+
+=> El objeto SIGUE PRESENTE. Esto es lo esperado y NO se reclama un borrado que no ocurrió:
+   - MinIO aplica el lifecycle por su scanner interno, de forma asíncrona (no instantánea).
+   - La expiración configurada es 2026-10-22 (7 días), por lo que el borrado efectivo
+     ocurrirá días más tarde, en el próximo ciclo del scanner que pase esa fecha.
+   Estado verificable hoy: REGLA ACTIVA + OBJETO CUBIERTO. Borrado PENDIENTE del próximo
+   ciclo del scanner que alcance la fecha de expiración. No se fuerza una expiración corta
+   porque la retención real decidida es 7 días (plan-S2-P1.md §4).
+
+
+5) Limpieza
+-----------
+$ mc rm local/raw-pdfs/lifecycle-test.txt        # timestamp 2026-10-14T12:14:22-03:00
+Removed `local/raw-pdfs/lifecycle-test.txt`.
+
+$ mc ls local/raw-pdfs/
+[2026-10-07 21:53:00 UTC]    22B STANDARD _probe_1791409980.txt
+[2026-10-08 01:47:41 UTC]    36B STANDARD control-sigv4.txt
+[2026-10-11 20:38:07 UTC] 4.0KiB STANDARD sigv4-pos-20261011T203807Z.bin
+[2026-10-14 04:30:30 UTC]    20B STANDARD sigv4-pos.txt
+(no aparece lifecycle-test.txt)
+
+
+Cierre
+------
+- Retención aplicada y verificada: raw-pdfs = 7 días; extracted-txt = 30 días.
+- El valor `extracted-txt: 30d` es un default ajustable por negocio
+  (env EXTRACTED_TXT_EXPIRE_DAYS); cambiarlo no requiere editar el script.
+- Rollback: `mc ilm rule rm --id <id> local/<bucket>`.

@@ -383,7 +383,7 @@ Repetir, como **ensayo cronometrado y con evidencia**, dos ensayos ya preparados
 ## 10. Checklist de cierre de S2 / Puerta G1 (viernes)
 
 - [x] `S1-P1-03` cerrado — deuda declarada con owner (`P1`) y fecha de revisión (2026-12-02) en `adr/ADR-0020.md`; evidencia en `evidencias/S2/S1-P1-03-deuda.md` + `S1-P1-03-cobertura.txt` (ejecutado 2026-10-14).
-- [ ] `S1-P1-06` cerrado — regla lifecycle probada en `raw-pdfs` y `extracted-txt`.
+- [x] `S1-P1-06` cerrado — reglas lifecycle activas (raw-pdfs 7d, extracted-txt 30d) vía `compose/minio/lifecycle-buckets.sh` (idempotente, 2ª ejecución no duplica); evidencia en `evidencias/S2/S1-P1-06-lifecycle.txt`. Borrado efectivo pendiente del ciclo del scanner (declarado honestamente en la evidencia; ejecutado 2026-10-14).
 - [ ] `S1-P1-08` cerrado — Sentinel 3 nodos; failover < 30 s; pérdida medida y reportada.
 - [ ] `S1-P1-13` cerrado — alertas accionables, cada una probada provocando la condición.
 - [ ] `S1-P1-15` cerrado — `docker inspect` confirma las 5 cosas en todas las imágenes.
