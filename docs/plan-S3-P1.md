@@ -91,8 +91,10 @@ de release probado.
 
 **Riesgo:** item 5 (environment — pipeline de release).
 
-**Estado: implementado y verificado localmente (2026-10-20).** El pipeline remoto
-queda pendiente de push/tag (decisión humana).
+**Estado: implementado, verificado localmente y en CI remoto (2026-10-20).**
+Ramas pusheadas y PRs abiertas contra `main` (doc-service #38, infra #26) sin
+tocar `main`; CI de #38 verde (lint, unit, integration, gitleaks). El release a
+GHCR queda pendiente del merge de #38 o de un tag `v*` (decisión humana).
 
 #### Parte 1 — Lint + test en CI
 
@@ -139,9 +141,9 @@ mismos comandos del CI (ver evidencia): los 4 paquetes `ok`.
 - Trivy `0.28.0` sobre `IMAGE@digest`, `CRITICAL,HIGH`, `ignore-unfixed`,
   `exit-code: 1`.
 
-**Pendiente (humano):** push de la rama/tag para observar el run remoto; el
-paquete GHCR debe existir con visibilidad adecuada para que `docker compose pull`
-funcione.
+**Pendiente (humano):** mergear la PR para que `release.yml` publique la imagen
+(o pushear un tag `v*`), y definir la visibilidad del paquete GHCR para que
+`docker compose pull` funcione.
 
 #### Parte 3 — Compose por imagen + deploy + smoke
 

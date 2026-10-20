@@ -3,14 +3,17 @@ S3-P1-01 — Pipeline CI/CD y despliegue automatizado del doc-service
 
 Fecha: 2026-10-20
 Repos:
-  - doc-service: branch feat/infra-s1-metrics, base 6408e51
-  - infra:       branch feat/infra-s2-completions, base 76a0849
+  - doc-service: branch feat/s3-p1-01-doc-service-pipeline,
+    rebase --onto origin/main (base final 74117c6)
+  - infra:       branch feat/s3-p1-01-doc-service-deploy,
+    rebase --onto origin/main (base final 84a56f5)
 Entorno: local (ADR-0016), Docker Compose, Traefik HTTPS 8543.
 
 Alcance: CI (lint + unit + integración), release multi-arch a GHCR, compose por
 imagen publicada, override de build local, script de deploy y smoke E2E.
-El push de ramas/tags y la visibilidad del paquete GHCR quedan como decisión
-humana; por eso el run remoto de los workflows todavía no se observó.
+Ramas pusheadas y PRs abiertas contra main (doc-service #38, infra #26), sin
+tocar ni pushear a main. El release a GHCR y la visibilidad del paquete quedan
+pendientes de merge/tag (decisión humana).
 
 
 1. Cambios
@@ -173,13 +176,23 @@ c) Sentinel 1/2/3 siguen en Restarting: deuda de S2, fuera del alcance de
    S3-P1-01. No afecta el smoke de doc-service (conecta al primario).
 
 
-5. Pendiente (decisión humana)
-------------------------------
+5. Estado remoto y pendientes (decisión humana)
+-----------------------------------------------
 
-- Push de la rama feat/infra-s1-metrics (doc-service) y del tag v* para
-  ejecutar ci.yml y release.yml en GitHub.
-- Verificar el run remoto: jobs lint/unit/integration verdes; imagen
-  publicada en ghcr.io/alejo-basile/doc-service con digest y scan Trivy OK.
+Hecho:
+- Push de ramas nuevas (sin tocar main) y PRs abiertas contra main:
+  doc-service #38, infra #26. Orden de merge: #38 primero, #26 después.
+- CI de #38 verde: lint 25s, unit 1m7s, integration 2m34s, gitleaks 6s.
+  El primer run de integration falló porque `--replSet rs0` iba como opción
+  de `docker create` dentro de `services:`; se corrigió levantando Mongo con
+  `docker run ... mongo:7 --replSet rs0` + `rs.initiate` (commit 48b02f0).
+- Checks de #26 verdes: gitleaks y lint.
+
+Pendiente (humano):
+- Mergear #38 para que release.yml publique la imagen en GHCR (el release no
+  corre en PRs), y luego mergear #26.
+- Verificar la imagen publicada en ghcr.io/alejo-basile/doc-service con digest
+  y scan Trivy OK.
 - Definir visibilidad del paquete GHCR para que `docker compose pull` funcione
   sin login (o documentar `docker login ghcr.io`).
 - Ejecutar scripts/deploy-doc-service.sh <tag> contra un tag publicado
