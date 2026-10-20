@@ -1,0 +1,296 @@
+S3-P1-03 — Trazabilidad por correlation_id (alcance A)
+=======================================================
+
+Fecha: 2026-10-20
+Alcance A: el E2E real del worker queda diferido a S4-P1-01; aquí se verifica
+el contrato (payload con correlation_id), no un consumer inexistente (el paso 6
+del E2E reporta N/A).
+Ramas (nunca main):
+  doc-service: feat/s3-p1-03-correlation-id
+    (stacked sobre feat/s3-p1-01-doc-service-pipeline, 48b02f0)
+  infra:       feat/s3-p1-03-correlation-id
+    (stacked sobre feat/s3-p1-02-webhook-isolation, e78b56a)
+Entorno: local (ADR-0016), api.localhost:8543 / s3.localhost:8543
+Referencias: SPEC §5.4, §9 y §10; docs/plan-S3-P1.md (S3-P1-03)
+
+1. Objetivo
+-----------
+Que un correlation_id enviado por el cliente (o generado por doc-service en el
+primer request) sea rastreable a través de toda la cadena:
+
+  Traefik access log -> doc-service logs -> MongoDB
+  (documents.correlation_id + historial por transición) -> Redis Streams
+  (campo payload)
+
+Decisiones de diseño verificadas:
+
+- Traefik OSS no puede generar UUIDs (no existe un middleware nativo para
+  ello). doc-service genera el correlation_id en el primer request que llega
+  sin header válido (SPEC §10). traefik.yml conserva `X-Correlation-Id: keep`
+  en el access log con un comentario aclarando que solo preserva un valor
+  inbound. No se agregó plugin, ForwardAuth ni middleware con header vacío.
+- Contrato del header: constante Go `X-Correlation-ID` (los docs y curl usan
+  `X-Correlation-Id`; los headers HTTP son case-insensitive). Validación:
+  TrimSpace, máximo 128 caracteres, charset `^[A-Za-z0-9._:-]+$`. Si falta o
+  es inválido, se genera UUID v4. El warning solo loguea el largo del valor
+  crudo, nunca su contenido (sin inyección de logs ni fuga de datos).
+- Webhook (`/internal/storage/events`; la mención de SPEC §9 a
+  `/internal/documents/{id}/uploaded` está desactualizada): carga el documento
+  ANTES de leer MinIO; si no existe o no está en PENDING_UPLOAD responde
+  `200 no_transition` sin I/O de objetos. Las transiciones usan
+  UpdateStatusWithHistory con actor `minio-webhook`, el correlation_id del
+  documento (fallback al del request), reason `NOT_A_PDF` al rechazar. Los
+  logs llevan correlation_id y request_correlation_id.
+- Mensaje de Redis: la entrada del stream tiene exactamente UN campo `payload`
+  cuyo JSON contiene exactamente document_id, object_key, correlation_id,
+  enqueued_at y schema_version (1). Sin `attempts` (el delivery count vive en
+  XPENDING, SPEC §5.4). Discrepancia conocida: SPEC §5.4 muestra un XADD plano
+  con campos individuales; la implementación conserva el envelope `payload`.
+  Queda como follow-up de alineación de SPEC, no como cambio de código.
+- La imagen de doc-service se reconstruyó localmente como `doc-service:local`
+  (override compose/docker-compose.build.yml) para el E2E.
+
+2. Commits
+-----------
+doc-service (feat/s3-p1-03-correlation-id):
+  f78c00b  fix(http): validate and normalize inbound X-Correlation-ID
+  0f03a4f  feat(webhook): propagate correlation_id through upload transitions
+  eb54d7a  feat(redis): trace correlation_id through the work queue contract
+
+infra (feat/s3-p1-03-correlation-id):
+  6359133  fix(compose): subscribe the declared webhook target in minio init jobs
+  ab5f124  test(e2e): verify correlation_id traceability end to end
+
+- f78c00b: middleware HTTP que valida y normaliza `X-Correlation-ID` inbound
+  (TrimSpace, max 128, charset); si falta o es inválido genera UUID v4, lo
+  devuelve en el response header y nunca loguea el valor crudo.
+- 0f03a4f: el webhook registra las transiciones con historial
+  (UpdateStatusWithHistory) y propaga el correlation_id del documento.
+- eb54d7a: el contrato del work message de Redis incluye correlation_id, fijado
+  por test estricto (DisallowUnknownFields).
+- 6359133: init-notifications.sh deja de gestionar el target con
+  `mc admin config set`; verifica el target declarado por compose (DOCSERVICE),
+  retira la suscripción legacy si existe y suscribe ObjectCreated:Put a
+  DOCSERVICE. Los dos scripts init ganan el helper POSIX `resolve_secret`
+  (lee secretos `*_FILE`, falla si quedan vacíos, nunca imprime valores).
+- ab5f124: `scripts/e2e-correlation.sh`, E2E de trazabilidad de extremo a
+  extremo (salida completa en la sección 6).
+
+El commit de documentación (esta evidencia + plan) se hace aparte en infra y
+no se lista aquí.
+
+3. Hallazgo 401: aislamiento, causa raíz y fix
+-----------------------------------------------
+La primera corrida del E2E falló en los pasos de Mongo/Redis: el documento
+quedaba en PENDING_UPLOAD y no aparecía ningún mensaje en Redis.
+
+Log de MinIO:
+  Error: http://doc-service:8080/internal/storage/events returned
+  '401 Unauthorized', please check your endpoint configuration
+  (targetID="docservice:webhook")
+Log de doc-service:
+  webhook: token inválido o ausente
+
+Aislamiento:
+- POSTs sintéticos desde el contenedor minio hacia doc-service: token Bearer
+  válido = 200, token incorrecto = 401, sin token = 401. El handler estaba
+  sano.
+- Comparación de entorno por sha256 (sin imprimir valores):
+  `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE` de minio ==
+  `MINIO_WEBHOOK_SECRET` de doc-service ==
+  secrets/minio_webhook_secret.txt.
+
+Causa raíz: el evento del bucket estaba suscrito al target gestionado por mc
+(`docservice`), cuya config persistida no tenía auth_token APLICADO al proceso
+en ejecución. `mc admin config set` escribe en el config store, pero MinIO solo
+aplica la config de notificaciones al reiniciar, y la verificación del script
+viejo solo grepeaba `endpoint=`, por lo que saltaba el restart. El target
+declarado por env en compose (`DOCSERVICE`, con el token correcto, aplicado en
+cada arranque de minio) existía pero no tenía suscripción.
+
+Evidencia de la sonda: mientras ambas suscripciones coexistieron brevemente,
+cada subida de prueba produjo exactamente un 401 (target legacy) y un 200
+(target DOCSERVICE) en los logs de doc-service (user agent Go-http-client),
+probando que el target por env envía el Bearer correcto. Los objetos de la
+sonda usaron keys sin el prefijo raw-pdfs/ y el handler los filtró como
+prefijo incorrecto (200, silencioso en debug); la autenticación quedó probada
+por el par 401/200, y la corrección completa por el E2E final verde.
+
+Fix (commit 6359133):
+- compose/minio/init-notifications.sh ya no gestiona el target con
+  `mc admin config set`. Verifica que el target declarado por compose
+  (DOCSERVICE) esté registrado, retira la suscripción legacy si existe
+  (`mc event remove <ARN-visible> --event put`) y suscribe ObjectCreated:Put
+  a DOCSERVICE. El job elimina el mount de minio_webhook_secret que quedó sin
+  uso.
+- El target legacy de mc sigue registrado en el config store pero sin
+  suscripción (inerte); el job retira cualquier suscripción legacy re-agregada
+  en cada corrida.
+- Migración probada en vivo: se re-agregó deliberadamente la suscripción
+  legacy y luego:
+
+    docker compose ... run --rm minio-notify-init
+    -> Suscripcion legacy retirada: arn:minio:sqs:us-east-1:docservice:webhook
+    Lista final de eventos:
+    arn:minio:sqs:us-east-1:DOCSERVICE:webhook   s3:ObjectCreated:*
+
+- Ambos scripts init ganaron el helper POSIX `resolve_secret`: lee secretos
+  `${VAR}_FILE`, falla en voz alta si falta o queda vacío, nunca imprime
+  valores. Antes, minio-init salía 1 y notify-init podía fijar un auth_token
+  vacío porque compose pasa variables `*_FILE`.
+
+4. Verificación
+----------------
+4.1 doc-service
+
+  go test ./internal/transport/http ./internal/webhook -race -count=1
+  -> ok  (transport/http 1.662s, webhook 1.066s)
+
+  go vet ./...            -> limpio
+  gofmt -l .              -> vacío
+
+  Suite hermética:
+  PKGS=$(go list ./... | grep -vE 'internal/adapters/(mongo|changestream|relay|redis)$')
+  go test -race -count=1 $PKGS
+  -> ok en api, config, domain, pdfsvc, reconciler, transport/http, webhook
+
+  Integración contra servicios efímeros (Mongo 7 single-node RS en host
+  network puerto 27018; Redis 7-alpine en puerto 6380; contenedores scratch
+  eliminados al terminar):
+  MONGO_TEST_URI='mongodb://127.0.0.1:27018/?replicaSet=rs0' \
+  REDIS_TEST_ADDR='127.0.0.1:6380' \
+    go test ./internal/adapters/redis ./internal/adapters/relay -race -count=1 -v
+  -> PASS, incluyendo:
+     TestWorkQueue_PayloadDelContrato (decode estricto del payload)
+     TestWorkQueue_Enqueue / Deduplicacion / WaitNoBloqueaEnStandalone
+     TestRelay_EncolaEventoUPLOADED
+     TestRelay_DosWatchersUnSoloMensaje
+     TestRelay_ObjectKeyDerivado
+
+4.2 infra
+
+  bash -n compose/minio/init-buckets.sh
+  bash -n compose/minio/init-notifications.sh
+  bash -n scripts/e2e-correlation.sh
+  -> OK
+
+  docker compose -f compose/docker-compose.yml --env-file .env --profile full config -q
+  -> exit 0
+
+  docker compose ... run --rm minio-init
+  -> exit 0: buckets raw-pdfs/extracted-txt, políticas
+     docservice-rw/worker-extract, service users creados/verificados
+
+  docker compose ... run --rm minio-notify-init  (script nuevo)
+  -> suscripción legacy retirada; solo DOCSERVICE suscrito;
+     re-corrida idempotente -> "Evento ya suscrito"
+
+4.3 Cierre del DoD (consulta Mongo tras el E2E verde, usuario de app,
+    password leída de secrets/mongo_app_password.txt y nunca impresa):
+
+  db.documents.findOne({correlation_id:"corr-s3p103-20261020T210202Z"})
+  -> { "_id": "c9e69df7ac94fdaa129581f376503668",
+       "status": "UPLOADED",
+       "correlation_id": "corr-s3p103-20261020T210202Z",
+       "history_len": 2 }
+
+  Esto cierra literalmente el DoD del plan: "Búsqueda por correlation_id en
+  Mongo devuelve el documento completo".
+
+5. Decisiones
+--------------
+- Generación del correlation_id en doc-service (primer request), no en
+  Traefik: Traefik OSS no genera UUIDs; SPEC §10 ya prevé esta alternativa.
+- `X-Correlation-Id: keep` se mantiene en el access log con comentario
+  aclaratorio; sin plugins ni middlewares nuevos en S3.
+- Envelope `payload` JSON en Redis (un solo campo) en lugar del XADD plano de
+  SPEC §5.4; contrato fijado por test estricto; alineación de SPEC como
+  follow-up.
+- El webhook valida el documento antes de leer MinIO (200 no_transition sin
+  I/O) e histórica cada transición con actor `minio-webhook`.
+- Fix de notificaciones: suscribir el target declarado por compose (env, se
+  aplica en cada arranque) y retirar la suscripción legacy de mc, en lugar de
+  depurar el config store persistido de mc.
+- `resolve_secret` POSIX en ambos scripts init: soporte `*_FILE`, fallo
+  explícito en vacío, sin imprimir secretos.
+
+6. E2E final (scripts/e2e-correlation.sh) — salida verbatim
+------------------------------------------------------------
+== Preflight ==
+  [OK]   tool: curl
+  [OK]   tool: jq
+  [OK]   tool: openssl
+  [OK]   tool: docker
+  [OK]   infra/.env readable
+  [OK]   secret readable: secrets/mongo_app_password.txt
+  [OK]   secret readable: secrets/redis_streams_password.txt
+  [OK]   doc-service reachable through Traefik: https://api.localhost:8543/healthz
+
+== 1. POST /api/v2/documents with X-Correlation-Id=corr-s3p103-20261020T210202Z ==
+  [OK]   create HTTP status = 201
+  [OK]   document_id = c9e69df7ac94fdaa129581f376503668
+  [OK]   response X-Correlation-Id = corr-s3p103-20261020T210202Z
+  [OK]   expires_in = 900s
+  [OK]   upload_url returned
+== 2. Presigned multipart POST to MinIO ==
+  [OK]   PDF uploaded (69 bytes)
+== 3. Mongo documents status/history ==
+  [OK]   Mongo status = UPLOADED
+  [OK]   Mongo correlation_id = corr-s3p103-20261020T210202Z
+  [OK]   history has UPLOADED / minio-webhook / corr-s3p103-20261020T210202Z
+== 4. Redis Streams payload ==
+  [OK]   stream contains correlation_id and document_id
+== 5. Logs ==
+  [OK]   Traefik access log contains correlation_id
+  [OK]   doc-service log contains correlation_id
+== 6. Extraction worker ==
+N/A: worker no desplegado; contrato verificado en doc-service; E2E real S4-P1-01
+== 7. Create without X-Correlation-Id ==
+  [OK]   no-header create HTTP status = 201
+  [OK]   response X-Correlation-Id is a UUID (7c53f64c-e866-4058-9ba7-3eb748657811)
+  [OK]   Mongo (no header) correlation_id = 7c53f64c-e866-4058-9ba7-3eb748657811
+== 8. Create with invalid X-Correlation-Id ==
+  [OK]   invalid-header create HTTP status = 201
+  [OK]   raw invalid header is not echoed back
+  [OK]   response X-Correlation-Id is a UUID (73ecfd6b-9d83-4d88-a3ce-e525708109e9)
+  [OK]   Mongo (invalid header) correlation_id = 73ecfd6b-9d83-4d88-a3ce-e525708109e9
+  [OK]   Mongo stores the generated UUID, not the raw invalid value
+  [OK]   generated UUID differs from the valid client correlation_id
+  [OK]   doc-service logs do not contain the raw invalid value
+== 9. Regression: /internal/storage/events through Traefik ==
+  [OK]   GET /internal/storage/events = 404
+
+E2E correlation OK — traceability verified end to end.
+
+(El header inválido usado por el E2E fue "bad value": un valor con un espacio;
+no es un secreto.)
+
+7. Follow-ups (no son bloqueos abiertos)
+-----------------------------------------
+- `.env` local: `REDIS_STREAMS_PASSWORD` difiere de
+  secrets/redis_streams_password.txt (el redis-streams en ejecución usa el
+  archivo de secretos); e2e-correlation.sh lee `secrets/`, no `.env`.
+  Higiene local: alinear y nunca commitear `.env`.
+- El token del webhook de minio viene de `.env`
+  (MINIO_WEBHOOK_SECRET -> MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE)
+  mientras doc-service lee /run/secrets/minio_webhook_secret: mantener ambos
+  alineados; al rotar, recrear minio
+  (`docker compose up -d --force-recreate minio`), un restart simple no
+  refresca el env.
+- Sentinel 1/2/3 siguen en Restarting (deuda de S2, fuera de alcance).
+- Alinear la redacción de SPEC §5.4 (XADD plano) con el envelope `payload`
+  implementado; cambio de documentación, no de código.
+- E2E real del worker de extracción: S4-P1-01.
+
+8. Conclusión
+--------------
+- El correlation_id es rastreable de extremo a extremo en la cadena existente:
+  Traefik access log, logs de doc-service, Mongo (documento + historial) y
+  payload de Redis Streams.
+- Sin header, o con header inválido, doc-service genera UUID v4 y el valor
+  crudo inválido no aparece ni en responses ni en logs.
+- El webhook queda suscrito únicamente al target declarado por compose
+  (DOCSERVICE), con token aplicado en cada arranque; la suscripción legacy de
+  mc quedó inerte y el job de init la retira de forma idempotente.
+- El paso del worker es N/A en este alcance (S4-P1-01); el contrato del
+  mensaje quedó fijado por test.
