@@ -3,6 +3,39 @@
 # Idempotente: todo se crea solo si no existe.
 set -e
 
+# --- Secret resolution: flat VAR or VAR_FILE (Docker secret) -------------------
+# Usage: resolve_secret VAR_NAME
+# Reads ${VAR_NAME}_FILE when set (Docker secret), otherwise keeps the flat
+# variable. Fails on a missing/unreadable file or an empty value. The secret
+# value is never printed.
+resolve_secret() {
+  _rs_var="$1"
+  eval "_rs_file=\${${_rs_var}_FILE:-}"
+  if [ -n "$_rs_file" ]; then
+    if [ ! -r "$_rs_file" ]; then
+      echo "ERROR: ${_rs_var}_FILE is missing or not readable: $_rs_file" >&2
+      exit 1
+    fi
+    _rs_value=$(cat "$_rs_file" 2>/dev/null) || {
+      echo "ERROR: ${_rs_var}_FILE could not be read: $_rs_file" >&2
+      exit 1
+    }
+    export "${_rs_var}=${_rs_value}"
+  fi
+  eval "_rs_value=\${${_rs_var}:-}"
+  if [ -z "$_rs_value" ]; then
+    echo "ERROR: ${_rs_var} is empty (set it directly or via ${_rs_var}_FILE)" >&2
+    exit 1
+  fi
+  unset _rs_file _rs_value
+}
+
+resolve_secret MINIO_ROOT_PASSWORD
+resolve_secret SVC_DOCSERVICE_ACCESS_KEY
+resolve_secret SVC_DOCSERVICE_SECRET_KEY
+resolve_secret SVC_WORKER_ACCESS_KEY
+resolve_secret SVC_WORKER_SECRET_KEY
+
 # --- Guardarraíl: las credenciales de servicio NUNCA pueden ser las de root ---
 # (criterio de seguridad no negociable n.1, pasos-iniciales.md §3.5).
 # Hallado en S1: si coinciden, root ignora las policies y el test AccessDenied pasa en falso.
