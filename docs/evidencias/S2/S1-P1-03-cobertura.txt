@@ -1,0 +1,17 @@
+Evidencia de cobertura mínima para la deuda de mTLS (S1-P1-03 / ADR-0020)
+Fecha: 2026-10-14T11:15:05-03:00
+
+$ docker network inspect infra_data --format 'internal={{.Internal}}'
+internal=true
+
+$ curl -sk -o /dev/null -m 5 -w 'webhook-publico: %{http_code}\n' https://api.localhost:8543/internal/documents/x/uploaded
+webhook-publico: 404
+
+$ git branch --show-current
+feat/infra-s2-mtls-deuda
+
+Ambas comprobaciones PASS: la red de datos es interna (sin salida a internet ni rutas
+desde el entrypoint público) y el webhook no es alcanzable desde el entrypoint público.
+Además, las credenciales por servicio en MinIO y el rol de Mongo acotado a update+find
+del worker ya están documentados en docs/permisos-minio.md (evidencia S1:
+docs/evidencias/S1/S1-P1-05-accessdenied.txt).
