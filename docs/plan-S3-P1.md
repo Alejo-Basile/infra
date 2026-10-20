@@ -203,6 +203,12 @@ Commit `67c0f7f` (regla Traefik) y evidencia en
 **Objetivo:** que `/internal/*` no sea alcanzable desde el entrypoint público
 (`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
 MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
+
+**Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
+
+**Objetivo:** que `/internal/*` no sea alcanzable desde el entrypoint público
+(`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
+MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
 **Hallazgo de estado actual (2026-10-20):** el POST externo a
 `https://api.localhost:8543/internal/storage/events` devuelve 404, pero el access
 log de Traefik registra `RouterName: legacy@docker`, `ServiceName: legacy@docker`,
