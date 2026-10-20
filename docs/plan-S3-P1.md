@@ -192,19 +192,17 @@ docker compose -f compose/docker-compose.yml -f compose/docker-compose.build.yml
 
 ### `S3-P1-02` — Aislamiento del endpoint webhook (jue 22/10)
 
-**Estado: implementado y verificado localmente (2026-10-20).**
+### `S3-P1-02` — Aislamiento del endpoint webhook (jue 22/10)
+
+**Estado: implementado, verificado localmente y mergeado a main (2026-10-21).**
 Commit `67c0f7f` (regla Traefik) y evidencia en
-`docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. La rama
-`feat/s3-p1-02-webhook-isolation` está stacked sobre
-`feat/s3-p1-01-doc-service-deploy`; PR #27 abierto contra esa base (no mergear
-antes de #26).
+`docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. PR #27 mergeado a main.
 
 **Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
 
 **Objetivo:** que `/internal/*` no sea alcanzable desde el entrypoint público
 (`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
 MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
-
 **Hallazgo de estado actual (2026-10-20):** el POST externo a
 `https://api.localhost:8543/internal/storage/events` devuelve 404, pero el access
 log de Traefik registra `RouterName: legacy@docker`, `ServiceName: legacy@docker`,
