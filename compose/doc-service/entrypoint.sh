@@ -6,9 +6,9 @@
 set -e
 
 export MONGO_APP_PASSWORD=$(cat /run/secrets/mongo_app_password)
-export SVC_DOCSERVICE_ACCESS_KEY=$(cat /run/secrets/svc_docservice_access_key)
-export SVC_DOCSERVICE_SECRET_KEY=$(cat /run/secrets/svc_docservice_secret_key)
-export REDIS_STREAMS_PASSWORD=$(cat /run/secrets/redis_streams_password)
+export MINIO_ACCESS_KEY=$(cat /run/secrets/svc_docservice_access_key)
+export MINIO_SECRET_KEY=$(cat /run/secrets/svc_docservice_secret_key)
+export REDIS_PASSWORD=$(cat /run/secrets/redis_streams_password)
 export MINIO_WEBHOOK_SECRET=$(cat /run/secrets/minio_webhook_secret)
 export INTERNAL_TOKEN=$(cat /run/secrets/internal_token)
 
