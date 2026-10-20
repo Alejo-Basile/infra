@@ -1,0 +1,15 @@
+=== S1-P1-12a Prometheus Scrape doc-service ===
+Timestamp: 2026-10-14T12:48:00-03:00
+
+--- Config agregada a prometheus.yml ---
+  - job_name: doc-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["doc-service:8080"]
+
+--- Verificación target UP ---
+Job: doc-service, Instance: doc-service:8080, Health: up, Error: 
+Job: traefik, Instance: traefik:8082, Health: up, Error: 
+
+--- Métrica up ---
+1

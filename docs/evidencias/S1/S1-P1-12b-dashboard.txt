@@ -1,0 +1,25 @@
+=== S1-P1-12b Dashboard v1 Grafana ===
+Timestamp: 2026-10-14T12:48:00-03:00
+
+--- Dashboard JSON exportado ---
+Panel 1: Loki: Logs doc-service por document_id
+  Query: {service="doc-service"} |= "01M4WA35JFVFAZV1M2246354VW"
+
+Panel 2: Traefik: Requests totales docv2
+  Query: traefik_service_requests_total{service=~"docv2.*"}
+
+Panel 3: Redis: XLEN stream:pdf-processing
+  Query: redis_stream_length{stream="stream:pdf-processing"}
+
+Panel 4: Mongo: Total documents
+  Query: mongo_documents_total
+
+Panel 5: Traefik: Request rate docv2 (5m)
+  Query: rate(traefik_service_requests_total{service=~"docv2.*"}[5m])
+
+--- Dashboard JSON exportado a compose/grafana/dashboards/dashboard-v1.json ---
+UID: s1-dashboard-v1
+
+--- Verificación visual (manual) ---
+Abrir http://localhost:3000/d/s1-dashboard-v1
+Verificar 5 paneles con datos del E2E-01 (document_id: 01M4WA35JFVFAZV1M2246354VW)

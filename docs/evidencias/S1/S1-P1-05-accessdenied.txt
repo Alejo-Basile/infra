@@ -1,26 +1,13 @@
-== TEST NEGATIVO: worker -> PutObject en raw-pdfs (debe fallar) ==
 `/etc/hostname` -> `w/raw-pdfs/forbidden.txt`
 mc: <ERROR> Failed to copy `/etc/hostname`. Insufficient permissions to access this path `http://minio:9000/raw-pdfs/forbidden.txt`
-exit=1 (esperado: != 0, AccessDenied)
+=== Policy docservice-rw ===
+mc: <ERROR> Unable to fetch policy. Get "http://localhost:9000/minio/admin/v3/info-canned-policy?name=docservice-rw&v=2": dial tcp [::1]:9000: connect: connection refused.
 
-== CONTROL POSITIVO: worker -> PutObject en extracted-txt (debe pasar) ==
-`/etc/hostname` -> `w/extracted-txt/ok.txt`
-┌───────┬─────────────┬──────────┬─────────┐
-│ Total │ Transferred │ Duration │ Speed   │
-│ 13 B  │ 13 B        │ 00m00s   │ 809 B/s │
-└───────┴─────────────┴──────────┴─────────┘
-exit=0 (esperado: 0)
+=== Policy worker-extract ===
+mc: <ERROR> Unable to fetch policy. Get "http://localhost:9000/minio/admin/v3/info-canned-policy?name=worker-extract&v=2": dial tcp [::1]:9000: connect: connection refused.
 
-== limpieza del control ==
-Removed `w/extracted-txt/ok.txt`.
+=== Policy docservice-rw (from minio container) ===
+{"PolicyName":"docservice-rw","Policy":{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObjectVersion","s3:HeadBucket","s3:ListBucket","s3:GetObject"],"Resource":["arn:aws:s3:::extracted-txt","arn:aws:s3:::extracted-txt/*","arn:aws:s3:::raw-pdfs","arn:aws:s3:::raw-pdfs/*"]},{"Effect":"Allow","Action":["s3:PutObject"],"Resource":["arn:aws:s3:::raw-pdfs/*"]}]},"CreateDate":"2026-10-05T02:12:01.791Z","UpdateDate":"2026-10-07T21:59:09.991Z"}
 
-== TEST NEGATIVO: listado anonimo (debe fallar) ==
-Added `anon` successfully.
-mc: <ERROR> Unable to list folder. Requested path `/opt/bitnami/minio-client/anon` not found
-exit=1 (esperado: != 0)
-== Listado anonimo via HTTP S3 (sin credenciales) ==
--- raw-pdfs:
-403
--- cuerpo del error:
-<?xml version="1.0" encoding="UTF-8"?>
-<Error><Code>AccessDenied</Code><Message>Access Denied.</Message><BucketName>raw-pdfs</BucketName><Resource>/raw-pdfs/</Resource><Region>us-east-1</Region><RequestId>18DBB7210BE286F9</RequestId><HostId>dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac
+=== Policy worker-extract (from minio container) ===
+{"PolicyName":"worker-extract","Policy":{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:GetObjectVersion"],"Resource":["arn:aws:s3:::raw-pdfs/*"]},{"Effect":"Allow","Action":["s3:PutObject","s3:DeleteObject","s3:GetObject"],"Resource":["arn:aws:s3:::extracted-txt/*"]}]},"CreateDate":"2026-10-05T02:12:01.983Z","UpdateDate":"2026-10-05T18:55:27.402Z"}

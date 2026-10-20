@@ -1,23 +1,15 @@
-== S1-P1-02a — Buffering: body de 2MB rechazado en el edge (Traefik), sin llegar a doc-service ==
-fecha: 2026-10-08T01:56:19Z
+=== S1-P1-02a Buffering 413 en Edge ===
+Timestamp: 2026-10-14T01:32:57-03:00
 
-Config: middleware body-limit-1mb@file (infra/traefik/dynamic/middlewares.yml) sobre router docv2.
+--- 1. Generar JSON de 2MB ---
 
-POST https://api.localhost:8543/api/v2/documents (body JSON 2MB, X-Correlation-Id: c-02a-buffering-1791424547) -> HTTP 413
+--- 2. POST a /api/v2/documents (router docv2 con body-limit-1mb) ---
+413
 
-Traza del access log de Traefik (JSON):
-{
-  "RouterName": "docv2@docker",
-  "RequestMethod": "POST",
-  "RequestPath": "/api/v2/documents",
-  "DownstreamStatus": 413,
-  "OriginStatus": 0,
-  "OriginDuration": 0,
-  "RequestContentSize": 0,
-  "request_X-Correlation-Id": "c-02a-buffering-1791424547"
-}
+--- 3. Verificar en access log de Traefik: 413 SIN upstream ---
 
-Interpretacion: DownstreamStatus=413 pero OriginStatus=0 y OriginDuration=0 -> Traefik corto la subida
-en el edge por body-limit-1mb; el request NUNCA llego a doc-service (0 coincidencias del correlation
-id en los logs de infra-doc-service-1). El buffering limita el costo de un DoS por payload gigante.
-Matcheo en doc-service: 0
+--- 4. Verificar que NO llegó al doc-service ---
+0
+Sin coincidencias (OK)
+
+NOTA: Campo log es RequestContentSize (no RequestBodySize)
