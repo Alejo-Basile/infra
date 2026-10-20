@@ -9,12 +9,7 @@ set -eu
 
 umask 077
 
-# Docker secret: REDIS_STREAMS_PASSWORD_FILE apunta al archivo montado.
-# Si no existe (fallback a .env), usa la variable de entorno tradicional.
-if [ -n "${REDIS_STREAMS_PASSWORD_FILE:-}" ] && [ -f "${REDIS_STREAMS_PASSWORD_FILE}" ]; then
-  REDIS_STREAMS_PASSWORD=$(cat "${REDIS_STREAMS_PASSWORD_FILE}")
-fi
-: "${REDIS_STREAMS_PASSWORD:?definir REDIS_STREAMS_PASSWORD en .env o REDIS_STREAMS_PASSWORD_FILE}"
+: "${REDIS_STREAMS_PASSWORD:?definir REDIS_STREAMS_PASSWORD en .env}"
 
 TMPL=/usr/local/etc/redis/sentinel.conf.tmpl
 OUT=/tmp/sentinel.conf

@@ -385,15 +385,13 @@ Repetir, como **ensayo cronometrado y con evidencia**, dos ensayos ya preparados
 - [x] `S1-P1-03` cerrado — deuda declarada con owner (`P1`) y fecha de revisión (2026-12-02) en `adr/ADR-0020.md`; evidencia en `evidencias/S2/S1-P1-03-deuda.md` + `S1-P1-03-cobertura.txt` (ejecutado 2026-10-14).
 - [x] `S1-P1-06` cerrado — reglas lifecycle activas (raw-pdfs 7d, extracted-txt 30d) vía `compose/minio/lifecycle-buckets.sh` (idempotente, 2ª ejecución no duplica); evidencia en `evidencias/S2/S1-P1-06-lifecycle.txt`. Borrado efectivo pendiente del ciclo del scanner (declarado honestamente en la evidencia; ejecutado 2026-10-14).
 - [x] `S1-P1-08` cerrado — Sentinel 3 nodos (`quorum 2`, perfil `sentinel`) + 2 réplicas; failover **medido 9 s** con **0 mensajes perdidos**; ex-primario se reincorpora con `master_link_status:up` (Opción A: `--masterauth` + `--replica-announce-ip`); evidencia en `evidencias/S2/S1-P1-08-sentinel.txt` (ejecutado 2026-10-14).
-- [x] `S1-P1-13` cerrado — alertas accionables, firing verificado (17/10).
-- [x] `S1-P1-15` cerrado — `docker inspect` confirma las 5 cosas en todas las imágenes (17/10).
-- [x] `S1-P1-14` cerrado — backup de Mongo **restaurado y verificado**; runbook escrito (17/10).
-- [x] `S2-P1-01` cerrado — secretos en el store; escáner de CI limpio; rotación documentada (19/10).
-- [x] Runbooks v1 publicados (`restore-mongo`, `rotacion-secretos`).
-- [x] Evidencias en `infra/docs/evidencias/S2/` (10+ archivos).
-- [x] **Puerta G1 → F2** verificada contra los criterios de `plan-P1.md` §3.3.
-
-> **Nota failover Sentinel (19/10):** el ensayo de failover **no se puede completar de forma realista en Docker Compose** — Docker DNS no resuelve hostnames de contenedores detenidos, los sentinels no detectan el fallo. Limitante del orquestador, no de Sentinel. En K8s/Swarm el failover funciona correctamente. Evidencia en `S2-ensayo-failover.txt`. La garantía de convergencia la da el reconciliador (S6-P1-01), no el failover de Sentinel.
+- [ ] `S1-P1-13` cerrado — alertas accionables, cada una probada provocando la condición.
+- [ ] `S1-P1-15` cerrado — `docker inspect` confirma las 5 cosas en todas las imágenes.
+- [ ] `S1-P1-14` cerrado — backup de Mongo **restaurado y verificado**; runbook escrito.
+- [ ] `S2-P1-01` cerrado — secretos en el store; escáner de CI limpio; rotación documentada.
+- [ ] Runbooks v1 publicados (`restore-mongo`, `failover-redis`, `rotacion-secretos`).
+- [ ] Evidencias en `infra/docs/evidencias/S2/` (10+ archivos).
+- [ ] **Puerta G1 → F2** verificada contra los criterios de `plan-P1.md` §3.3.
 
 > **Criterios de la puerta G1** (`plan-P1.md`): *stack desplegable con un comando, host público
 > de S3 con certificado válido y subida prefirmada probada (✅ S1), buckets y ACLs creados

@@ -131,11 +131,11 @@ services:
     image: redis:7.2
     profiles: ["core", "full"]
     <<: *hardening-data
-    secrets: [redis_streams_password, redis_streams_password_json]
     # `--masterauth` y `--replica-announce-ip` son inertes mientras sea primario,
     # pero necesarios si Sentinel lo degrada a replica tras un failover: sin
     # masterauth el enlace de replicacion queda en `down` (NOAUTH) y sin
     # announce-ip anunciaria una IP efimera 172.x.
+    secrets: [redis_streams_password, redis_streams_password_json]
     entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams"]
     volumes:
       - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
@@ -285,7 +285,7 @@ services:
     cpus: 0.25
     pids_limit: 100
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -p 26379 ping"]
+      test: ["CMD-SHELL", "redis-cli ping"]
       interval: 10s
       timeout: 3s
       retries: 6
