@@ -195,8 +195,9 @@ docker compose -f compose/docker-compose.yml -f compose/docker-compose.build.yml
 **Estado: implementado y verificado localmente (2026-10-20).**
 Commit `67c0f7f` (regla Traefik) y evidencia en
 `docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. La rama
-`feat/s3-p1-02-webhook-isolation` queda stacked sobre
-`feat/s3-p1-01-doc-service-deploy`; push/PR pendientes de autorización.
+`feat/s3-p1-02-webhook-isolation` está stacked sobre
+`feat/s3-p1-01-doc-service-deploy`; PR #27 abierto contra esa base (no mergear
+antes de #26).
 
 **Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
 
