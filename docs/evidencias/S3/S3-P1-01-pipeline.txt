@@ -1,0 +1,193 @@
+S3-P1-01 — Pipeline CI/CD y despliegue automatizado del doc-service
+=====================================================================
+
+Fecha: 2026-10-20
+Repos:
+  - doc-service: branch feat/infra-s1-metrics, base 6408e51
+  - infra:       branch feat/infra-s2-completions, base 76a0849
+Entorno: local (ADR-0016), Docker Compose, Traefik HTTPS 8543.
+
+Alcance: CI (lint + unit + integración), release multi-arch a GHCR, compose por
+imagen publicada, override de build local, script de deploy y smoke E2E.
+El push de ramas/tags y la visibilidad del paquete GHCR quedan como decisión
+humana; por eso el run remoto de los workflows todavía no se observó.
+
+
+1. Cambios
+----------
+
+doc-service:
+  - Dockerfile: ENTRYPOINT -> CMD ["/usr/local/bin/api"]. Sin esto, el wrapper
+    /entrypoint.sh termina en `exec "$@"` sin argumentos y el contenedor sale
+    con exit 0.
+  - .github/workflows/ci.yml: reescrito. Jobs lint (go vet + gofmt), unit
+    (paquetes herméticos) e integration (Mongo single-node RS rs0 + Redis).
+  - .github/workflows/release.yml: nuevo. Push a main y tags v*; QEMU + Buildx;
+    multi-arch amd64/arm64; metadata sha/semver/latest; provenance + SBOM;
+    Trivy sobre el digest.
+  - gitleaks.yml: sin cambios (el escaneo de secretos ya existía).
+
+infra:
+  - compose/docker-compose.yml: doc-service usa
+    image ${DOC_SERVICE_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_TAG:-latest},
+    sin build:, con command ["/usr/local/bin/api"].
+  - compose/docker-compose.build.yml: nuevo override de desarrollo
+    (image doc-service:local + build.context).
+  - compose/doc-service/entrypoint.sh: exporta los nombres que espera la app
+    (MINIO_ACCESS_KEY, MINIO_SECRET_KEY, REDIS_PASSWORD); antes exportaba
+    SVC_DOCSERVICE_* / REDIS_STREAMS_PASSWORD.
+  - scripts/deploy-doc-service.sh: pull, up -d --no-build, espera healthy,
+    exige /healthz 200 por Traefik e imprime el digest.
+  - .env.example: DOC_SERVICE_IMAGE + DOC_SERVICE_TAG.
+
+
+2. Verificación doc-service
+---------------------------
+
+2.1 Lint
+
+  $ go vet ./...
+  (sin salida; OK)
+
+  $ $(go env GOROOT)/bin/gofmt -l .
+  (sin salida; OK)
+
+2.2 Tests herméticos (mismo filtro que el job unit)
+
+  $ PKGS=$(go list ./... | grep -vE 'internal/adapters/(mongo|changestream|relay|redis)$')
+  $ go test -race -count=1 $PKGS
+  ?   github.com/Alejo-Basile/doc-service/cmd/api                    [no test files]
+  ?   github.com/Alejo-Basile/doc-service/internal/adapters/minio    [no test files]
+  ok  github.com/Alejo-Basile/doc-service/internal/api               1.051s
+  ok  github.com/Alejo-Basile/doc-service/internal/config            1.015s
+  ok  github.com/Alejo-Basile/doc-service/internal/domain            1.019s
+  ?   github.com/Alejo-Basile/doc-service/internal/metrics           [no test files]
+  ok  github.com/Alejo-Basile/doc-service/internal/pdfsvc            1.013s
+  ?   github.com/Alejo-Basile/doc-service/internal/ports             [no test files]
+  ok  github.com/Alejo-Basile/doc-service/internal/reconciler        1.061s
+  ok  github.com/Alejo-Basile/doc-service/internal/transport/http    1.597s
+  ok  github.com/Alejo-Basile/doc-service/internal/webhook           1.030s
+
+2.3 Tests de integración (servicios efímeros, mismos comandos que el CI)
+
+  $ docker run -d --rm --name s3p1-mongo-test -p 27017:27017 mongo:7 \
+      --replSet rs0 --bind_ip_all
+  $ docker run -d --rm --name s3p1-redis-test -p 6379:6379 redis:7-alpine
+  $ docker exec s3p1-mongo-test mongosh --quiet --eval \
+      'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+  replica set primary: true
+  redis: PONG
+
+  $ MONGO_TEST_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
+    REDIS_TEST_ADDR='127.0.0.1:6379' \
+    go test -race -count=1 \
+      ./internal/adapters/mongo/... ./internal/adapters/changestream/... \
+      ./internal/adapters/relay/... ./internal/adapters/redis/...
+  ok  .../internal/adapters/mongo        3.188s
+  ok  .../internal/adapters/changestream 16.110s
+  ok  .../internal/adapters/relay        3.032s
+  ok  .../internal/adapters/redis        6.368s
+
+  Nota: los contenedores efímeros se eliminaron al terminar. No se usaron los
+  datos reales de infra-mongo-1 / infra-redis-streams-1.
+
+2.4 Imagen
+
+  $ docker image inspect doc-service:local \
+      --format 'cmd={{json .Config.Cmd}} entrypoint={{json .Config.Entrypoint}}'
+  cmd=["/usr/local/bin/api"] entrypoint=null
+
+
+3. Verificación infra
+---------------------
+
+3.1 Compose resuelto (profile full)
+
+  Base (deploy por imagen publicada):
+    image: ghcr.io/alejo-basile/doc-service:local
+    entrypoint: ['/bin/sh', '/entrypoint.sh']
+    command: ['/usr/local/bin/api']
+    build: None
+
+  Override local (docker-compose.build.yml):
+    image: doc-service:local
+    entrypoint: ['/bin/sh', '/entrypoint.sh']
+    command: ['/usr/local/bin/api']
+    build: {'context': '../../doc-service', 'dockerfile': 'Dockerfile'}
+
+3.2 Smoke con imagen publicada (tag local)
+
+  $ DOC_SERVICE_TAG=local docker compose -f compose/docker-compose.yml \
+      --env-file .env --profile full up -d --no-build --force-recreate doc-service
+  $ docker inspect infra-doc-service-1 \
+      --format 'image={{.Config.Image}} health={{.State.Health.Status}} ...'
+  image=ghcr.io/alejo-basile/doc-service:local health=healthy restarts=0
+
+  $ curl -sk https://api.localhost:8543/healthz
+  {"status":"healthy","timestamp":"2026-10-20T16:10:17Z","service":"doc-service"}
+  HTTP 200
+
+  $ curl -sk -o /dev/null -w '%{http_code}' https://api.localhost:8543/api/v2/documents
+  200
+
+  Logs del contenedor:
+  - cliente MongoDB conectado (database=documents)
+  - servidor HTTP escuchando (addr=:8080)
+  - change stream watcher iniciado (collection=documents)
+  - GET /metrics 200 (Prometheus)
+
+3.3 Smoke con override de build local
+
+  $ docker compose -f compose/docker-compose.yml \
+      -f compose/docker-compose.build.yml --env-file .env --profile full \
+      build doc-service
+  Image doc-service:local Built
+
+  $ ... up -d --no-build --force-recreate doc-service
+  health: healthy  image: doc-service:local
+  traefik /healthz: 200
+
+
+4. Hallazgos de estado local (reparados para el smoke; fuera de git)
+-------------------------------------------------------------------
+
+a) Credenciales de Mongo desincronizadas tras la rotación de S2:
+   - .env tenía MONGO_INITDB_ROOT_PASSWORD / MONGO_APP_PASSWORD /
+     MONGO_WORKER_PASSWORD distintos de secrets/*.txt.
+   - El volumen de Mongo autenticaba root con el secreto, no con .env, y los
+     usuarios de aplicación (docservice, worker) no existían.
+   - Se alinearon las tres claves de .env con los secretos y se re-ejecutó
+     mongo-init:
+       "Usuario creado: docservice"
+       "Rol documentsUpdater creado."
+       "Usuario creado: worker"
+       "Inicializacion de Mongo completada."
+   - Verificación: ping como docservice con el secreto -> 1.
+
+b) DNS interno: infra-redis-streams-1 había perdido el alias de servicio
+   redis-streams en infra_data (el nombre de contenedor sí resolvía).
+   Se recreó por Compose; aliases nuevos:
+   ["infra-redis-streams-1","redis-streams"]; nslookup redis-streams -> OK.
+
+c) Sentinel 1/2/3 siguen en Restarting: deuda de S2, fuera del alcance de
+   S3-P1-01. No afecta el smoke de doc-service (conecta al primario).
+
+
+5. Pendiente (decisión humana)
+------------------------------
+
+- Push de la rama feat/infra-s1-metrics (doc-service) y del tag v* para
+  ejecutar ci.yml y release.yml en GitHub.
+- Verificar el run remoto: jobs lint/unit/integration verdes; imagen
+  publicada en ghcr.io/alejo-basile/doc-service con digest y scan Trivy OK.
+- Definir visibilidad del paquete GHCR para que `docker compose pull` funcione
+  sin login (o documentar `docker login ghcr.io`).
+- Ejecutar scripts/deploy-doc-service.sh <tag> contra un tag publicado
+  (localmente solo se validó el mismo camino con la imagen local :local).
+
+
+6. Riesgo
+---------
+
+Risk: item 5 (environment — pipeline de release; afecta build/publicación de
+imágenes y el deploy reproducible).
