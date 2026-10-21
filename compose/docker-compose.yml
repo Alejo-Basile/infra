@@ -455,12 +455,14 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=infra_internal"
+      # El catch-all publico NUNCA debe matchear /internal: ese path es
+      # container-to-container (MinIO -> doc-service por la red `data`).
       # Router legacy (baja prioridad): TODO lo que no sea /api/v2/documents.
       # NOTA: NO lleva body-limit-1mb — el monolito recibe PDFs por el body
       # (contrato v1). El buffering de 1MB es SOLO para las rutas JSON del
       # contrato v2 (SPEC §3.1 / ADR-0011); se aplica en las labels del futuro
       # doc-service, no aqui.
-      - "traefik.http.routers.legacy.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)"
       - "traefik.http.routers.legacy.priority=1"
       - "traefik.http.routers.legacy.entrypoints=websecure"
       - "traefik.http.routers.legacy.tls=true"

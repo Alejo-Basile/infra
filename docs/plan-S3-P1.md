@@ -192,60 +192,87 @@ docker compose -f compose/docker-compose.yml -f compose/docker-compose.build.yml
 
 ### `S3-P1-02` — Aislamiento del endpoint webhook (jue 22/10)
 
-**Riesgo:** item 3 (contracts others consume — se restringe acceso a path interno).
+**Estado: implementado y verificado localmente (2026-10-20).**
+Commit `67c0f7f` (regla Traefik) y evidencia en
+`docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. La rama
+`feat/s3-p1-02-webhook-isolation` está stacked sobre
+`feat/s3-p1-01-doc-service-deploy`; PR #27 abierto contra esa base (no mergear
+antes de #26).
 
-El path `/internal/storage/events` **no debe ser accesible desde internet**. La protección es doble:
-1. **Red**: MinIO está en `infra_data` (sin egress), doc-service en `infra_internal` + `infra_data`.
-2. **Traefik**: regla explícita que **no** enruta `/internal/*` desde el entrypoint público.
+**Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
 
-En `infra/traefik/dynamic/`, añadir un router de **denegación** para paths internos:
+**Objetivo:** que `/internal/*` no sea alcanzable desde el entrypoint público
+(`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
+MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
+
+**Hallazgo de estado actual (2026-10-20):** el POST externo a
+`https://api.localhost:8543/internal/storage/events` devuelve 404, pero el access
+log de Traefik registra `RouterName: legacy@docker`, `ServiceName: legacy@docker`,
+`OriginStatus: 404`. El 404 lo genera el monolito por su catch-all
+`Host(`api.localhost`)`, no Traefik: el request atraviesa el gateway y llega al
+backend. Ese es el bug a corregir.
+
+**Cambio exacto (una línea, en las labels Docker del monolito en
+`compose/docker-compose.yml`):**
 
 ```yaml
-http:
-  routers:
-    # ... existentes ...
-    block-internal:
-      rule: "Host(`api.localhost`) && PathPrefix(`/internal/`)"
-      entryPoints: [websecure]
-      middlewares: [reject-internal]
-      service: noop@internal
-
-  middlewares:
-    reject-internal:
-      headers:
-        customResponseHeaders:
-          X-Content-Type-Options: nosniff
-      # Respuesta 404 sin revelar existencia
-      errors:
-        status: ["404"]
-        service: noop@internal
-        query: "/{path}"
+- "traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)"
 ```
 
-Alternativa más simple (sin errors): usar un middleware `replacePath` que redirija a un backend inexistente, o simplemente **no definir router para `/internal/*`** — Traefik por defecto retorna 404 para paths sin router.
+Se niega el prefijo interno en el **único** catch-all público. Sin router que
+matchee, Traefik responde su 404 por defecto antes de elegir backend: el request
+no llega al monolito ni a doc-service. Los routers `docv2` (`/api/v2`) y
+`docv2health` (`/healthz`) no se modifican.
 
-Verificación:
-```bash
-# Desde internet (externo):
-curl -sk -o /dev/null -w "%{http_code}" https://api.localhost:8543/internal/storage/events
-# → 404
+El handler de doc-service ya valida el token compartido del webhook; este cambio
+**no toca código de aplicación**. La negación en el gateway es la capa de red y
+el token sigue vigente como defensa en profundidad.
 
-# Desde red interna (doc-service → MinIO):
-docker exec infra-minio-1 curl -sf -X POST \
-  -H "Authorization: Bearer $MINIO_WEBHOOK_SECRET" \
-  http://doc-service:8080/internal/storage/events \
-  -d '{"test": true}'
-# → 200
-```
+**Por qué NO usar `noop@internal` + `errors`:** `noop@internal` responde
+HTTP 418 (`StatusTeapot`), no 404; un middleware `errors` con
+`status: ["404"]` no intercepta un 418. El cliente vería 418 y el control no
+cumpliría el objetivo. Descartado.
 
-**DoD:**
-* `curl` externo al path interno da 404.
-* MinIO (red `data`) puede POSTear al webhook.
-* El webhook valida el token compartido.
+**Por qué NO usar `ipAllowList`:** responde 403 y acopla la regla a la IPAM de
+Docker (rango de `infra_internal` / `infra_data`), frágil ante cambios de red.
+La negación por path no necesita conocer IPs.
 
-**Rollback:** eliminar el router `block-internal` del file provider.
+**Por qué NO agregar un router dinámico:** `traefik/dynamic/` solo declara el
+router S3; el catch-all legacy vive en labels Docker. Un router de denegación
+duplicaría la regla y competiría por prioridad con `legacy`. La negación en el
+origen mantiene una sola fuente de verdad.
 
-**Evidencia:** `evidencias/S3/S3-P1-02-webhook-aislamiento.txt`.
+**Pre-flight (estado local, NO cambios de repo):**
+- `.env` tiene `MINIO_WEBHOOK_SECRET` e `INTERNAL_TOKEN` desalineados con
+  `secrets/`.
+- `minio-notify-init` está en `Created` y `minio-init` salió 1 porque los scripts
+  esperan env vars planas mientras compose pasa `*_FILE`.
+- Son prerequisitos/follow-ups para el E2E real y **no** quedan resueltos por este
+  cambio.
+- Si no se puede confirmar el target/evento de MinIO, el POST sintético interno
+  (fila 6) igual prueba el handler y el token.
+
+**Matriz de verificación:**
+
+| # | Comando / evidencia | Esperado |
+|---|---|---|
+| 1 | `docker compose -f compose/docker-compose.yml --env-file .env --profile full config -q` | exit 0 |
+| 2 | `curl -sk -o /dev/null -w "%{http_code}" -X POST https://api.localhost:8543/internal/storage/events -H 'Content-Type: application/json' -d '{}'` | `404` |
+| 3 | Igual que (2) con `-H "Authorization: Bearer $(cat secrets/minio_webhook_secret.txt)"` | `404` (el gateway bloquea antes del handler; si llegara, sería 200/401) |
+| 4 | `curl -sk -o /dev/null -w "%{http_code}" -X POST https://api.localhost:8543/internal/documents/x/uploaded` | `404` |
+| 5 | Access log de Traefik tras el cambio | sin `legacy@docker`; `DownstreamStatus: 404`; `OriginStatus: 0` o ausente (contrastar con la línea "before") |
+| 6 | Desde el contenedor MinIO: `curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' http://doc-service:8080/internal/storage/events` | `200` con token válido; `401` con `Bearer wrong` |
+| 7 | `docker port infra-doc-service-1` | vacío (sin puertos publicados) |
+| 8 | `docker network inspect infra_data --format '{{.Internal}}'` | `true` |
+| 9 | Regresiones: `/healthz`, `/api/v2/documents`, `s3.localhost` health | `200` / `200` / `200` |
+
+**DoD:** las filas 1–9 se cumplen; el path interno solo responde por la red
+`data` y el token compartido se valida en el handler.
+
+**Rollback:** quitar la negación de la regla `legacy` y recrear el monolito. El
+path vuelve al 404 actual del monolito; no hay cambios de datos.
+
+**Evidencia:** `docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`.
 
 ---
 
