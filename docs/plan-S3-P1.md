@@ -357,6 +357,14 @@ suscripción legacy de mc si existe (idempotente, probado en vivo) y suscriba
   `db.documents.findOne({correlation_id:"corr-s3p103-20261020T210202Z"})` →
   `{_id: "c9e69df7ac94fdaa129581f376503668", status: "UPLOADED", history_len: 2}`.
 
+**Revisión nativa (RDD):** los dos slices pasaron el review nativo (consent:
+"Revisar este cambio") y quedaron aprobados con la autoridad quemada:
+doc-service `review-db63df1eef2e3118` (lentes risk + reliability) e infra
+`review-e0fc16f82f05af69` (lentes risk + resilience). 8 advisories, 0
+BLOCKER/CRITICAL (detalle en la evidencia, sección 9). Follow-ups: credenciales
+del E2E expuestas en argv, chequeo de presencia del `auth_token` en el job y
+robustez del patrón de chequeo de endpoint.
+
 **Rollback:** revertir los cinco commits de código en ambos repos (tres en
 doc-service, dos en infra). El job `minio-notify-init` es idempotente: al
 volver al script anterior, la suscripción se puede re-crear sin estado

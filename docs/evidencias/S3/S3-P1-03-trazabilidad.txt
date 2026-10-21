@@ -294,3 +294,40 @@ no es un secreto.)
   mc quedó inerte y el job de init la retira de forma idempotente.
 - El paso del worker es N/A en este alcance (S4-P1-01); el contrato del
   mensaje quedó fijado por test.
+
+9. Revisión nativa (RDD, gentle-ai review)
+------------------------------------------
+Los dos slices se revisaron con el ciclo nativo de review (consent del humano:
+"Revisar este cambio") y ambos quedaron APROBADOS con la autoridad quemada:
+
+  doc-service  lineage review-db63df1eef2e3118  revision c59bc035...  (approved + acknowledged)
+  infra        lineage review-e0fc16f82f05af69  revision 4e0e3487...  (approved + acknowledged)
+
+Lentes: doc-service review-risk + review-reliability; infra review-risk +
+review-resilience. 8 advisories, 0 BLOCKER/CRITICAL: ninguno abrio correccion
+ni reabre el review.
+
+- R1 (charset del header): un X-Correlation-ID con '=', '+', '/', '%' o espacios
+  internos se descarta y se reemplaza por UUID v4. Es el hardening acordado
+  (spec S1); conviene confirmar que los productores legitimos de trace IDs
+  encajan en [A-Za-z0-9._:-].
+- R3 (failure_reason del REJECTED): el reviewer no vio el adapter Mongo
+  (preexistente, fuera del candidato). `UpdateStatusWithHistory` setea
+  `failure_reason` desde `entry.Reason` cuando el destino es REJECTED / FAILED /
+  EXTRACTION_FAILED, asi que el campo top-level se sigue persistiendo.
+- R3 (texto del log de REJECTED) y R3 (asercion de un solo campo en el
+  payload): cambios de texto/estrictez ya asumidos; la asercion existe
+  justamente para fijar el contrato que consumira el worker.
+- R1 (secretos en argv del E2E): `mongosh -p` y `redis-cli -a` exponen las
+  credenciales locales en el process table del host durante la corrida. El
+  impacto queda acotado al host de desarrollo (las mismas credenciales ya estan
+  en archivos locales que el operador lee). Follow-up: pasar la password por
+  variable de entorno o archivo de config.
+- R1 (chequeo de presencia del token en el job): el job verifica el registro
+  del target y su endpoint, no la presencia del auth_token. Un token ausente se
+  manifiesta como 401 en doc-service (fail-closed), tal como registro la sonda.
+- R4 (patron del chequeo de endpoint): el reviewer sostuvo que el AVISO de
+  `ENDPOINT_${TARGET}=` dispara en cada corrida. Verificado en vivo: la corrida
+  limpia del job NO emite AVISO (mc ecoa la variable de env
+  `MINIO_NOTIFY_WEBHOOK_ENDPOINT_DOCSERVICE=...` y el patron matchea). Queda
+  como robustez a futuro: aceptar tambien la forma `endpoint=` de mc.
