@@ -9,7 +9,7 @@ Ramas (nunca main):
   doc-service: feat/s3-p1-03-correlation-id
     (stacked sobre feat/s3-p1-01-doc-service-pipeline, 48b02f0)
   infra:       feat/s3-p1-03-correlation-id
-    (stacked sobre feat/s3-p1-02-webhook-isolation, e78b56a)
+    (stacked sobre feat/s3-p1-02-webhook-isolation, d9b1fa0)
 Entorno: local (ADR-0016), api.localhost:8543 / s3.localhost:8543
 Referencias: SPEC §5.4, §9 y §10; docs/plan-S3-P1.md (S3-P1-03)
 
@@ -58,8 +58,8 @@ doc-service (feat/s3-p1-03-correlation-id):
   eb54d7a  feat(redis): trace correlation_id through the work queue contract
 
 infra (feat/s3-p1-03-correlation-id):
-  6359133  fix(compose): subscribe the declared webhook target in minio init jobs
-  ab5f124  test(e2e): verify correlation_id traceability end to end
+  818d89b  fix(compose): subscribe the declared webhook target in minio init jobs
+  8c86a25  test(e2e): verify correlation_id traceability end to end
 
 - f78c00b: middleware HTTP que valida y normaliza `X-Correlation-ID` inbound
   (TrimSpace, max 128, charset); si falta o es inválido genera UUID v4, lo
@@ -68,12 +68,12 @@ infra (feat/s3-p1-03-correlation-id):
   (UpdateStatusWithHistory) y propaga el correlation_id del documento.
 - eb54d7a: el contrato del work message de Redis incluye correlation_id, fijado
   por test estricto (DisallowUnknownFields).
-- 6359133: init-notifications.sh deja de gestionar el target con
+- 818d89b: init-notifications.sh deja de gestionar el target con
   `mc admin config set`; verifica el target declarado por compose (DOCSERVICE),
   retira la suscripción legacy si existe y suscribe ObjectCreated:Put a
   DOCSERVICE. Los dos scripts init ganan el helper POSIX `resolve_secret`
   (lee secretos `*_FILE`, falla si quedan vacíos, nunca imprime valores).
-- ab5f124: `scripts/e2e-correlation.sh`, E2E de trazabilidad de extremo a
+- 8c86a25: `scripts/e2e-correlation.sh`, E2E de trazabilidad de extremo a
   extremo (salida completa en la sección 6).
 
 El commit de documentación (esta evidencia + plan) se hace aparte en infra y
@@ -116,7 +116,7 @@ sonda usaron keys sin el prefijo raw-pdfs/ y el handler los filtró como
 prefijo incorrecto (200, silencioso en debug); la autenticación quedó probada
 por el par 401/200, y la corrección completa por el E2E final verde.
 
-Fix (commit 6359133):
+Fix (commit 818d89b):
 - compose/minio/init-notifications.sh ya no gestiona el target con
   `mc admin config set`. Verifica que el target declarado por compose
   (DOCSERVICE) esté registrado, retira la suscripción legacy si existe

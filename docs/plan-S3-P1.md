@@ -292,8 +292,8 @@ doc-service `feat/s3-p1-03-correlation-id` (stacked sobre
 `feat/s3-p1-01-doc-service-pipeline`, `48b02f0`): `f78c00b` (validación y
 normalización del header), `0f03a4f` (propagación en transiciones del
 webhook), `eb54d7a` (contrato Redis). infra `feat/s3-p1-03-correlation-id`
-(stacked sobre `feat/s3-p1-02-webhook-isolation`, `e78b56a`): `6359133` (fix
-de suscripción del target webhook en los jobs init), `ab5f124` (E2E
+(stacked sobre `feat/s3-p1-02-webhook-isolation`, `d9b1fa0`): `818d89b` (fix
+de suscripción del target webhook en los jobs init), `8c86a25` (E2E
 `scripts/e2e-correlation.sh`).
 
 **Qué se construyó (reemplaza los bocetos previos, que estaban desactualizados):**
@@ -326,7 +326,7 @@ de suscripción del target webhook en los jobs init), `ab5f124` (E2E
 - **Logs del worker**: handoff a P3 en S5 (no hay consumer desplegado); el
   criterio de trazabilidad extremo a extremo queda abierto hasta esa fase.
 
-**Hallazgo 401 y fix del target de notificación (`6359133`, breve):** la
+**Hallazgo 401 y fix del target de notificación (`818d89b`, breve):** la
 primera corrida del E2E falló porque el evento del bucket estaba suscrito al
 target gestionado por `mc`, cuya config persistida no tenía `auth_token`
 aplicado al proceso (`mc admin config set` escribe el config store pero MinIO
