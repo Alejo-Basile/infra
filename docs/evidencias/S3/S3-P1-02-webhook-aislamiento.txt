@@ -1,0 +1,172 @@
+S3-P1-02 — Aislamiento del endpoint webhook (/internal/*)
+===========================================================
+
+Fecha: 2026-10-20
+Rama: feat/s3-p1-02-webhook-isolation
+Commit de la regla: 67c0f7f
+Entorno: local (ADR-0016), api.localhost:8543 / s3.localhost:8543
+Referencias: SPEC §5.2 y §9; docs/plan-S3-P1.md (S3-P1-02); ADR-0020
+
+1. Hallazgo inicial
+-------------------
+El POST externo al webhook ya devolvía 404, pero no por una denegación de
+Traefik. El access log mostraba que el request atravesaba el gateway y lo
+respondía el monolito:
+
+  curl -sk -X POST https://api.localhost:8543/internal/storage/events \
+    -H 'X-Correlation-Id: s3p102-before' -d '{}'
+  -> 404
+
+  Traefik access log:
+    DownstreamStatus=404
+    OriginStatus=404
+    RouterName=legacy@docker
+    ServiceName=legacy@docker
+    RequestPath=/internal/storage/events
+    request_X-Correlation-Id=s3p102-before
+
+Conclusión: el 404 era del monolito por su catch-all `Host(api.localhost)`,
+no de Traefik. Si el monolito cambiaba, o si otro router matcheaba el path,
+el request podía llegar a doc-service.
+
+2. Cambio aplicado
+------------------
+Archivo: compose/docker-compose.yml
+Label del router legacy (catch-all público):
+
+  Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)
+
+Label aplicada en el contenedor (verificada con docker inspect):
+
+  Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)
+
+Con la negación, `/internal` y `/internal/...` no matchean ningún router.
+Traefik responde su 404 por defecto antes de elegir backend: el request no
+llega al monolito ni a doc-service.
+
+No se agregó un router en traefik/dynamic, no se tocó doc-service y no se
+modificó ningún otro label, servicio o red. Se descartó el diseño del borrador
+con `service: noop@internal` + `errors status: ["404"]`: `noop@internal`
+responde HTTP 418, no 404, y ese middleware no intercepta un 418.
+
+3. Pre-flight local (sin cambios de repo)
+-----------------------------------------
+- Se alinearon en `.env` local `MINIO_ROOT_PASSWORD`, `MINIO_WEBHOOK_SECRET` e
+  `INTERNAL_TOKEN` con los archivos de `secrets/` (MATCH; no se imprimieron
+  valores).
+- Se recrearon `minio` y `doc-service` para que leyeran los secretos actuales.
+  `doc-service` se recreó con la imagen local `doc-service:local` porque GHCR
+  sigue denegando el pull de `latest` (visibilidad pendiente, decisión humana).
+- Se ejecutó `minio-notify-init` con las variables inline como workaround del
+  bug de `_FILE`:
+
+    Target notify_webhook:docservice activo -> http://doc-service:8080/internal/storage/events
+    Evento ya suscrito en raw-pdfs (arn:minio:sqs::docservice:webhook)
+    Eventos configurados en raw-pdfs:
+    arn:minio:sqs:us-east-1:docservice:webhook   s3:ObjectCreated:*   Filter:
+
+- Hallazgo pendiente (follow-up ajeno a S3-P1-02): `init-notifications.sh` e
+  `init-buckets.sh` esperan variables planas (`MINIO_ROOT_PASSWORD`,
+  `MINIO_WEBHOOK_SECRET`, `SVC_*`) mientras compose pasa `*_FILE`;
+  `minio-init` salió 1 y `minio-notify-init` quedó en `Created`. El workaround
+  anterior permitió configurar el target y el evento, pero el fix de los
+  scripts debe ir en un cambio aparte.
+
+4. Verificación
+---------------
+4.1 Configuración
+
+  docker compose -f compose/docker-compose.yml --env-file .env --profile full config -q
+  -> exit 0
+
+  docker inspect -f '{{index .Config.Labels "traefik.http.routers.legacy.rule"}}' infra-monolito-1
+  -> Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)
+
+4.2 Requests externos
+
+  curl -sk -o /dev/null -w '%{http_code}' -X POST \
+    https://api.localhost:8543/internal/storage/events -d '{}'
+  -> 404
+
+  curl -sk -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $(cat secrets/minio_webhook_secret.txt)" \
+    https://api.localhost:8543/internal/storage/events -d '{}'
+  -> 404
+
+  curl -sk -o /dev/null -w '%{http_code}' -X POST \
+    https://api.localhost:8543/internal/documents/x/uploaded
+  -> 404
+
+El 404 con token válido es la prueba clave: si el request hubiera llegado al
+handler, habría respondido 200 (token válido) o 401 (token inválido).
+
+4.3 Access log después del cambio
+
+  RequestPath=/internal/storage/events
+  DownstreamStatus=404
+  OriginStatus=0
+  RouterName=<ausente>
+  ServiceName=<ausente>
+  request_X-Correlation-Id=s3p102-after-notoken
+
+  RequestPath=/internal/storage/events
+  DownstreamStatus=404
+  OriginStatus=0
+  RouterName=<ausente>
+  ServiceName=<ausente>
+  request_X-Correlation-Id=s3p102-after-valid
+
+  RequestPath=/internal/documents/x/uploaded
+  DownstreamStatus=404
+  OriginStatus=0
+  RouterName=<ausente>
+  ServiceName=<ausente>
+  request_X-Correlation-Id=s3p102-after-docpath
+
+Ya no aparece `legacy@docker` y `OriginStatus` es 0: el 404 lo genera Traefik,
+no el monolito.
+
+4.4 Webhook interno (red `data`)
+
+  docker exec -e TOKEN="$(cat secrets/minio_webhook_secret.txt)" infra-minio-1 \
+    sh -c 'curl -s -o /dev/null -w "%{http_code}" -X POST \
+      http://doc-service:8080/internal/storage/events \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{}"'
+  -> 200
+
+  docker exec infra-minio-1 \
+    sh -c 'curl -s -o /dev/null -w "%{http_code}" -X POST \
+      http://doc-service:8080/internal/storage/events \
+      -H "Authorization: Bearer wrong" -H "Content-Type: application/json" -d "{}"'
+  -> 401
+
+4.5 Red y puertos
+
+  docker port infra-doc-service-1
+  -> (vacío; doc-service no publica puertos al host)
+
+  docker network inspect infra_data --format '{{.Internal}}'
+  -> true
+
+  doc-service networks: infra_data infra_internal
+  minio networks:       infra_data
+
+4.6 Regresiones
+
+  GET https://api.localhost:8543/healthz                  -> 200
+  GET https://api.localhost:8543/api/v2/documents         -> 200
+  GET https://s3.localhost:8543/minio/health/live         -> 200
+
+5. Conclusión
+-------------
+- `POST /internal/*` por el entrypoint público devuelve 404 de Traefik, con y
+  sin token válido; el request no alcanza ningún backend.
+- El webhook sigue funcionando solo por la red interna `data` (MinIO ->
+  doc-service:8080) y valida el token compartido (200/401).
+- doc-service sigue sin puerto publicado al host.
+- Sin regresiones en API v2, health ni S3.
+- Riesgo: item 3 (contracts others consume — se restringe un path público).
+- Rollback: quitar la negación de la regla `legacy` y recrear el monolito; el
+  path vuelve al 404 actual del monolito, sin cambios de datos.
+- Pendientes humanos/follow-ups: merge de PR #38 y #26, visibilidad GHCR,
+  corrección de los scripts `init-*.sh` para `*_FILE`, y deuda Sentinel de S2.
