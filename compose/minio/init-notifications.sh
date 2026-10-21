@@ -5,9 +5,9 @@
 set -e
 
 ALIAS="local"
-TARGET="docservice"
+TARGET="DOCSERVICE"
 BUCKET="raw-pdfs"
-ARN="arn:minio:sqs::${TARGET}:webhook"
+ARN="arn:minio:sqs:us-east-1:${TARGET}:webhook"
 
 : "${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}"
 : "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}"
@@ -41,8 +41,9 @@ mc admin config set "$ALIAS" "notify_webhook:${TARGET}" \
   auth_token="${MINIO_WEBHOOK_SECRET}" >/dev/null 2>&1 \
   || echo "AVISO: target notify_webhook:${TARGET} no editable (revisar config)"
 
-if mc admin config get "$ALIAS" "notify_webhook:${TARGET}" 2>/dev/null \
-    | grep -q "endpoint=${DOC_SERVICE_WEBHOOK_URL}"; then
+CONFIG_DUMP="$(mc admin config get "$ALIAS" "notify_webhook:${TARGET}" 2>/dev/null || true)"
+if printf '%s\n' "$CONFIG_DUMP" | grep -q "MINIO_NOTIFY_WEBHOOK_ENABLE_${TARGET}=on" \
+    || printf '%s\n' "$CONFIG_DUMP" | grep -q "endpoint=${DOC_SERVICE_WEBHOOK_URL}"; then
   echo "Target notify_webhook:${TARGET} activo -> ${DOC_SERVICE_WEBHOOK_URL}"
 else
   echo "Target no confirmado: aplicando restart interno (puede fallar sin TTY)."
