@@ -117,9 +117,21 @@ services:
       MONGO_WORKER_USER: ${MONGO_WORKER_USER:?definir en .env}
       MONGO_WORKER_PASSWORD: ${MONGO_WORKER_PASSWORD:?definir en .env}
       MONGO_DATABASE: ${MONGO_DATABASE:-documents}
+      # Usuario legacy del monolito: su DSN fija authSource=admin.
+      MONOLITO_MONGO_USER: ${MONOLITO_MONGO_USER:?definir en .env}
+      MONOLITO_MONGO_PASSWORD: ${MONOLITO_MONGO_PASSWORD:?definir en .env}
+      MONOLITO_MONGO_DB: ${MONOLITO_MONGO_DB:-pdf-extractext}
     volumes:
       - ./mongo/init.js:/init.js:ro
-    entrypoint: ["mongosh", "--host", "mongo:27017", "--quiet", "/init.js"]
+    # Espera a que mongod acepte conexiones antes de iniciar el RS. No se usa
+    # `service_healthy` porque el healthcheck exige PRIMARY y el RS aún no
+    # existe: sería un deadlock.
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - >
+        until mongosh --host mongo:27017 --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1; do sleep 2; done;
+        exec mongosh --host mongo:27017 --quiet /init.js
     networks: [data]
     mem_limit: 256m
     cpus: 0.5
@@ -424,10 +436,13 @@ services:
       context: ${MONOLITO_BUILD_CONTEXT:-../../../pdf-extractext}
     profiles: ["full"]
     <<: *hardening
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
     environment:
       # Requeridas por el monolito (src/infrastructure/config/settings.py)
-      MONGO_USER: ${MONGO_APP_USER}
-      MONGO_PASS: ${MONGO_APP_PASSWORD}
+      MONGO_USER: ${MONOLITO_MONGO_USER}
+      MONGO_PASS: ${MONOLITO_MONGO_PASSWORD}
       MONGO_HOST: mongo
       MONGO_PORT: "27017"
       MONGO_DB: ${MONOLITO_MONGO_DB:-pdf-extractext}

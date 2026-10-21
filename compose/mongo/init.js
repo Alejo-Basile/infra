@@ -11,6 +11,9 @@ const appUser = process.env.MONGO_APP_USER;
 const appPass = process.env.MONGO_APP_PASSWORD;
 const workerUser = process.env.MONGO_WORKER_USER;
 const workerPass = process.env.MONGO_WORKER_PASSWORD;
+const legacyUser = process.env.MONOLITO_MONGO_USER;
+const legacyPass = process.env.MONOLITO_MONGO_PASSWORD;
+const legacyDbName = process.env.MONOLITO_MONGO_DB || "pdf-extractext";
 
 // --- Replica Set -------------------------------------------------------------
 const admin = db.getSiblingDB("admin");
@@ -75,5 +78,11 @@ try {
   else throw e;
 }
 upsertUser(appDb, workerUser, workerPass, [{ role: "documentsUpdater", db: dbName }]);
+
+// Monolito legacy (Strangler): su cadena de conexion fija authSource=admin, asi
+// que el usuario debe existir en `admin` y tener permisos sobre su propia base.
+if (legacyUser && legacyPass) {
+  upsertUser(admin, legacyUser, legacyPass, [{ role: "readWrite", db: legacyDbName }]);
+}
 
 print("Inicializacion de Mongo completada.");
