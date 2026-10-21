@@ -81,7 +81,7 @@ de release probado.
 | Mar 20/10 | Build + push | `S3-P1-01` parte 2: build multi-arch + push GHCR | Imagen publicada por tag |
 | Mié 21/10 | Compose pull + deploy | `S3-P1-01` parte 3: compose usa imagen; smoke test | `docker compose up` reproducible |
 | Jue 22/10 | Aislamiento webhook | `S3-P1-02`: regla en Traefik | Path interno da 404 desde internet |
-| Vie 23/10 | Correlación + cierre | `S3-P1-03`: `correlation_id` E2E | Un ID rastreado en 3 componentes |
+| Vie 23/10 | Correlación + cierre | `S3-P1-03`: `correlation_id` hasta Redis | Un ID rastreado en Traefik, doc-service, Mongo y Redis |
 
 ---
 
@@ -280,9 +280,10 @@ path vuelve al 404 actual del monolito; no hay cambios de datos.
 
 **Riesgo:** item 3 (contracts others consume — header HTTP).
 
-**Estado: implementado y verificado localmente (2026-10-20).**
-Alcance A: el E2E real del worker queda diferido a `S4-P1-01`; aquí se
-verifica el contrato del mensaje, no un consumer inexistente. Commits:
+**Estado: implementado y verificado localmente con alcance A (parcial) (2026-10-20).**
+Alcance A: el E2E real del worker queda diferido a la Fase 3 (S5/P3), no a
+`S4-P1-01`; aquí se verifica el contrato del mensaje, no un consumer
+inexistente. Commits:
 doc-service `feat/s3-p1-03-correlation-id` (stacked sobre
 `feat/s3-p1-01-doc-service-pipeline`, `48b02f0`): `f78c00b` (validación y
 normalización del header), `0f03a4f` (propagación en transiciones del
@@ -318,7 +319,8 @@ de suscripción del target webhook en los jobs init), `ab5f124` (E2E
   y la alineación de SPEC queda como follow-up documental.
 - **Persistencia en Mongo**: `documents.correlation_id` + historial por
   transición.
-- **Logs del worker**: diferidos a `S4-P1-01` (no hay consumer desplegado).
+- **Logs del worker**: handoff a P3 en S5 (no hay consumer desplegado); el
+  criterio de trazabilidad extremo a extremo queda abierto hasta esa fase.
 
 **Hallazgo 401 y fix del target de notificación (`6359133`, breve):** la
 primera corrida del E2E falló porque el evento del bucket estaba suscrito al
@@ -348,7 +350,7 @@ suscripción legacy de mc si existe (idempotente, probado en vivo) y suscriba
 
 **DoD:**
 * Un `correlation_id` enviado por el cliente aparece en Traefik, doc-service,
-  Mongo y Redis: ✅ verificado por el E2E (pasos 1–5).
+  Mongo y Redis (alcance A, hasta la cola): ✅ verificado por el E2E (pasos 1–5).
 * Si el cliente no lo envía (o envía uno inválido), doc-service genera UUID v4
   y el valor crudo no aparece ni en responses ni en logs: ✅ verificado
   (pasos 7–8 del E2E).
@@ -356,6 +358,9 @@ suscripción legacy de mc si existe (idempotente, probado en vivo) y suscriba
   cerrado con la consulta post-E2E
   `db.documents.findOne({correlation_id:"corr-s3p103-20261020T210202Z"})` →
   `{_id: "c9e69df7ac94fdaa129581f376503668", status: "UPLOADED", history_len: 2}`.
+* El tramo del worker (logs con el mismo `correlation_id`) queda como criterio
+  de aceptación de la tarea del worker en S5/P3: no se puede cerrar sin un
+  consumer desplegado.
 
 **Revisión nativa (RDD):** los dos slices pasaron el review nativo (consent:
 "Revisar este cambio") y quedaron aprobados con la autoridad quemada:
@@ -380,16 +385,28 @@ residual. No hay cambios de datos que revertir.
 |---|---|---|
 | Inmediata | CI verde tras cada push | badge en repo |
 | Corta | Webhook aislado (404 desde internet) | curl externo |
-| Media | `correlation_id` rastreado en 3 componentes | ✅ verificado (2026-10-20): Traefik, doc-service, Mongo y Redis; logs del worker en `S4-P1-01` |
-| Cierre | Documento E2E alcanza estado terminal | GET /documents/{id} |
+| Media | `correlation_id` rastreado en el tramo doc-service | ✅ verificado (2026-10-20): Traefik, doc-service, Mongo y Redis; el tramo del worker queda como handoff a P3 en S5 |
+| Cierre | Documento E2E alcanza `UPLOADED` y queda encolado | GET /documents/{id} + `XRANGE stream:pdf-processing` |
 
 ---
 
 ## 6. Herencia para S4
 
-* `S4-P1-01` — Worker Rust completo (consumer group, XAUTOCLAIM, Retry + Circuit Breaker, escritura en Mongo)
-* `S4-P1-02` — Rate limiting distribuido (ForwardAuth + Redis, Opción B de SPEC §8)
-* `S4-P1-03` — Replay de corpus PDF (válidos, inválidos, escaneados, cifrados, grandes)
+* `S4-P1-01` — Escalado horizontal sin estado: 2 réplicas del doc-service con la
+  misma imagen; con 50 documentos subidos, la cola debe tener exactamente 50
+  mensajes. Depende de `S4-P2-03` (deduplicación `SET NX EX`).
+* `S4-P1-02` — Métricas de negocio en el dashboard: exporter de Mongo en
+  Prometheus, documentos por estado y alerta de estados intermedios por más de
+  X minutos.
+* `S4-P1-03` — Alertas de la cadena completa: cola sin avanzar y DLQ no vacía.
+* **Handoff a P3 / Fase 3 (S5):** Worker Rust completo (consumer group,
+  `XAUTOCLAIM`, Retry + Circuit Breaker, escritura condicional en Mongo y logs
+  con `correlation_id`). No es una tarea de implementación de P1 ni de S4; P1
+  conserva las tareas de plataforma del worker en S5 (límites, métricas y
+  alertas).
+
+> Rate limiting distribuido y replay de corpus pertenecen a la Fase 4 (semanas
+> 7-8), no a S4.
 
 ---
 
