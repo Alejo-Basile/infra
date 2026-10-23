@@ -188,15 +188,15 @@ Hecho:
   `docker run ... mongo:7 --replSet rs0` + `rs.initiate` (commit 48b02f0).
 - Checks de #26 verdes: gitleaks y lint.
 
-Pendiente (humano):
-- Mergear #38 para que release.yml publique la imagen en GHCR (el release no
-  corre en PRs), y luego mergear #26.
-- Verificar la imagen publicada en ghcr.io/alejo-basile/doc-service con digest
-  y scan Trivy OK.
-- Definir visibilidad del paquete GHCR para que `docker compose pull` funcione
-  sin login (o documentar `docker login ghcr.io`).
-- Ejecutar scripts/deploy-doc-service.sh <tag> contra un tag publicado
-  (localmente solo se validó el mismo camino con la imagen local :local).
+Pendiente (humano) — RESUELTO (2026-10-23, ver sección 7):
+- [x] Mergear #38 (mergeado; release.yml corrió en main, run 39665033474) y
+      luego #26 (#30, rebase).
+- [x] Imagen publicada: ghcr.io/alejo-basile/doc-service:latest y :sha-210be28,
+      digest sha256:9372c00f470c5b4570c38267a251210d4a06edbf27535e67c1c7a5f80d6ff6e5;
+      Trivy 0 CRITICAL/HIGH (ignore-unfixed).
+- [x] Visibilidad del paquete GHCR: pública; `docker manifest inspect` e
+      índice multi-arch legibles sin login.
+- [x] Deploy por tag publicado ejecutado y verificado (sección 7).
 
 
 6. Riesgo
@@ -204,3 +204,40 @@ Pendiente (humano):
 
 Risk: item 5 (environment — pipeline de release; afecta build/publicación de
 imágenes y el deploy reproducible).
+
+
+7. Cierre — deploy por tag publicado (2026-10-23)
+-------------------------------------------------
+
+Pipeline remoto:
+- release.yml verde en main (run 39665033474): publica latest y sha-210be28
+  (multi-arch amd64/arm64, provenance + SBOM), Trivy sobre el digest con
+  0 CRITICAL/HIGH. Paquete público: pull sin login verificado.
+
+Deploy local reproducible (DOC_SERVICE_TAG=sha-210be28):
+- `docker compose pull` OK; `up -d --no-build` recrea infra-doc-service-1 con
+  image=ghcr.io/alejo-basile/doc-service:sha-210be28.
+- Digest local == digest publicado:
+  ghcr.io/alejo-basile/doc-service@sha256:9372c00f470c5b4570c38267a251210d4a06edbf27535e67c1c7a5f80d6ff6e5
+- Label org.opencontainers.image.revision: 210be28c301ec7ef89f320da320238e65e188155.
+
+Smoke E2E por Traefik (todos 200/404 esperados):
+  1. GET  https://api.localhost:8543/healthz                -> 200
+  2. GET  https://api.localhost:8543/api/v2/documents        -> 200
+  3. GET  https://s3.localhost:8543/minio/health/live         -> 200
+  4. POST https://api.localhost:8543/internal/storage/events -> 404 (S3-P1-02)
+  5. POST https://api.localhost:8543/internal/documents/x/uploaded -> 404
+
+Incidente durante la verificación (2026-10-23, resuelto; sin pérdida de datos):
+- Disco del host al 99%: ENOSPC durante el `up -d` dejó un endpoint de red
+  huérfano para infra-mongo-1 en infra_data y rompió el DNS interno
+  (doc-service en restart loop: "lookup mongo ... server misbehaving").
+- Remediación: prune de build cache e imágenes colgantes (15.9 GB liberados),
+  `systemctl restart docker` (descarta el endpoint huérfano; los containers
+  con restart policy de otros proyectos volvieron solos), recreación de la
+  red infra_data y force-recreate de los servicios del proyecto. Volumen
+  infra_mongo-data intacto (verificado: mongo healthy, RS rs0 con primario).
+- Rollback del deploy probado de facto: el tag es el único input del deploy
+  (`scripts/deploy-doc-service.sh <tag-anterior>`).
+
+DoD S3-P1-01: CERRADO (partes 1-3).
