@@ -1,0 +1,129 @@
+S1-P1-08 — Redis Sentinel: causa raíz del crash loop, fix y failover verificado
+=============================================================================
+
+Fecha: 2026-10-23
+Repo: infra, branch fix/s1-p1-08-sentinel-secrets
+Entorno: local (ADR-0016), Docker Compose, perfil `sentinel`.
+
+Contexto: los tres contenedores Sentinel venían en crash loop (exit 2) desde
+S2 (documentado como deuda en plan-S3-P1.md §4, hallazgos). El 2026-10-23,
+tras liberar disco, se diagnosticó y cerró la deuda con autorización explícita
+del owner (fix + verificación de failover).
+
+
+1. Causa raíz del crash loop (exit 2)
+-------------------------------------
+
+  $ docker compose ... --profile sentinel up -d sentinel-1
+  $ docker logs infra-sentinel-1-1
+  /usr/local/etc/redis/sentinel-entrypoint.sh: 12: REDIS_STREAMS_PASSWORD:
+  definir REDIS_STREAMS_PASSWORD en .env   (repetido en cada restart)
+
+El entrypoint exigía la variable plana REDIS_STREAMS_PASSWORD, pero el
+servicio compose solo define REDIS_STREAMS_PASSWORD_FILE (Docker secret):
+
+  compose/redis/sentinel-entrypoint.sh:12
+  : "${REDIS_STREAMS_PASSWORD:?definir REDIS_STREAMS_PASSWORD en .env}"
+
+  compose/docker-compose.yml (sentinel-1/2/3)
+  environment:
+    REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
+
+Misma clase de bug que minio-init/minio-notify-init en S3-P1-02 (scripts que
+esperan env plana mientras compose pasa `*_FILE`).
+
+Segundo hallazgo: el healthcheck de sentinel-1 apuntaba al puerto default
+6379 con password (el proceso Sentinel escucha en 26379 y sin requirepass
+propio), mientras sentinel-2/3 ya usaban `redis-cli -p 26379 ping`. Con el
+entrypoint corregido, sentinel-1 habría quedado `unhealthy` para siempre.
+
+
+2. Fix (2 archivos)
+-------------------
+
+a) compose/redis/sentinel-entrypoint.sh: se agrega resolve_secret() con el
+   mismo contrato que init-buckets.sh (S3-P1-03, 818d89b): lee ${VAR}_FILE si
+   está seteada, falla si el archivo falta/no se lee/el valor queda vacío y
+   NUNCA imprime el valor. Reemplaza la guarda `:?` de la variable plana.
+
+b) compose/docker-compose.yml (sentinel-1): healthcheck alineado con
+   sentinel-2/3:
+     test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
+
+Validación estática: `bash -n` OK; `docker compose ... config -q` exit 0
+(perfiles full + sentinel).
+
+
+3. Verificación en vivo (resultados reales)
+--------------------------------------------
+
+3.1 Arranque y quórum
+
+  $ docker compose ... --profile sentinel up -d sentinel-1 sentinel-2 sentinel-3
+  infra-sentinel-1-1  Up (healthy)   <- primera vez healthy desde S2
+  infra-sentinel-2-1  Up (healthy)
+  infra-sentinel-3-1  Up (healthy)
+
+  $ docker exec infra-sentinel-1-1 redis-cli -p 26379 \
+      SENTINEL get-master-addr-by-name myprimary
+  redis-streams
+  6379
+
+  $ ... SENTINEL CKQUORUM myprimary
+  OK 3 usable Sentinels. Quorum and failover authorization can be reached
+
+  $ ... SENTINEL master myprimary
+  flags              master
+  num-slaves         2
+  num-other-sentinels 2
+  quorum             2
+
+  (resolve-hostnames/announce-hostnames funcionan: el primario se anuncia
+  por hostname, no por IP efímera.)
+
+3.2 Failover real del primario (SPEC §3.5: "probarlo, no suponerlo")
+
+  $ docker stop infra-redis-streams-1                  22:47:04Z
+  $ ... SENTINEL get-master-addr-by-name myprimary
+  redis-streams-replica-1                             22:47:10Z
+      -> promoción automática en ~6 s (down-after 5000 ms;
+         failover-timeout 30000 ms; quorum 2 alcanzado)
+
+  Probe de escritura en el promovido:
+  $ docker exec infra-redis-streams-replica-1-1 sh -c \
+      'redis-cli -a "$(cat /run/secrets/redis_streams_password)" \
+       --no-auth-warning SET sentinel:failover-probe ok PX 60000'
+  OK
+  $ ... GET sentinel:failover-probe
+  ok
+
+3.3 Failback a la topología canónica
+
+  El endpoint del cliente sigue siendo redis-streams:6379 (los clientes
+  Sentinel-aware son handoff de S5/P3), así que se restauró el primario:
+
+  $ docker start infra-redis-streams-1
+  INFO replication -> role:slave, master_host:redis-streams-replica-1
+     (Sentinel reconfigura al primario caído como réplica: correcto)
+  $ docker stop infra-redis-streams-replica-2-1   (candidato único)
+  $ ... SENTINEL failover myprimary -> OK
+  $ get-master-addr-by-name myprimary -> redis-streams
+  $ docker start infra-redis-streams-replica-2-1
+
+  Topología final verificada:
+  - redis-streams:          role:master, connected_slaves:2
+  - replica-1 / replica-2:  role:slave
+  - SENTINEL master myprimary: flags=master, num-slaves=2
+
+3.4 Regresiones del stack tras el failover
+
+  infra-doc-service-1: healthy durante TODO el failover (no se cayó);
+  GET /healthz por Traefik: 200; GET /api/v2/documents: 200.
+  Todos los contenedores del proyecto: healthy.
+
+
+4. Riesgo
+---------
+
+Risk: item 4 (concurrency — failover/promoción de réplicas bajo quórum;
+verificado con promoción y failback reales, topología restaurada y validada).
