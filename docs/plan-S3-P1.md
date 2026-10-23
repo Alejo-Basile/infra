@@ -81,7 +81,7 @@ de release probado.
 | Mar 20/10 | Build + push | `S3-P1-01` parte 2: build multi-arch + push GHCR | Imagen publicada por tag |
 | Mié 21/10 | Compose pull + deploy | `S3-P1-01` parte 3: compose usa imagen; smoke test | `docker compose up` reproducible |
 | Jue 22/10 | Aislamiento webhook | `S3-P1-02`: regla en Traefik | Path interno da 404 desde internet |
-| Vie 23/10 | Correlación + cierre | `S3-P1-03`: `correlation_id` E2E | Un ID rastreado en 3 componentes |
+| Vie 23/10 | Correlación + cierre | `S3-P1-03`: `correlation_id` hasta Redis | Un ID rastreado en Traefik, doc-service, Mongo y Redis |
 
 ---
 
@@ -192,12 +192,11 @@ docker compose -f compose/docker-compose.yml -f compose/docker-compose.build.yml
 
 ### `S3-P1-02` — Aislamiento del endpoint webhook (jue 22/10)
 
-**Estado: implementado y verificado localmente (2026-10-20).**
+### `S3-P1-02` — Aislamiento del endpoint webhook (jue 22/10)
+
+**Estado: implementado, verificado localmente y mergeado a main (2026-10-21).**
 Commit `67c0f7f` (regla Traefik) y evidencia en
-`docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. La rama
-`feat/s3-p1-02-webhook-isolation` está stacked sobre
-`feat/s3-p1-01-doc-service-deploy`; PR #27 abierto contra esa base (no mergear
-antes de #26).
+`docs/evidencias/S3/S3-P1-02-webhook-aislamiento.txt`. PR #27 mergeado a main.
 
 **Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
 
@@ -205,6 +204,11 @@ antes de #26).
 (`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
 MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
 
+**Riesgo:** item 3 (contracts others consume — se restringe el acceso a un path interno).
+
+**Objetivo:** que `/internal/*` no sea alcanzable desde el entrypoint público
+(`websecure`). El webhook real es `/internal/storage/events` y solo debe circular
+MinIO → doc-service por la red `data` (SPEC §5.2 y §9).
 **Hallazgo de estado actual (2026-10-20):** el POST externo a
 `https://api.localhost:8543/internal/storage/events` devuelve 404, pero el access
 log de Traefik registra `RouterName: legacy@docker`, `ServiceName: legacy@docker`,
@@ -280,101 +284,102 @@ path vuelve al 404 actual del monolito; no hay cambios de datos.
 
 **Riesgo:** item 3 (contracts others consume — header HTTP).
 
-El `correlation_id` debe:
-1. Generarse en Traefik si no viene del cliente.
-2. Propagarse como header HTTP `X-Correlation-Id` a doc-service.
-3. Inyectarse en el mensaje de Redis Streams.
-4. Persistirse en Mongo (`documents.correlation_id`).
+**Estado: implementado y verificado localmente con alcance A (parcial) (2026-10-20).**
+Alcance A: el E2E real del worker queda diferido a la Fase 3 (S5/P3), no a
+`S4-P1-01`; aquí se verifica el contrato del mensaje, no un consumer
+inexistente. Commits:
+doc-service `feat/s3-p1-03-correlation-id` (stacked sobre
+`feat/s3-p1-01-doc-service-pipeline`, `48b02f0`): `f78c00b` (validación y
+normalización del header), `0f03a4f` (propagación en transiciones del
+webhook), `eb54d7a` (contrato Redis). infra `feat/s3-p1-03-correlation-id`
+(stacked sobre `feat/s3-p1-02-webhook-isolation`, `d9b1fa0`): `818d89b` (fix
+de suscripción del target webhook en los jobs init), `8c86a25` (E2E
+`scripts/e2e-correlation.sh`).
 
-#### Paso 1 — Traefik: middleware para generar/propagar
+**Qué se construyó (reemplaza los bocetos previos, que estaban desactualizados):**
 
-En `infra/traefik/dynamic/`:
+- **Traefik NO genera UUIDs** (no existe middleware nativo para ello en OSS).
+  doc-service genera el `correlation_id` en el primer request sin header
+  válido (SPEC §10). `traefik.yml` conserva `X-Correlation-Id: keep` en el
+  access log, que solo preserva un valor inbound. Sin plugins, ForwardAuth ni
+  middlewares nuevos en S3.
+- **Header normalizado en doc-service** (`f78c00b`): constante Go
+  `X-Correlation-ID` (los headers HTTP son case-insensitive), TrimSpace, máx
+  128 caracteres, charset `^[A-Za-z0-9._:-]+$`; si falta o es inválido genera
+  UUID v4 y lo devuelve en el response header. El warning solo loguea el
+  largo del valor crudo, nunca su contenido.
+- **Webhook con historial** (`0f03a4f`): el endpoint real es
+  `/internal/storage/events` (la mención de SPEC §9 a
+  `/internal/documents/{id}/uploaded` está desactualizada). Carga el documento
+  antes de leer MinIO; documento inexistente o no `PENDING_UPLOAD` responde
+  `200 no_transition` sin I/O de objetos; las transiciones usan
+  `UpdateStatusWithHistory` con actor `minio-webhook`, el `correlation_id` del
+  documento (fallback al del request) y reason `NOT_A_PDF` al rechazar.
+- **Contrato Redis fijado** (`eb54d7a`): la entrada del stream tiene
+  exactamente un campo `payload` (JSON) con exactamente `document_id`,
+  `object_key`, `correlation_id`, `enqueued_at`, `schema_version`; sin
+  `attempts` (el delivery count vive en XPENDING, SPEC §5.4). Discrepancia
+  conocida: SPEC §5.4 muestra un XADD plano; el envelope `payload` se conserva
+  y la alineación de SPEC queda como follow-up documental.
+- **Persistencia en Mongo**: `documents.correlation_id` + historial por
+  transición.
+- **Logs del worker**: handoff a P3 en S5 (no hay consumer desplegado); el
+  criterio de trazabilidad extremo a extremo queda abierto hasta esa fase.
 
-```yaml
-http:
-  middlewares:
-    correlation-id:
-      headers:
-        customRequestHeaders:
-          X-Correlation-Id: ""  # placeholder, se genera con plugin o se confía en el cliente
-```
+**Hallazgo 401 y fix del target de notificación (`818d89b`, breve):** la
+primera corrida del E2E falló porque el evento del bucket estaba suscrito al
+target gestionado por `mc`, cuya config persistida no tenía `auth_token`
+aplicado al proceso (`mc admin config set` escribe el config store pero MinIO
+solo aplica notificaciones al reiniciar, y la verificación vieja grepeaba solo
+`endpoint=`). El target declarado por env en compose (`DOCSERVICE`, token
+correcto, aplicado en cada arranque) existía sin suscripción. El fix hace que
+`init-notifications.sh` verifique el target `DOCSERVICE`, retire la
+suscripción legacy de mc si existe (idempotente, probado en vivo) y suscriba
+`ObjectCreated:Put` a él; ambos scripts init ganaron `resolve_secret` (soporta
+`*_FILE`, falla en vacío, nunca imprime secretos).
 
-Para generación real se necesita un plugin (Yaegi) o ForwardAuth. Alternativa pragmática: **el cliente siempre envía `X-Correlation-Id`**, y doc-service lo valida/propaga. Si no viene, doc-service lo genera.
+**Matriz de verificación (resultados reales):**
 
-#### Paso 2 — doc-service: leer/generar correlation_id
-
-En `doc-service/internal/api/middleware.go` (o equivalente):
-
-```go
-func CorrelationID() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        cid := c.GetHeader("X-Correlation-Id")
-        if cid == "" {
-            cid = uuid.NewString()
-        }
-        c.Set("correlation_id", cid)
-        c.Header("X-Correlation-Id", cid)
-        c.Next()
-    }
-}
-```
-
-#### Paso 3 — Redis Streams: incluir correlation_id en el mensaje
-
-En el relay de Change Streams → Redis:
-
-```go
-XADD stream:pdf-processing * document_id <id> object_key <key> correlation_id <cid> schema_version 1
-```
-
-#### Paso 4 — Mongo: persistir correlation_id
-
-En el documento:
-
-```go
-type Document struct {
-    ID            string    `bson:"_id"`
-    Status        string    `bson:"status"`
-    CorrelationID string    `bson:"correlation_id"`
-    CreatedAt     time.Time `bson:"created_at"`
-    UpdatedAt     time.Time `bson:"updated_at"`
-}
-```
-
-#### Paso 5 — Worker: propagar correlation_id en logs
-
-El worker lee `correlation_id` del mensaje Redis y lo usa en logs JSON.
-
-**Verificación E2E:**
-```bash
-# 1. Crear documento con correlation_id
-CORR="corr-e2e-$(date +%s)"
-curl -sk -X POST https://api.localhost:8543/api/v2/documents \
-  -H "Content-Type: application/json" \
-  -H "X-Correlation-Id: $CORR" \
-  -d '{"filename": "test.pdf", "size": 1024}'
-
-# 2. Verificar en Mongo
-docker exec infra-mongo-1 mongosh -u "$MONGO_ROOT_USER" -p "$(cat secrets/mongo_root_password.txt)" \
-  --authenticationDatabase admin --quiet --eval \
-  "db.getSiblingDB('documents').documents.find({correlation_id: '$CORR'}, {status:1, _id:1})"
-
-# 3. Verificar en Redis
-docker exec infra-redis-streams-1 redis-cli -a "$REDIS_PASS" --no-auth-warning \
-  XRANGE stream:pdf-processing - + | grep "$CORR"
-
-# 4. Verificar en logs del worker
-docker logs infra-extraction-worker-1 2>&1 | grep "$CORR" | tail -3
-```
+| # | Comando / evidencia | Resultado |
+|---|---|---|
+| 1 | `go test ./internal/transport/http ./internal/webhook -race -count=1` (doc-service) | ok (1.662s / 1.066s) |
+| 2 | `go vet ./...` + `gofmt -l .` (doc-service) | limpio / vacío |
+| 3 | Suite hermética `go test -race -count=1 $PKGS` (excluye adapters mongo/changestream/relay/redis) | ok en api, config, domain, pdfsvc, reconciler, transport/http, webhook |
+| 4 | Integración con Mongo RS efímero (27018) + Redis efímero (6380): `go test ./internal/adapters/redis ./internal/adapters/relay -race -count=1 -v` | PASS, incl. `TestWorkQueue_PayloadDelContrato` (decode estricto del payload) |
+| 5 | `bash -n` en init-buckets.sh, init-notifications.sh, e2e-correlation.sh | OK |
+| 6 | `docker compose -f compose/docker-compose.yml --env-file .env --profile full config -q` | exit 0 |
+| 7 | `docker compose ... run --rm minio-init` | exit 0 (buckets, políticas, usuarios) |
+| 8 | `docker compose ... run --rm minio-notify-init` | suscripción legacy retirada; solo `DOCSERVICE` suscrito; re-corrida idempotente ("Evento ya suscrito") |
+| 9 | `./scripts/e2e-correlation.sh` | ALL OK, exit 0 (salida completa en la evidencia) |
 
 **DoD:**
-* Un `correlation_id` enviado por el cliente aparece en Mongo, Redis y logs del worker.
-* Si el cliente no lo envía, el sistema genera uno y lo propaga.
-* Búsqueda por `correlation_id` en Mongo devuelve el documento completo.
+* Un `correlation_id` enviado por el cliente aparece en Traefik, doc-service,
+  Mongo y Redis (alcance A, hasta la cola): ✅ verificado por el E2E (pasos 1–5).
+* Si el cliente no lo envía (o envía uno inválido), doc-service genera UUID v4
+  y el valor crudo no aparece ni en responses ni en logs: ✅ verificado
+  (pasos 7–8 del E2E).
+* Búsqueda por `correlation_id` en Mongo devuelve el documento completo: ✅
+  cerrado con la consulta post-E2E
+  `db.documents.findOne({correlation_id:"corr-s3p103-20261020T210202Z"})` →
+  `{_id: "c9e69df7ac94fdaa129581f376503668", status: "UPLOADED", history_len: 2}`.
+* El tramo del worker (logs con el mismo `correlation_id`) queda como criterio
+  de aceptación de la tarea del worker en S5/P3: no se puede cerrar sin un
+  consumer desplegado.
 
-**Rollback:** revertir middleware y cambios en relay/worker.
+**Revisión nativa (RDD):** los dos slices pasaron el review nativo (consent:
+"Revisar este cambio") y quedaron aprobados con la autoridad quemada:
+doc-service `review-db63df1eef2e3118` (lentes risk + reliability) e infra
+`review-e0fc16f82f05af69` (lentes risk + resilience). 8 advisories, 0
+BLOCKER/CRITICAL (detalle en la evidencia, sección 9). Follow-ups: credenciales
+del E2E expuestas en argv, chequeo de presencia del `auth_token` en el job y
+robustez del patrón de chequeo de endpoint.
 
-**Evidencia:** `evidencias/S3/S3-P1-03-trazabilidad.txt`.
+**Rollback:** revertir los cinco commits de código en ambos repos (tres en
+doc-service, dos en infra). El job `minio-notify-init` es idempotente: al
+volver al script anterior, la suscripción se puede re-crear sin estado
+residual. No hay cambios de datos que revertir.
+
+**Evidencia:** `docs/evidencias/S3/S3-P1-03-trazabilidad.txt`.
 
 ---
 
@@ -384,16 +389,28 @@ docker logs infra-extraction-worker-1 2>&1 | grep "$CORR" | tail -3
 |---|---|---|
 | Inmediata | CI verde tras cada push | badge en repo |
 | Corta | Webhook aislado (404 desde internet) | curl externo |
-| Media | `correlation_id` rastreado en 3 componentes | búsqueda cruzada |
-| Cierre | Documento E2E alcanza estado terminal | GET /documents/{id} |
+| Media | `correlation_id` rastreado en el tramo doc-service | ✅ verificado (2026-10-20): Traefik, doc-service, Mongo y Redis; el tramo del worker queda como handoff a P3 en S5 |
+| Cierre | Documento E2E alcanza `UPLOADED` y queda encolado | GET /documents/{id} + `XRANGE stream:pdf-processing` |
 
 ---
 
 ## 6. Herencia para S4
 
-* `S4-P1-01` — Worker Rust completo (consumer group, XAUTOCLAIM, Retry + Circuit Breaker, escritura en Mongo)
-* `S4-P1-02` — Rate limiting distribuido (ForwardAuth + Redis, Opción B de SPEC §8)
-* `S4-P1-03` — Replay de corpus PDF (válidos, inválidos, escaneados, cifrados, grandes)
+* `S4-P1-01` — Escalado horizontal sin estado: 2 réplicas del doc-service con la
+  misma imagen; con 50 documentos subidos, la cola debe tener exactamente 50
+  mensajes. Depende de `S4-P2-03` (deduplicación `SET NX EX`).
+* `S4-P1-02` — Métricas de negocio en el dashboard: exporter de Mongo en
+  Prometheus, documentos por estado y alerta de estados intermedios por más de
+  X minutos.
+* `S4-P1-03` — Alertas de la cadena completa: cola sin avanzar y DLQ no vacía.
+* **Handoff a P3 / Fase 3 (S5):** Worker Rust completo (consumer group,
+  `XAUTOCLAIM`, Retry + Circuit Breaker, escritura condicional en Mongo y logs
+  con `correlation_id`). No es una tarea de implementación de P1 ni de S4; P1
+  conserva las tareas de plataforma del worker en S5 (límites, métricas y
+  alertas).
+
+> Rate limiting distribuido y replay de corpus pertenecen a la Fase 4 (semanas
+> 7-8), no a S4.
 
 ---
 

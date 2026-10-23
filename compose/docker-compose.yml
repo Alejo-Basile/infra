@@ -367,7 +367,9 @@ services:
 
   # Notificaciones de bucket (webhook) -> doc-service (SPEC §5.2).
   # Separado de minio-init para que el perfil `core` no dependa del doc-service.
-  # Idempotente: re-aplica el target y el evento en cada `up`.
+  # El target webhook lo declara el servicio minio via MINIO_NOTIFY_WEBHOOK_*
+  # (token de una sola fuente, aplicado en cada arranque); este job solo
+  # verifica el target y suscribe el evento (S3-P1-03).
   minio-notify-init:
     image: bitnamilegacy/minio-client:2025.7.21
     profiles: ["full"]
@@ -378,11 +380,9 @@ services:
         condition: service_started
     secrets:
       - minio_root_password
-      - minio_webhook_secret
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
-      MINIO_WEBHOOK_SECRET_FILE: /run/secrets/minio_webhook_secret
       DOC_SERVICE_WEBHOOK_URL: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
     volumes:
       - ./minio/init-notifications.sh:/init-notifications.sh:ro
