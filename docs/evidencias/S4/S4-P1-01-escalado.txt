@@ -1,0 +1,103 @@
+S4-P1-01 — Evidencia de escalado horizontal del doc-service
+Fecha (UTC): 2026-10-21T06:22:56Z
+Rama: feat/s4-p1-01-horizontal-scaling
+Commit base: e4ac8a2 (los cambios S4 no estaban commiteados durante la corrida)
+Imagen: doc-service:local
+Image ID: sha256:c145ebdb37bef4301650ba38448779605ac3c38a7352ecb424df81e7d59b43e7
+Clave de stream aislada: stream:pdf-processing:s4p101-20261021T062256Z-58b3231b
+Limitacion: verificacion local con doc-service:local; el deploy por imagen GHCR (S3-P1-01) sigue bloqueado.
+
+Salida real de: E2E_INSECURE=1 E2E_STREAM_KEY=stream:pdf-processing:s4p101-20261021T062256Z-58b3231b scripts/e2e-horizontal-scaling.sh
+-------------------------------------------------------------------------------
+
+== Preflight ==
+  [OK]   tool: curl
+  [OK]   tool: jq
+  [OK]   tool: openssl
+  [OK]   tool: docker
+  [OK]   infra/.env readable
+  [OK]   stack reachable via Traefik: https://api.localhost:8543/healthz
+  [OK]   original doc-service replica count: 1
+  [OK]   local image doc-service:local = sha256:c145ebdb37be...
+  [INFO] clave de stream aislada: stream:pdf-processing:s4p101-20261021T062256Z-58b3231b
+
+== S1. Escalar doc-service a 2 replicas (REDIS_STREAM_KEY aislada) ==
+ Container infra-doc-service-2 Creating
+ Container infra-doc-service-1 Recreate
+ Container infra-doc-service-2 Created
+ Container infra-doc-service-1 Recreated
+ Container infra-doc-service-1 Starting
+ Container infra-doc-service-1 Started
+ Container infra-doc-service-2 Starting
+ Container infra-doc-service-2 Started
+  [OK]   running doc-service containers = 2
+  [OK]   replica 4c876c6d5e67 Image ID = sha256:c145ebdb37bef4301650ba38448779605ac3c38a7352ecb424df81e7d59b43e7
+  [OK]   replica 4c876c6d5e67 image ref = doc-service:local
+  [OK]   replica 4c876c6d5e67 infra_internal IP: 172.24.0.8
+  [OK]   replica 030ee77e1936 Image ID = sha256:c145ebdb37bef4301650ba38448779605ac3c38a7352ecb424df81e7d59b43e7
+  [OK]   replica 030ee77e1936 image ref = doc-service:local
+  [OK]   replica 030ee77e1936 infra_internal IP: 172.24.0.9
+  [OK]   two distinct infra_internal IPs
+  [OK]   both replicas have an open Change Stream watcher
+
+== S2. Traefik load balancing (ServiceAddr en access log) ==
+  [OK]   traefik container: 06087aba4fbb
+  [OK]   all /healthz probes returned 200
+  [OK]   Traefik served requests from 2 distinct ServiceAddr
+         172.24.0.8:8080
+         172.24.0.9:8080
+  [OK]   ServiceAddr covers replica 172.24.0.8:8080
+  [OK]   ServiceAddr covers replica 172.24.0.9:8080
+
+== S3. Crear y subir 50 documentos unicos por el contrato publico ==
+  [INFO] uploaded 10/50
+  [INFO] uploaded 20/50
+  [INFO] uploaded 30/50
+  [INFO] uploaded 40/50
+  [INFO] uploaded 50/50
+  [OK]   50 documents created and uploaded (69 bytes each)
+
+== S3. Esperar XLEN == 50 en el stream aislado ==
+  [OK]   XLEN stream:pdf-processing:s4p101-20261021T062256Z-58b3231b = 50
+  [OK]   XRANGE returned a JSON array
+  [OK]   stream entries = 50
+  [OK]   each entry has exactly one field = [2]
+  [OK]   field name is payload = ["payload"]
+  [OK]   payload keys = [["correlation_id","document_id","enqueued_at","object_key","schema_version"]]
+  [OK]   the 50 stream document_id values match the 50 created documents
+  [OK]   unique document_id values = 50
+  [OK]   sample payload: {"document_id":"48db8f910cd99bc561818542178c08e2","object_key":"raw-pdfs/48db8f910cd99bc561818542178c08e2.pdf","correlation_id":"e23d2b79-4b84-4d27-95c2-199724c055e9","enqueued_at":"2026-10-21T06:23:07Z","schema_version":1}
+
+== S4. Re-disparar UPLOADED de un documento ya encolado ==
+  [OK]   document 48db8f910cd99bc561818542178c08e2 re-transitioned PENDING_UPLOAD -> UPLOADED
+  [OK]   sample document status after re-trigger = UPLOADED
+  [OK]   XLEN remained 50 after the dedup re-trigger
+  [OK]   dedup keys existing = 50
+  [OK]   dedup TTL for 48db8f910cd99bc561818542178c08e2 = 584s (0 < TTL <= 600)
+
+== S5. Rollback: doc-service -> 1 replica(s), stream por defecto ==
+  [OK]   doc-service restored to 1 replica(s)
+  [INFO] REDIS_STREAM_KEY restaurado a: stream:pdf-processing
+  [INFO] stream aislado conservado para auditoria: stream:pdf-processing:s4p101-20261021T062256Z-58b3231b
+
+E2E horizontal scaling OK — 2 replicas, 50 documentos, 50 mensajes, dedup verificado.
+
+== Chequeos complementarios (post-run, sin mutar el stack) ==
+$ bash -n scripts/e2e-horizontal-scaling.sh
+OK (exit 0)
+
+$ git diff --check
+OK (sin errores de whitespace)
+
+$ docker compose ... ps -q doc-service | wc -l
+1
+
+$ docker inspect infra-doc-service-1 --format '{{json .Config.Env}}' | jq -r '.[] | select(startswith("REDIS_STREAM_KEY="))'
+REDIS_STREAM_KEY=stream:pdf-processing
+
+$ redis XLEN stream:pdf-processing:s4p101-20261021T062256Z-58b3231b
+50 (50 document_id únicos; stream aislado conservado para auditoría)
+
+Limitación de la ventana de dedup: la clave `dedup:<document_id>` tiene TTL de 10
+minutos; la evidencia de TTL (584s) se tomó durante la corrida. Una consulta
+posterior puede devolver -2 una vez vencida, sin afectar el resultado observado.
