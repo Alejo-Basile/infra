@@ -8,6 +8,8 @@
 #   sin http_requests_total ni histograma — deuda S3, no se toca Go en S2).
 # - MinioDiskHigh via /minio/v2/metrics/cluster (MINIO_PROMETHEUS_AUTH_TYPE=public).
 # - RedisMemHigh via redis_memory_used_bytes/max_bytes (streams.conf: 192mb noeviction).
+# - S4-P1-02: DocsStuck, DocsAccumulating (metrics de negocio desde doc-service).
+# - S4-P1-03: QueueNotAdvancing, DLQNotEmpty (alertas de cadena completa).
 groups:
   - name: s1-p1-13-streams
     interval: 15s
@@ -30,16 +32,6 @@ groups:
         annotations:
           summary: "PEL pendiente mayor a 100 por 10m"
           description: "Revisar workers caidos; ejecutar XAUTOCLAIM para reasignar mensajes huerfanos. Si la metrica queda NoData, el exporter no expone PEL: contar con redis-cli XPENDING manual."
-          runbook_url: "infra/runbooks/failover-redis.md"
-
-      - alert: DLQNotEmpty
-        expr: redis_stream_length{stream="stream:pdf-processing-dlq"} > 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "DLQ con mensajes (fallos definitivos de extraccion)"
-          description: "Revisar mensajes con XRANGE, corregir causa raiz y reintentar. No borrar sin diagnosticar."
           runbook_url: "infra/runbooks/failover-redis.md"
 
       - alert: RedisMemHigh
@@ -100,3 +92,60 @@ groups:
           summary: "Documentos en estado intermedio sobre umbral por 15m"
           description: "Revisar reconciliador; forzar sweep. Si la metrica esta en NoData, contar manual: db.documents.countDocuments({status: {$in: ['UPLOADED','PROCESSING']}})."
           runbook_url: "infra/runbooks/restore-mongo.md"
+
+  - name: s4-p1-02-business
+    interval: 30s
+    rules:
+      # S4-P1-02: Documentos atascados en estados intermedios operativos (> 15 min = 900s)
+      # Estados: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING
+      # PENDING_UPLOAD EXCLUIDO: su duracion depende de la ventana de subida del cliente.
+      - alert: DocsStuck
+        expr: max by (status) (docservice_documents_oldest_intermediate_age_seconds) > 900
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Documento en estado intermedio ({{ $labels.status }}) hace mas de 15 min"
+          description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
+          runbook_url: "infra/runbooks/restore-mongo.md"
+
+      # S4-P1-02: Acumulación de documentos no terminales operativos (> 10 por 15 min)
+      # Reemplaza el placeholder DocsNonTerminal que quedaba en NoData.
+      # No terminales operativos = todos menos COMPLETED, FAILED, REJECTED, UPLOAD_EXPIRED, PENDING_UPLOAD
+      - alert: DocsAccumulating
+        expr: docservice_documents_non_terminal > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mas de 10 documentos en estados no terminales operativos por 15 min"
+          description: "La cola o el procesamiento no drena. Revisar PEL, DLQ y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales). Runbook: infra/runbooks/failover-redis.md"
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+  - name: s4-p1-03-chain
+    interval: 30s
+    rules:
+      # S4-P1-03: La cola no avanza (profundidad constante > 0 durante 5 min)
+      # La ventana de 5 min ya esta en changes(...[5m]); NO agregar 'for: 5m' adicional
+      # (duplicaria el tiempo a ~10 min). Anti-flapping opcional: for: 1m (~6 min total).
+      - alert: QueueNotAdvancing
+        expr: redis_stream_length{stream="stream:pdf-processing"} > 0 and changes(redis_stream_length{stream="stream:pdf-processing"}[5m]) == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "La cola pdf-processing no avanza (profundidad constante > 0 por 5m)"
+          description: "Revisar consumidores, PEL y DLQ. Si no hay worker activo, escalar o reiniciar el consumidor. Ver runbook failover-redis."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      # S4-P1-03: DLQ no vacía (fallos definitivos de extracción)
+      # for: 0m = detección inmediata sin demora adicional.
+      - alert: DLQNotEmpty
+        expr: redis_stream_length{stream="stream:pdf-processing-dlq"} > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ con mensajes (fallos definitivos)"
+          description: "Revisar XRANGE, corregir causa raiz y reintentar con la herramienta de replay. No borrar sin diagnosticar."
+          runbook_url: "infra/runbooks/failover-redis.md"
