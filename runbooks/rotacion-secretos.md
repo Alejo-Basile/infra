@@ -86,7 +86,13 @@ docker compose -f compose/docker-compose.yml --env-file .env up -d redis-streams
 ## Notas importantes
 
 - **Coordinar dependencias**: `redis_streams_password` lo usan primario, réplicas, sentinels y redis-exporter. Rotarlos todos juntos.
-- **El archivo `.json` del redis-exporter**: si rotás `redis_streams_password`, regenerar también el `secrets/redis_streams_password.json` con el formato `{"redis_password": "valor"}`.
+- **El archivo `.json` del redis-exporter**: si rotás `redis_streams_password`, regenerar también el `secrets/redis_streams_password.json`. El formato es un **mapa de URI a password** (ver `contrib/sample-pwd-file.json` de redis_exporter), y la clave tiene que ser exactamente el valor de `REDIS_ADDR`:
+
+  ```json
+  {"redis://redis-streams:6379": "<valor-nuevo>"}
+  ```
+
+  Si la clave no coincide con la URI, el exporter arranca pero falla con `NOAUTH` y `redis_up 0`: el secreto se ignora en silencio.
 - **No committear secretos**: van en `.gitignore`.
 - **Backup antes de rotar**: guardar el valor anterior como `.bak` por si necesitás revertir.
 

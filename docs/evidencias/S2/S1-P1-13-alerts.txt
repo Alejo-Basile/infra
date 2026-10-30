@@ -1,0 +1,57 @@
+# S1-P1-13 — Alertas accionables — evidencia sintaxis/config (2026-10-16)
+# DoD completo exige ademas firing provocando cada condicion con stack full arriba.
+# Este archivo prueba: reglas validas + alertmanager valido + compose registra servicios.
+# Firing queda pendiente de runtime con .env real (no se ejecuta sin secretos).
+
+## promtool check rules
+Checking /alert.rules.yml
+  SUCCESS: 8 rules found
+
+## amtool check-config
+Checking '/alertmanager.yml'  SUCCESS
+Found:
+ - global config
+ - route
+ - 0 inhibit rules
+ - 1 receivers
+ - 0 templates
+
+## promtool check config (prometheus.yml + rule_files)
+Checking /etc/prometheus/prometheus.yml
+  SUCCESS: 1 rule files found
+ SUCCESS: /etc/prometheus/prometheus.yml is valid prometheus config file syntax
+Checking /etc/prometheus/alert.rules.yml
+  SUCCESS: 8 rules found
+
+## compose --services (con env dummy solo para interpolar, sin secretos reales)
+mongo
+redis-streams
+minio
+doc-service
+minio-notify-init
+monolito
+loki
+prometheus
+grafana
+minio-init
+redis-exporter
+redis-ratelimit
+mongo-init
+traefik
+alertmanager
+
+## Archivos del cambio
+- compose/prometheus/alert.rules.yml (8 reglas, cada una con description/runbook)
+- compose/prometheus/alertmanager.yml (receiver local)
+- compose/prometheus/prometheus.yml (rule_files + alerting + jobs redis-streams/minio)
+- compose/docker-compose.yml (alertmanager-data, MINIO_PROMETHEUS_AUTH_TYPE=public, servicios alertmanager + redis-exporter)
+
+## Deudas honestas (no bloquean sintaxis, si el firing total)
+- PELBacklog usa redis_stream_group_pending: si el exporter no la expone queda NoData -> contar manual con XPENDING.
+- DocsNonTerminal usa docservice_docs_non_terminal: ningun exporter la expone hoy -> conteo manual via mongosh hasta que el reconciliador (S3) la exponga.
+- HighErrorRate/LatencyP95High van via Traefik porque doc-service no expone http_requests_total ni histograma (deuda S3).
+
+## Pendiente para cerrar DoD
+1. `docker compose --profile full up -d` con .env real
+2. Provocar cada condicion (XADD a DLQ, XADD masivo, 5xx forzado) y capturar `firing` en Alertmanager UI :9093
+3. Anexar capturas a este archivo

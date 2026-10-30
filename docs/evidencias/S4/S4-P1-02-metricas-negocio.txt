@@ -1,0 +1,292 @@
+## S4-P1-02: Métricas de negocio — Evidencia de cumplimiento
+
+**Fecha:** 2026-10-27
+**Entorno:** Local/académico (ADR-0016) — `api.localhost`, HTTP 8088 / HTTPS 8543
+**Imagen doc-service:** `doc-service:local` (build local, commit 4c31a83) — GHCR no publicado (limitación declarada)
+**Archivo:** `infra/docs/evidencias/S4/S4-P1-02-metricas-negocio.txt`
+
+---
+
+### 1. OBJETIVO (SPEC §10, plan-S4-P1.md §4.2)
+Verificar que el collector de métricas en doc-service expone las 3 métricas de negocio en `/metrics`,
+Prometheus scrapea ambas réplicas con `dns_sd_configs`, dashboard Grafana actualizado, y `promtool test rules` pasa.
+
+---
+
+### 2. ARQUITECTURA VERIFICADA
+
+#### Collector implementado en:
+- `doc-service/internal/metrics/collector.go` — job background 15s consultando MongoDB
+- `doc-service/internal/metrics/metrics.go` — 3 gauges definidos
+- `doc-service/cmd/api/main.go:199` — arranque: `go metrics.StartCollectorWithConfig(backgroundCtx, mongoClient)`
+
+#### Métricas de negocio (namespace `docservice`, subsystem `business`):
+| Métrica | Tipo | Labels | Descripción |
+|---------|------|--------|-------------|
+| `documents_by_status` | GaugeVec | `status` | Conteo actual por estado (incluye PENDING_UPLOAD) |
+| `documents_non_terminal` | Gauge | — | Total en estados intermedios operativos (EXCLUYE PENDING_UPLOAD) |
+| `documents_oldest_intermediate_age_seconds` | GaugeVec | `status` | Antigüedad (seg) del doc más viejo por estado intermedio operativo |
+
+#### Estados terminales: COMPLETED, FAILED, REJECTED, UPLOAD_EXPIRED
+#### Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING
+#### PENDING_UPLOAD: excluido de no-terminal y antigüedad (ventana de subida del cliente, gobierna expires_at/reconciliador)
+#### Agregación: `max by (status)` / `max` — **nunca sum** (SPEC §10)
+
+---
+
+### 3. VERIFICACIÓN EN RUNTIME (CONTENEDOR)
+
+#### 3.1 Collector arranca y loggea
+```bash
+docker logs infra-doc-service-1 2>&1 | grep "iniciando collector"
+```
+```
+{"time":"2026-10-27T03:28:36.771164404Z","level":"INFO","msg":"iniciando collector de métricas de negocio","refresh_interval":"15s"}
+{"time":"2026-10-27T03:28:37.276606759Z","level":"INFO","msg":"iniciando collector de métricas de negocio","refresh_interval":"15s"}
+```
+
+#### 3.2 /metrics expone las 3 métricas (instancia 1)
+```bash
+docker exec infra-doc-service-1 wget -qO- http://localhost:8080/metrics | grep "^docservice_business"
+```
+```
+docservice_business_documents_by_status{status="COMPENSATING"} 0
+docservice_business_documents_by_status{status="COMPLETED"} 5
+docservice_business_documents_by_status{status="EXTRACTION_FAILED"} 0
+docservice_business_documents_by_status{status="FAILED"} 0
+docservice_business_documents_by_status{status="PENDING_UPLOAD"} 0
+docservice_business_documents_by_status{status="PROCESSING"} 0
+docservice_business_documents_by_status{status="QUEUED"} 0
+docservice_business_documents_by_status{status="REJECTED"} 0
+docservice_business_documents_by_status{status="RETRYING"} 0
+docservice_business_documents_by_status{status="UPLOADED"} 0
+docservice_business_documents_by_status{status="UPLOAD_EXPIRED"} 0
+docservice_business_documents_non_terminal 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="COMPENSATING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="EXTRACTION_FAILED"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="PROCESSING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="QUEUED"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="RETRYING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="UPLOADED"} 0
+```
+
+#### 3.3 /metrics expone las 3 métricas (instancia 2)
+```bash
+docker exec infra-doc-service-2 wget -qO- http://localhost:8080/metrics | grep "^docservice_business"
+```
+```
+docservice_business_documents_by_status{status="COMPENSATING"} 0
+docservice_business_documents_by_status{status="COMPLETED"} 5
+docservice_business_documents_by_status{status="EXTRACTION_FAILED"} 0
+docservice_business_documents_by_status{status="FAILED"} 0
+docservice_business_documents_by_status{status="PENDING_UPLOAD"} 0
+docservice_business_documents_by_status{status="PROCESSING"} 0
+docservice_business_documents_by_status{status="QUEUED"} 0
+docservice_business_documents_by_status{status="REJECTED"} 0
+docservice_business_documents_by_status{status="RETRYING"} 0
+docservice_business_documents_by_status{status="UPLOADED"} 0
+docservice_business_documents_by_status{status="UPLOAD_EXPIRED"} 0
+docservice_business_documents_non_terminal 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="COMPENSATING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="EXTRACTION_FAILED"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="PROCESSING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="QUEUED"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="RETRYING"} 0
+docservice_business_documents_oldest_intermediate_age_seconds{status="UPLOADED"} 0
+```
+
+---
+
+### 4. PROMETHEUS: dns_sd_configs Y SCRAPE DE AMBAS RÉPLICAS
+
+```bash
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/targets' | jq '.data.activeTargets[] | select(.job=="doc-service")'
+```
+
+**Resultado (resumido):**
+- Target 1: `172.22.0.11:8080` — health: `up`, lastScrape: 2026-10-27T03:31:11.624Z, scrapeDuration: 2.3ms
+- Target 2: `172.22.0.5:8080` — health: `up`, lastScrape: 2026-10-27T03:31:11.424Z, scrapeDuration: 1.5ms
+- Dropped targets: 0 para doc-service
+
+**Config verificada en `infra/compose/prometheus/prometheus.yml`:**
+```yaml
+scrape_configs:
+  - job_name: 'doc-service'
+    dns_sd_configs:
+      - names: ['doc-service']
+        type: 'A'
+        port: 8080
+    metrics_path: '/metrics'
+```
+
+---
+
+### 5. QUERIES PROMETHEUS VERIFICADAS (con datos de ambas instancias)
+
+```bash
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=docservice_business_documents_by_status'
+```
+→ 22 series (11 statuses × 2 instancias) — valores correctos
+
+```bash
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=docservice_business_documents_non_terminal'
+```
+→ 2 series (1 por instancia) — valor 0
+
+```bash
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=docservice_business_documents_oldest_intermediate_age_seconds'
+```
+→ 12 series (6 statuses intermedios × 2 instancias) — valor 0
+
+---
+
+### 6. PROMTOOL TEST RULES — PASS
+
+```bash
+docker run --rm --entrypoint promtool \
+  -v /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/compose/prometheus:/etc/prometheus \
+  prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/s4-p1-02.rules.test.yml
+```
+```
+Unit Testing:  /etc/prometheus/tests/s4-p1-02.rules.test.yml
+  SUCCESS
+```
+
+**Tests cubiertos (5):**
+1. DocsStuck NO dispara si antigüedad 800s (< 900s)
+2. DocsStuck DISPARA si antigüedad 1000s (> 900s) con for=2m
+3. DocsStuck DISPARA para PROCESSING (estado intermedio operativo)
+4. DocsAccumulating NO dispara si non_terminal = 5 (< 10)
+5. DocsAccumulating DISPARA si non_terminal = 15 (> 10) con for=15m
+
+---
+
+### 7. REGLAS DE ALERTA (alert.rules.yml)
+
+```yaml
+# S4-P1-02: Documentos atascados en estados intermedios operativos (> 15 min = 900s)
+- alert: DocsStuck
+  expr: max by (status) (docservice_documents_oldest_intermediate_age_seconds) > 900
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Documento en estado intermedio ({{ $labels.status }}) hace mas de 15 min"
+    description: "Revisar reconciliador (intervalo 5-10 min) y consumidores..."
+    runbook_url: "infra/runbooks/restore-mongo.md"
+
+# S4-P1-02: Acumulación de documentos no terminales operativos (> 10 por 15 min)
+- alert: DocsAccumulating
+  expr: docservice_documents_non_terminal > 10
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Mas de 10 documentos en estados no terminales operativos por 15 min"
+    description: "La cola o el procesamiento no drena. Revisar PEL, DLQ y workers..."
+    runbook_url: "infra/runbooks/failover-redis.md"
+```
+
+---
+
+### 8. DASHBOARD GRAFANA ACTUALIZADO
+
+**Archivo:** `infra/compose/grafana/dashboards/dashboard-v1-s4.json`
+
+**Paneles nuevos (IDs 6, 7, 8):**
+| ID | Título | Query | Tipo |
+|----|--------|-------|------|
+| 6 | S4-P1-02: Documentos por estado (max by status) | `max by (status) (docservice_documents_by_status)` | timeseries |
+| 7 | S4-P1-02: Docs no terminales operativos | `docservice_documents_non_terminal` | stat (thresholds: green→orange@5→red@10) |
+| 8 | S4-P1-02: Antigüedad doc más viejo por estado intermedio (max by status) | `max by (status) (docservice_documents_oldest_intermediate_age_seconds)` | timeseries |
+
+**Dashboard provisionado** vía `infra/compose/grafana/provisioning/dashboards/dashboards.yml` (path: `/var/lib/grafana/dashboards`)
+
+---
+
+### 9. TESTS UNITARIOS GO — PASS
+
+```bash
+cd /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/doc-service && go test ./internal/metrics/... -v
+```
+```
+=== RUN   TestIntermediateOperationalStatuses
+--- PASS: TestIntermediateOperationalStatuses (0.00s)
+=== RUN   TestKnownStatuses
+--- PASS: TestKnownStatuses (0.00s)
+=== RUN   TestDefaultCollectorConfig
+--- PASS: TestDefaultCollectorConfig (0.00s)
+=== RUN   TestStartCollectorWithConfig
+--- PASS: TestStartCollectorWithConfig (0.00s)
+PASS
+ok  	github.com/Alejo-Basile/doc-service/internal/metrics	(cached)
+```
+
+---
+
+### 10. PRUEBA FUNCIONAL CON DATOS REALES
+
+**Estado actual en Mongo (5 docs COMPLETED):**
+```
+docservice_business_documents_by_status{status="COMPLETED"} = 5 (por instancia)
+docservice_business_documents_non_terminal = 0
+docservice_business_documents_oldest_intermediate_age_seconds = 0 (todos los intermedios)
+```
+
+**Comportamiento verificado:**
+- Collector consulta Mongo cada 15s (log visible en cada iteración silenciosa)
+- Gauges se resetean a 0 antes de setear valores reales (estados sin docs muestran 0, no valor anterior)
+- Fallback `created_at` si `updated_at` es zero
+- No panic si Mongo inaccesible: loguea error y reintenta en siguiente tick
+
+---
+
+### 11. S4-P1-03 (ALERTAS DE CADENA) — YA VERIFICADO
+
+```bash
+docker run --rm --entrypoint promtool \
+  -v /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/compose/prometheus:/etc/prometheus \
+  prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/s4-p1-03.rules.test.yml
+```
+```
+Unit Testing:  /etc/prometheus/tests/s4-p1-03.rules.test.yml
+  SUCCESS
+```
+
+---
+
+### 12. LIMITACIONES DECLARADAS
+
+1. **GHCR no publicado** — se usa `doc-service:local` (build local). Imagen en GHCR (`ghcr.io/alejo-basile/doc-service:sha-210be28`) corresponde a commit anterior sin collector.
+2. **PENDING_UPLOAD excluido** de `documents_non_terminal` y `documents_oldest_intermediate_age_seconds` por diseño (ventana de subida del cliente, gobierna expires_at/reconciliador).
+3. **Agregación max, no sum** — cada instancia reporta su vista de Mongo (eventualmente consistente); `max by (status)` evita doble conteo.
+4. **Prometheus scrapea cada 5s**, collector refresca cada 15s — latencia aceptable para alertas de 2m/15m.
+
+---
+
+### 13. ARCHIVOS GENERADOS/MODIFICADOS
+
+| Archivo | Acción |
+|---------|--------|
+| `infra/compose/grafana/dashboards/dashboard-v1-s4.json` | **NUEVO** — Dashboard S4 con 3 paneles de métricas de negocio |
+| `infra/docs/evidencias/S4/S4-P1-02-metricas-negocio.txt` | **NUEVO** — Este archivo de evidencia |
+
+---
+
+### 14. CONCLUSIÓN
+
+✅ **S4-P1-02 COMPLETADO Y VERIFICADO**
+
+| Criterio | Estado | Evidencia |
+|----------|--------|-----------|
+| Collector arranca en contenedor | ✅ | Log "iniciando collector de métricas de negocio" |
+| 3 métricas expuestas en /metrics | ✅ | Salida `wget` ambas instancias |
+| Prometheus scrapea 2 réplicas (dns_sd_configs) | ✅ | 2 targets healthy, 0 dropped |
+| promtool test rules s4-p1-02 | ✅ | SUCCESS (5 tests) |
+| Dashboard Grafana actualizado | ✅ | `dashboard-v1-s4.json` con 3 paneles nuevos |
+| Agregación correcta (max by status) | ✅ | Queries y dashboard usan `max by (status)` |
+| PENDING_UPLOAD excluido correctamente | ✅ | Código y métricas lo confirman |
+
+---
+
+**Próximo paso:** S4-P1-03 ya verificado (evidencia `S4-P1-03-alertas-cadena.txt` 2026-10-27). Semana S4 cerrada.

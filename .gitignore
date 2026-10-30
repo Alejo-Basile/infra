@@ -23,3 +23,12 @@ Thumbs.db
 # Secretos en archivos — NUNCA commitear
 secrets/*
 !secrets/.gitkeep
+
+# Tooling local de agentes — indice auto-generado con rutas absolutas de la maquina
+.atl/
+
+# Basura de iteracion al depurar reglas de Prometheus.
+# Los tests reales viven en compose/prometheus/tests/ (s4-p1-*.rules.test.yml)
+# y los fixtures e2e son prometheus.test.yml / alert.rules.test.yml: ninguno matchea.
+compose/prometheus/test*.yml
+compose/prometheus/debug*.yml

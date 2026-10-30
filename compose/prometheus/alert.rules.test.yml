@@ -1,0 +1,32 @@
+# Test-specific alert rules for S4-P1-03 integration tests
+# Uses test stream names: stream:s4p103-test and stream:s4p103-test-dlq
+# This file is mounted in the test Prometheus instead of alert.rules.yml
+
+groups:
+  - name: s4-p1-03-chain-test
+    interval: 30s
+    rules:
+      # Test: La cola no avanza (profundidad constante > 0 durante 5 min)
+      # La ventana de 5 min ya esta en changes(...[5m]); NO agregar 'for: 5m' adicional
+      # (duplicaria el tiempo a ~10 min). Anti-flapping opcional: for: 1m (~6 min total).
+      - alert: QueueNotAdvancing
+        expr: redis_stream_length{stream="stream:s4p103-test"} > 0 and changes(redis_stream_length{stream="stream:s4p103-test"}[5m]) == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "La cola s4p103-test no avanza (profundidad constante > 0 por 5m)"
+          description: "Revisar consumidores, PEL y DLQ. Si no hay worker activo, escalar o reiniciar el consumidor. Ver runbook failover-redis."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      # Test: DLQ no vacía (fallos definitivos de extracción)
+      # for: 0m = detección inmediata sin demora adicional.
+      - alert: DLQNotEmpty
+        expr: redis_stream_length{stream="stream:s4p103-test-dlq"} > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ con mensajes (fallos definitivos) - test stream"
+          description: "Revisar XRANGE, corregir causa raiz y reintentar con la herramienta de replay. No borrar sin diagnosticar."
+          runbook_url: "infra/runbooks/failover-redis.md"
