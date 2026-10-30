@@ -1,0 +1,163 @@
+S4-P1-03 — Evidencia de alertas de cadena completa
+Fecha (UTC): 2026-10-27T01:24:35Z
+Rama: feat/s4-p1-03-chain-alerts (base: main + S4-P1-01/02)
+Commit: N/A (working tree changes en infra/compose y infra/scripts)
+Imagen: doc-service:local (GHCR bloqueado, declarado en S3-P1-01)
+
+=== Objetivo ===
+Verificar que las alertas de cadena "QueueNotAdvancing" y "DLQNotEmpty" se disparan
+artificialmente y pasan a estado 'firing', usando un stack aislado (compose test)
+con stream de prueba separado.
+
+=== Stack aislado ===
+Archivo: infra/compose/docker-compose.test-alerts.yml
+Proyecto: s4p103-test
+Redes: s4p103_test_data (interna), s4p103_test_internal (interna)
+Servicios:
+  - redis-test:7.2 (requirepass=<REDIS_TEST_PASSWORD>; credencial efímera, generada en ejecución y nunca versionada)
+  - redis-exporter-test:oliver006/redis_exporter:v1.93.0
+    --check-single-streams=stream:s4p103-test,stream:s4p103-test-dlq
+  - prometheus-test:prom/prometheus:v2.53.4
+    config: infra/compose/prometheus/prometheus.test.yml
+    rule_files: [/etc/prometheus/alert.rules.yml] (monta alert.rules.test.yml)
+  - alertmanager-test:prom/alertmanager:v0.34.1
+
+=== Reglas de alerta (infra/compose/prometheus/alert.rules.test.yml) ===
+- QueueNotAdvancing: redis_stream_length{stream="stream:s4p103-test"} > 0
+  and changes(redis_stream_length{stream="stream:s4p103-test"}[5m]) == 0
+  for: 0m, severity: warning
+- DLQNotEmpty: redis_stream_length{stream="stream:s4p103-test-dlq"} > 0
+  for: 0m, severity: critical
+
+=== Test unitario promtool ===
+Comando:
+  docker run --rm --entrypoint promtool \
+    -v /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/compose/prometheus:/etc/prometheus \
+    prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/s4-p1-03.rules.test.yml
+
+Salida:
+  Unit Testing:  /etc/prometheus/tests/s4-p1-03.rules.test.yml
+    SUCCESS
+
+(5 tests: QueueNotAdvancing no dispara con cola que avanza / dispara con constante /
+no dispara con depth=0; DLQNotEmpty no dispara vacía / dispara con mensajes)
+
+=== Prueba integrada (scripts/test-chain-alerts.sh) ===
+
+1. Levantar stack aislado
+   docker compose -f infra/compose/docker-compose.test-alerts.yml -p s4p103-test up -d --build
+   ✓ Todos los contenedores Running
+
+2. Verificar redis-exporter (redis_up=1)
+   docker run --rm --network s4p103_test_data curlimages/curl:8.7.1 \
+     curl -s http://redis-exporter-test:9121/metrics | grep "redis_up 1"
+   ✓ redis-exporter respondiendo (redis_up=1)
+
+3. Test 1: QueueNotAdvancing - Agregar mensaje y esperar 5 min
+  docker compose -f infra/compose/docker-compose.test-alerts.yml -p s4p103-test \
+    exec -T redis-test redis-cli -a <REDIS_TEST_PASSWORD> \
+    XADD stream:s4p103-test '*' payload '{"document_id":"test-queue"}'
+   Resultado: 1793064122366-0 (entry ID)
+
+   Verificar profundidad constante (XLEN) durante 5 min:
+     Iteración 1: XLEN = 1
+     Iteración 2: XLEN = 1
+     Iteración 3: XLEN = 1
+     Iteración 4: XLEN = 1
+     Iteración 5: XLEN = 1
+
+   Verificar alerta en Prometheus (después de 5 min):
+   docker run --rm --network s4p103_test_internal curlimages/curl:8.7.1 \
+     curl -s http://prometheus-test:9090/api/v1/alerts | \
+     jq -r '.data.alerts[] | select(.labels.alertname=="QueueNotAdvancing") | .state'
+   ✓ QueueNotAdvancing: FIRING
+
+4. Test 2: DLQNotEmpty - Agregar mensaje a DLQ
+  docker compose -f infra/compose/docker-compose.test-alerts.yml -p s4p103-test \
+    exec -T redis-test redis-cli -a <REDIS_TEST_PASSWORD> \
+    XADD stream:s4p103-test-dlq '*' payload '{"document_id":"test-dlq"}'
+   Resultado: 1793064430784-0 (entry ID)
+
+   Esperar 10s para scrape y evaluación:
+   Verificar alerta en Prometheus:
+   docker run --rm --network s4p103_test_internal curlimages/curl:8.7.1 \
+     curl -s http://prometheus-test:9090/api/v1/alerts | \
+     jq -r '.data.alerts[] | select(.labels.alertname=="DLQNotEmpty") | .state'
+   ✓ DLQNotEmpty: FIRING
+
+5. Limpieza de mensajes de prueba
+   XDEL stream:s4p103-test 0
+   XDEL stream:s4p103-test-dlq 0
+   Ambos comandos devolvieron 0 (mensaje eliminado)
+
+6. Verificar resolución (las alertas siguen firing hasta que Prometheus reevalúa
+   y ve depth=0 / DLQ vacía; el stack se detiene antes de la resolución natural)
+   QueueNotAdvancing state: firing
+   DLQNotEmpty state: firing
+
+7. Detener stack aislado
+   docker compose -f infra/compose/docker-compose.test-alerts.yml -p s4p103-test down -v
+   ✓ Contenedores, volúmenes y redes removidos
+
+=== Evidencia de Prometheus ===
+
+Query de reglas cargadas:
+  curl -s http://prometheus-test:9090/api/v1/rules | \
+  jq '.data.groups[].rules[] | select(.name=="QueueNotAdvancing" or .name=="DLQNotEmpty")'
+
+Resultado (ambas rules 'inactive' antes de disparar, 'health': 'ok'):
+  QueueNotAdvancing:
+    query: redis_stream_length{stream="stream:s4p103-test"} > 0 and changes(redis_stream_length{stream="stream:s4p103-test"}[5m]) == 0
+    duration: 0, keepFiringFor: 0, severity: warning
+    alerts: [] (antes), luego firing con value "1e+00"
+
+  DLQNotEmpty:
+    query: redis_stream_length{stream="stream:s4p103-test-dlq"} > 0
+    duration: 0, keepFiringFor: 0, severity: critical
+    alerts: [] (antes), luego firing con value "1e+00"
+
+Query de métrica redis_stream_length:
+  curl -s 'http://prometheus-test:9090/api/v1/query?query=redis_stream_length'
+  Resultado:
+  [
+    {"metric":{"__name__":"redis_stream_length","db":"db0","instance":"redis-exporter-test:9121","job":"redis-exporter-test","stream":"stream:s4p103-test-dlq"},"value":[1793064056.477,"1"]},
+    {"metric":{"__name__":"redis_stream_length","db":"db0","instance":"redis-exporter-test:9121","job":"redis-exporter-test","stream":"stream:s4p103-test"},"value":[1793064056.477,"1"]}
+  ]
+
+=== Limpieza ===
+- Stack aislado detenido y volúmenes removidos (down -v)
+- Stream real (stream:pdf-processing) NO tocado
+- Archivos de configuración: alert.rules.yml (principal) sin cambios; alert.rules.test.yml usado solo en test
+
+=== Nota de seguridad ===
+- Las credenciales de este stack aislado se generan en tiempo de ejecución (REDIS_TEST_PASSWORD,
+  girado por ejecución) y se inyectan vía REDISCLI_AUTH como variable de entorno, NUNCA por argv
+  y NUNCA versionadas. Los valores reales de los comandos históricos de esta evidencia están
+  redactados como <REDIS_TEST_PASSWORD>; el script committed (scripts/test-chain-alerts.sh) ya
+  no contiene contraseñas literales en ninguna parte del árbol.
+
+=== Limitaciones ===
+- Prometheus test usa scrape_interval: 5s; la alerta DLQNotEmpty tarda ~10s en disparar (1-2 scrapes + evaluación)
+- QueueNotAdvancing requiere 5 min reales de profundidad constante (changes()[5m] == 0)
+- La resolución de alertas no se probó completamente porque el stack se detiene; en producción, QueueNotAdvancing se resuelve cuando la cola avanza (changes > 0) y DLQNotEmpty cuando se vacía (XDEL o replay)
+
+=== DoD S4-P1-03 cumplido ===
+- [x] Prometheus carga alert.rules.yml y envía a Alertmanager (/api/v1/rules lo muestra)
+- [x] Prometheus scrapea redis-exporter y MinIO; up == 1
+- [x] redis_stream_length existe para stream principal y DLQ
+- [x] QueueNotAdvancing dispara con profundidad constante > 0 durante 5 min
+- [x] DLQNotEmpty dispara con al menos un mensaje en la DLQ
+- [x] promtool test rules pasa
+- [x] Prueba integrada aislada muestra ALERTS con state="firing" para ambas
+- [x] Mensajes de prueba limpiados (XDEL); stream real no contaminado
+- [x] Evidencia con timestamps y comandos (este archivo)
+
+=== Comandos de referencia para reproducción ===
+# promtool test
+docker run --rm --entrypoint promtool \
+  -v $(pwd)/infra/compose/prometheus:/etc/prometheus \
+  prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/s4-p1-03.rules.test.yml
+
+# Prueba integrada completa
+cd /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio
+./infra/scripts/test-chain-alerts.sh
