@@ -1,0 +1,97 @@
+S5-P1-04 — Evidencia de alertas de espacio de MinIO (70 / 85 por ciento)
+Fecha (UTC): 2026-10-31
+Rama: feat/s5-p1-04-espacio-minio (base: feat/s4-p1-02-03-alertas-observabilidad, PR #35)
+Commit: N/A (working tree; se registra al abrir el PR)
+Imagen MinIO: bitnamilegacy/minio:2025.7.23-debian-12-r5 (stack local, profile full)
+Prometheus: prom/prometheus:v2.53.4
+
+=== Objetivo ===
+Que las alertas de espacio de MinIO existan, sean evaluables y esten probadas.
+La alerta previa era NoData permanente (metrica inexistente).
+
+=== Defecto encontrado (estado anterior) ===
+compose/prometheus/alert.rules.yml:
+  expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.7
+Ninguna de las dos metricas existe en MinIO 2025.7.23:
+  $ docker exec infra-minio-1 curl -s http://127.0.0.1:9000/minio/v2/metrics/cluster | grep disk
+  (sin resultados)
+Metricas de capacidad realmente presentes (verificado en el endpoint):
+  minio_cluster_capacity_raw_free_bytes
+  minio_cluster_capacity_raw_total_bytes
+  minio_cluster_capacity_usable_free_bytes
+  minio_cluster_capacity_usable_total_bytes
+  minio_cluster_usage_total_bytes / _object_total / _version_total / _deletemarker_total
+=> La regla nunca podia dispararse: NoData, no alerta silenciosa.
+
+=== Expresion corregida ===
+1 - (minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes)
+  > 0.70  -> MinioDiskHigh     (warning, for: 5m)
+  > 0.85  -> MinioDiskCritical (critical, for: 5m)   [nueva]
+
+=== Valores reales medidos (2026-10-31, stack local) ===
+minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}  1.020237824e+10  (10.20 GB)
+minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"} 1.0005889024e+11 (100.06 GB)
+minio_cluster_usage_total_bytes{server="127.0.0.1:9000"}           0
+=> uso = 1 - 10.20/100.06 = 0.8980 (89.80 por ciento)
+
+Lectura: con la expresion corregida, MinioDiskCritical DISPARA hoy mismo en este
+host. Es correcto y no un falso positivo: el filesystem que respalda minio-data
+tiene 10.2 GB libres. Con usage_total_bytes = 0 se confirma que el consumo NO es
+de los buckets (ambos vacios) sino del disco del host. Queda documentado en
+runbooks/minio-espacio.md como primer paso de diagnostico.
+
+=== Retencion verificada (lifecycle) ===
+$ docker exec infra-minio-1 mc ls local
+  extracted-txt/  0B
+  raw-pdfs/       0B
+$ mc ilm rule ls local/raw-pdfs     -> Enabled, DAYS TO EXPIRE 7
+$ mc ilm rule ls local/extracted-txt -> Enabled, DAYS TO EXPIRE 30
+Coincide con compose/minio/lifecycle-buckets.sh (S1-P1-06).
+
+=== Validacion de reglas ===
+$ docker run --rm -v "$PWD/compose/prometheus:/etc/prometheus:ro" \
+    --entrypoint promtool prom/prometheus:v2.53.4 check rules /etc/prometheus/alert.rules.yml
+  SUCCESS: 12 rules found
+
+$ docker run --rm -v "$PWD/compose/prometheus:/etc/prometheus:ro" \
+    --entrypoint promtool prom/prometheus:v2.53.4 test rules \
+    /etc/prometheus/tests/s5-p1-04.rules.test.yml
+  SUCCESS
+
+Casos cubiertos (compose/prometheus/tests/s5-p1-04.rules.test.yml):
+  1. uso 60 por ciento  -> ninguna alerta
+  2. uso 75 por ciento  -> MinioDiskHigh dispara; MinioDiskCritical no
+  3. uso 90 por ciento  -> disparan ambas
+  4. uso 85 por ciento exacto -> MinioDiskCritical NO dispara (comparacion estricta)
+
+=== Excepcion declarada (que NO se hizo) ===
+No se lleno el disco real para forzar la alerta: el host esta al 90 por ciento
+(9.6 GB libres) y llenarlo degrada el entorno de desarrollo y el resto del stack.
+La validacion se hace con series sinteticas en promtool (4 casos) mas la
+observacion del estado real (89.80 por ciento), que es el mismo regimen que
+cruzaria el umbral. Riesgo residual: la regla no se vio en estado firing dentro
+de un Prometheus con Alertmanager; se ve con promtool y con el valor real.
+
+=== Hallazgo bloqueante para que esto sirva en main ===
+En main, compose/prometheus/prometheus.yml son 12 lineas: NO tiene rule_files ni
+bloque alerting, y solo scrapea traefik y doc-service. Es decir: en main
+Prometheus no carga ninguna regla, no conoce Alertmanager y no scrapea MinIO ni
+redis-exporter; el contenedor alertmanager corre sin recibir nada. Por eso esta
+tarea se apila sobre PR #35 (que agrega rule_files, alerting y los scrapes), en
+lugar de ir contra main: sola en main la regla nueva seria codigo muerto.
+
+=== Hallazgo colateral (no corregido en este PR) ===
+Los tests de S4-P1-02 y S4-P1-03 escriben `values` como si fueran pares
+timestamp/valor ('0 1000 30000 1000 ...'). En este formato de promtool un
+numero plano es un VALOR muestreado cada `interval`, no un timestamp: esas
+series quedan con valores 0, 1000, 30000, 1000... Pasan porque el valor evaluado
+en el `eval_time` cae por casualidad por encima del umbral. No se tocan aqui
+(fuera de alcance y comparten rama con PR #35); se anota para corregirlos.
+En s5-p1-04.rules.test.yml se usan listas planas con `interval` y se comenta el
+motivo arriba del test.
+
+=== Runbook ===
+runbooks/minio-espacio.md (nuevo): que mide la metrica, como separar crecimiento
+de buckets vs presion del host, comandos `mc` con credenciales leidas desde
+MINIO_ROOT_PASSWORD_FILE (nunca por argv), purga de huerfanos, ampliacion del
+volumen y decision de respaldo v1 (no se respaldan objetos transitorios).
