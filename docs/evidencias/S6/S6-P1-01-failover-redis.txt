@@ -1,0 +1,123 @@
+S6-P1-01 — Ensayo de failover de Redis Sentinel (parte P1: runbook + defecto del cliente Go)
+Fecha (UTC): 2026-10-31T05:52Z - 06:02Z
+Rama: feat/s6-p1-01-failover-redis (base: main)
+Commit: N/A (working tree; se registra al abrir el PR)
+Stack: compose/docker-compose.yml, project `infra`, profile full
+Imagen doc-service: doc-service:local
+
+=== Alcance de este ensayo ===
+- Runbook runbooks/failover-redis.md (antes inexistente: 5 alertas apuntaban a un 404).
+- Failover real de Sentinel con medición de tiempo y de pérdida de mensajes.
+- Verificación del cliente Go (doc-service).
+NO incluye el cliente Rust (worker): no está desplegado en el stack (no hay
+servicio en compose ni imagen). El criterio (b) completo de S6-P1-01 queda abierto.
+
+=== 1. Estado inicial ===
+Maestro por los tres sentinels:
+  sentinel-1: redis-streams 6379
+  sentinel-2: redis-streams 6379
+  sentinel-3: redis-streams 6379
+SENTINEL master myprimary:
+  name=myprimary ip=redis-streams port=6379 flags=master
+  num-slaves=2 num-other-sentinels=2 quorum=2
+XLEN stream:pdf-processing = 77
+Roles: redis-streams=master, replica-1=slave, replica-2=slave
+doc-service: 2/2 replicas (healthy)
+
+=== 2. Defecto encontrado ANTES de tocar el compose ===
+doc-service soporta Sentinel en el binario:
+  internal/adapters/redis/client.go:22  if len(cfg.SentinelAddrs) > 0 { NewFailoverClient(...) }
+  internal/config/config.go:88          RedisSentinelAddrs: envList("REDIS_SENTINEL_ADDRS")
+  internal/config/config.go:131         exige REDIS_MASTER_NAME cuando hay sentinels
+Pero el compose le pasaba dirección fija (compose/docker-compose.yml:503):
+  REDIS_ADDR: redis-streams:6379
+  (sin REDIS_SENTINEL_ADDRS ni REDIS_MASTER_NAME en todo el archivo)
+=> En ejecución el cliente NO era Sentinel-aware. Es exactamente el caso que el
+   SPEC §3.5 advierte: funciona en integración y se cae el día del failover.
+
+=== 3. Failover con la configuración defectuosa (medición) ===
+T0=1793425761  $C exec -T sentinel-1 redis-cli -p 26379 SENTINEL FAILOVER myprimary
+  -> OK
+Consenso de los tres sentinels en el nuevo maestro: 2 s
+  nuevo maestro = redis-streams-replica-1
+SENTINEL master myprimary (post): ip=redis-streams-replica-1, num-slaves=2
+Roles post: redis-streams=slave, replica-1=master, replica-2=slave
+XLEN en el maestro nuevo = 77  (sin pérdida en este ensayo)
+
+Prueba de la ruta de escritura que usaba doc-service, contra la dirección fija:
+  $C exec -T redis-streams sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli XADD stream:pdf-processing "*" probe failover-test'
+  -> READONLY You can't write against a read only replica.
+Conclusión medida: tras un failover, doc-service no podía encolar. Los documentos
+quedaban en UPLOADED hasta que los recuperara el reconciliador.
+
+Observación: doc-service siguió 2/2 (healthy) todo el tiempo. Su /readyz solo
+verifica que el proceso vive (internal/transport/http/health.go:27-28), así que un
+healthcheck verde no detectó la pérdida de la capacidad de escritura. Es una deuda
+de doc-service (SPEC §10), fuera del alcance de esta tarea.
+
+=== 4. Fix aplicado (compose/docker-compose.yml, servicio doc-service) ===
+Se reemplaza REDIS_ADDR fija por:
+  REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+  REDIS_MASTER_NAME: myprimary
+La contraseña sigue llegando por REDIS_PASSWORD (exportada por
+compose/doc-service/entrypoint.sh desde /run/secrets/redis_streams_password), y
+NewFailoverClient la usa como Password. No se agregó ningún secreto nuevo.
+
+  $C --profile full up -d --scale doc-service=2 doc-service
+  -> doc-service-1 y doc-service-2 healthy; log: "change stream watcher iniciado"
+
+=== 5. Segundo failover, con el fix (medición) ===
+T0=1793425853  $C exec -T sentinel-1 redis-cli -p 26379 SENTINEL FAILOVER myprimary
+Consenso de los tres sentinels en el nuevo maestro: 2 s
+  nuevo maestro = redis-streams-replica-1
+Tras 8 s, CLIENT LIST del nodo demotado (redis-streams) sin conexiones de
+doc-service (antes del fix el cliente quedaba clavado ahí).
+
+Prueba de escritura de punta a punta A TRAVÉS de doc-service:
+  - Se tomó el documento test-doc-1 (estado COMPLETED) y se lo pasó a UPLOADED con
+    object_key, lo que dispara el Change Stream -> relay -> XADD.
+  - XLEN en el maestro nuevo: 77 -> 78
+  - Último mensaje del stream (XREVRANGE + - COUNT 1):
+      1793426150609-0
+      {"document_id":"test-doc-1","object_key":"raw-pdfs/test-doc-1.pdf",
+       "correlation_id":"","enqueued_at":"2026-10-31T05:55:50Z","schema_version":1}
+=> El cliente Go escribió en el maestro promovido por Sentinel. La corrección funciona.
+
+Limpieza del artefacto de prueba:
+  - test-doc-1 vuelto a COMPLETED (modifiedCount=1)
+  - XDEL stream:pdf-processing 1793426150609-0
+  - XLEN de vuelta en 77
+
+Observación menor: el primer intento de disparar el relay usó un documento sin
+object_key y no generó mensaje. En el flujo real el object_key se fija al emitir la
+URL prefirmada, así que no es un camino alcanzable; se anota por si aparece un
+documento sin object_key en Mongo.
+
+=== 6. Rollback ensayado ===
+Para devolver el maestro a redis-streams se repitió SENTINEL FAILOVER (Sentinel no
+permite elegir el próximo maestro). Intentos hasta que lo promovió: 2.
+Tras el failback, replica-1 quedó en resincronización completa:
+  role=slave master_link_status=down (state=wait_bgsave)
+y ~12 s después:
+  redis-streams:             role:master connected_slaves:2
+  redis-streams-replica-1:   role:slave  master_link_status:up
+  redis-streams-replica-2:   role:slave  master_link_status:up
+XLEN final = 77. Los tres sentinels healthy, doc-service 2/2 healthy.
+Nota: durante la ventana de resincronización un nodo puede reportar role:master de
+forma transitoria; no se intervino y convergió solo.
+
+=== 7. Resumen de lo verificado / no verificado ===
+Verificado:
+  [x] Failover planificado: consenso en 2 s (dos veces: antes y después del fix)
+  [x] Pérdida de mensajes medida (0 en este ensayo; no es una garantía)
+  [x] doc-service con dirección fija falla con READONLY tras el failover
+  [x] Con Sentinel configurado, doc-service escribe en el maestro nuevo (XLEN 77->78)
+  [x] Rollback completo, topología y contadores restaurados
+No verificado:
+  [ ] Cliente Rust (worker): no desplegado. Sin él, el criterio (b) de S6-P1-01
+      ("los dos clientes, Go y Rust, reconectan solos") no se puede declarar cumplido
+  [ ] Failover bajo carga real con tráfico sostenido de worker
+  [ ] Tiempo de recuperación del reconciliador tras pérdida efectiva de mensajes
+
+=== 8. Comandos de verificación de las reglas (no ejecutados acá) ===
+N/A: este ensayo no modifica reglas de alerta. El PR de S5-P1-04 cubre las reglas.
