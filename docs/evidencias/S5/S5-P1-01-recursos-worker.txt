@@ -1,0 +1,71 @@
+# S5-P1-01 — Limites y contencion de PDF hostil (extraction-worker) — evidencia (2026-11-01)
+
+## DoD de la tarea
+1. `mem_limit`, `cpus`, `pids_limit` y `ulimits` definidos y **justificados con una
+   medicion**, no con un numero a ojo (pico medido + 30 % de margen).
+2. PDF hostil contenido por tres capas independientes: timeout duro por trabajo,
+   topes de parseo y limites del contenedor.
+3. Invariante `WORKER_MIN_IDLE_MS >= 2 x WORKER_JOB_TIMEOUT_SECS`.
+
+## Imagen bajo prueba
+`extraction-worker:s5-p4-01` (rama `feat/s5-p4-01-worker-image`, S5-P4-01),
+levantada con `docker compose --profile full run --no-deps`, rootfs de solo
+lectura, `tmpfs /tmp:size=256m`, usuario 10001:10001.
+
+## Metodologia
+- Memoria: `/sys/fs/cgroup/memory.peak` leido **dentro** del contenedor. No se usa
+  `docker stats`, que promedia y subestima el pico.
+- Latencia de `/readyz`: `curl` desde dentro del contenedor en bucle de 250 ms,
+  para no medir el overhead de `docker exec` en cada muestra.
+- Documentos: sembrados en Mongo con `status: QUEUED` (el reclamo real es
+  `QUEUED|RETRYING -> PROCESSING`).
+- Mensajes: `XADD` con el contrato completo (`document_id`, `object_key`,
+  `correlation_id`, `enqueued_at`, `schema_version`); un campo faltante manda el
+  mensaje a la DLQ con `INVALID_CONTRACT`.
+- Carga generada:
+  - 400 paginas de texto (234 KB), via `gs` sobre PostScript;
+  - 12 paginas de imagen de ruido (27,5 MiB = 0,92 x `WORKER_MAX_PDF_BYTES`),
+    via PIL, para acercarse al tope de entrada aceptado.
+
+## Mediciones
+
+| Escenario                                      | Pico RSS (cgroup) | Resultado                              |
+|------------------------------------------------|-------------------|----------------------------------------|
+| Reposo (solo `/readyz` sondeando)              | 5,8 MiB           | working set estable                   |
+| 4 x 400 paginas texto (234 KB c/u)             | 64 MiB            | 4/4 completan en < 20 s                |
+| 4 x 27,5 MiB (imagen)                          | 289 MiB           | 0/4 completan: abortados por timeout   |
+| 1 x 27,5 MiB (imagen)                          | 109 MiB           | completa en > 150 s                    |
+
+Los 289 MiB de la fila de 4 x 27,5 MiB son una **cota inferior**: los trabajos se
+abortaron a los 60 s (valor de timeout que tenia el compose) a mitad de parseo.
+
+## Decision
+
+```
+mem_limit: 768m      # 4 x 109 MiB = ~436 MiB de peor caso teorico -> 1,7x
+cpus: 1.5
+pids_limit: 200
+ulimits: nofile 4096 / nproc 200
+WORKER_JOB_TIMEOUT_SECS: 300     # subido desde 60 (ver abajo)
+WORKER_MIN_IDLE_MS: 600001       # invariante: >= 2 x 300 s
+WORKER_DEAD_CONSUMER_MS: 600001
+```
+
+**Correccion respecto del valor inicial**: con `WORKER_JOB_TIMEOUT_SECS=60` un PDF
+**legitimo** cercano al tope de entrada (27,5 MiB) se abortaba a mitad de camino y
+el documento quedaba clavado en `PROCESSING`. El timeout duro existe para contener
+un PDF hostil, no para rechazar documentos validos, asi que se usa el default de
+300 s del `.env.example` y se respeta la invariante con `MIN_IDLE` de 600 s.
+
+## Bloqueo que impide cerrar la tarea al 100 %
+
+La medicion con 4 documentos de 27,5 MiB **con timeout de 300 s** no se pudo
+completar: el worker deja de consumir a los ~15 s de arrancar por un defecto
+preexistente en `extraction-worker@c864f17` (no introducido por S5-P4-01 ni por
+este cambio). Detalle completo en la seccion "Defecto bloqueante" de
+`S5-P1-03-readyz.txt`.
+
+Consecuencia: el pico real del peor caso (4 x 27,5 MiB completos) queda sin medir.
+`768m` se sostiene sobre la extrapolacion 4 x 109 MiB con 1,7x de margen, no sobre
+una medicion directa. Para cerrar la tarea falta repetir esa corrida cuando el
+consumidor sea estable.

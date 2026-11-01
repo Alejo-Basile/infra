@@ -1,0 +1,97 @@
+# S5-P1-03 — `/readyz` del worker bajo saturacion — evidencia (2026-11-01)
+
+## DoD de la tarea
+Con el bulkhead saturado, `/readyz` sigue respondiendo **200 en < 200 ms** y
+comprueba **Redis, MinIO y que el consumidor esta registrado** en el consumer group.
+
+## Defecto encontrado y corregido: `/readyz` respondia 500 siempre
+
+`crates/worker/src/main.rs` registraba `web::Data::new(readiness.clone())` sobre un
+`Arc<Readiness>`, es decir `Data<Arc<Readiness>>`, mientras el handler
+`readyz` pide `web::Data<Readiness>`. El extractor de actix fallaba en **cada**
+request y devolvia 500 con el stack sano:
+
+```
+$ docker exec worker-load curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/readyz
+500
+$ docker exec worker-load curl -s http://127.0.0.1:8081/readyz
+Requested application data is not configured correctly. View/enable debug logs for more details.
+```
+
+Los tests unitarios no lo detectaban porque `test_app!` registra el tipo concreto
+(`Data::new(readiness)`), no el `Arc`. Es decir: el bug solo existia en produccion.
+
+Fix aplicado (`main.rs`): `web::Data::from(readiness.clone())`, que registra
+`Data<T>` a partir de un `Arc<T>`.
+
+Verificado con el contenedor real:
+
+```
+$ docker exec worker-load curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/readyz
+200
+$ docker exec worker-load curl -s http://127.0.0.1:8081/readyz
+{"status":"ok","checks":{"redis":"ok","minio":"ok","mongo":"ok"}}
+```
+
+## Medicion bajo saturacion (DoD: 200 y < 200 ms)
+
+Bulkhead saturado con `WORKER_MAX_CONCURRENCY=4`, sondeo cada 250 ms desde dentro
+del contenedor:
+
+| Carga activa                                | Muestras | Codigos | Media  | Max    |
+|--------------------------------------------|----------|---------|--------|--------|
+| 4 x PDF de 400 paginas (234 KB)             | 77       | 77 x 200| 4,7 ms | 64 ms  |
+| 4 x PDF de 27,5 MiB                         | 116      | 116 x 200| 4,0 ms| 41 ms  |
+
+La sonda no compite con el semaforo del bulkhead ni con el consumer group: abre
+conexiones propias y tiene timeout propio de 2 s por dependencia. El peor valor
+observado en toda la campana fue 174 ms (primer request en frio), por debajo del
+tope de 200 ms.
+
+## Gap que impide cerrar la tarea al 100 %
+
+`Readiness::check_all()` verifica Redis (`PING`), MinIO (HEAD de una clave sonda) y
+Mongo (`PING`). **No verifica que el consumidor este registrado en el consumer
+group**, que es parte explicita del DoD.
+
+Esto no es teorico: durante la campana el consumidor murio (ver "Defecto
+bloqueante") y `/readyz` siguio devolviendo `200 {"status":"ok"}`. El endpoint hoy
+da un **falso verde**: dice que el servicio esta listo cuando ya no consume nada.
+
+## Defecto bloqueante (preexistente en `extraction-worker@c864f17`)
+
+**Sintoma**: el worker deja de consumir a los ~15 s de arrancar. El breaker de
+Redis queda abierto de forma permanente y el log solo repite
+`operacion redis: circuit breaker abierto`; los mensajes quedan pendientes y los
+documentos en `QUEUED`/`PROCESSING`.
+
+**Evidencia recolectada**:
+- `worker_breaker_open{dependency="redis"} 1` y `/readyz` en 200 al mismo tiempo.
+- `MONITOR` de Redis: `XREADGROUP ... BLOCK 5000` y `XAUTOCLAIM` con argumentos
+  validos; el servidor responde bien.
+- `INFO commandstats` de Redis 7.2.16: `xautoclaim` **0 fallos**; fallan
+  `xreadgroup`, `xpending` y `xinfo|consumers` (1 fallo cada uno).
+- `INFO errorstats`: `NOGROUP`.
+- El breaker abre siempre en el mismo instante: el primer tick de metricas
+  (`WORKER_METRICS_INTERVAL_SECS=15`).
+- Prueba de causalidad: con `WORKER_BLOCK_MS=100` el breaker **no** se abre en 40 s
+  y las 4 extracciones concurrentes completan; con el default de 5000 ms se abre
+  siempre.
+
+**Causa raiz**: `XREADGROUP ... BLOCK 5000` corre sobre la **misma**
+`MultiplexedConnection` que usan las metricas, `XPENDING` (delivery count) y
+`XAUTOCLAIM`. Mientras el read bloquea 5 s, esas operaciones quedan encoladas en la
+misma conexion y expiran contra `REDIS_OP_TIMEOUT = 5 s`; `with_retry_cb` reintenta
+5 veces, cada reintento cuenta como fallo del breaker (umbral 5) y el breaker que
+protege la lectura queda abierto. La causa no se ve en los logs porque
+`with_retry_cb` no registra los intentos intermedios: solo propaga el
+`CircuitOpen` final, que es lo unico que aparece en el mensaje de error.
+
+**Fix sugerido (worker, no infra)**: conexion dedicada para el read bloqueante
+(`client.get_multiplexed_async_connection()` aparte) o read no bloqueante con
+espera local. Ademas conviene loguear el error real del primer intento y exponer
+el estado del consumer group en `/readyz`.
+
+**Dato de impacto**: cualquier instancia del worker en `main` deja de procesar a
+los 15 s. No es un problema de configuracion de este compose: se reproduce con el
+stream vacio, sin mensajes y sin pendientes.
