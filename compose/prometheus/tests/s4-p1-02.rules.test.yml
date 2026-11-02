@@ -1,0 +1,90 @@
+# Test rules for S4-P1-02: Métricas de negocio
+# https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+# Formato correcto para promtool test rules
+# Timestamps in values must be in MILLISECONDS for promtool.
+# eval_time and interval use duration strings (e.g., "30s", "3m", "96m").
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # Test 1: DocsStuck NO dispara si la antigüedad es 800s (< 900s)
+  # Need data from at least 2m before eval_time for for=2m to evaluate.
+  # eval_time=3m (180000ms), need data from 1m (60000ms). Using ms timestamps.
+  - interval: "30s"
+    input_series:
+      - series: 'docservice_documents_oldest_intermediate_age_seconds{status="UPLOADED"}'
+        values: '0 800 30000 800 60000 800 90000 800 120000 800 150000 800 180000 800'
+      - series: 'docservice_documents_non_terminal'
+        values: '0 5 30000 5 60000 5 90000 5 120000 5 150000 5 180000 5'
+    alert_rule_test:
+      - eval_time: "3m"
+        alertname: DocsStuck
+        exp_alerts: []
+
+  # Test 2: DocsStuck DISPARA si la antigüedad es 1000s (> 900s) con for=2m
+  # Data from 0ms to 180000ms, eval at 3m (180000ms).
+  # for=2m needs data from 1m (60000ms).
+  - interval: "30s"
+    input_series:
+      - series: 'docservice_documents_oldest_intermediate_age_seconds{status="UPLOADED"}'
+        values: '0 1000 30000 1000 60000 1000 90000 1000 120000 1000 150000 1000 180000 1000'
+    alert_rule_test:
+      - eval_time: "3m"
+        alertname: DocsStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              status: UPLOADED
+            exp_annotations:
+              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
+              runbook_url: "infra/runbooks/restore-mongo.md"
+              summary: "Documento en estado intermedio (UPLOADED) hace mas de 15 min"
+
+  # Test 3: DocsStuck DISPARA para PROCESSING (es estado intermedio operativo)
+  # Need data from 0ms to 180000ms, eval at 3m (180000ms).
+  - interval: "30s"
+    input_series:
+      - series: 'docservice_documents_oldest_intermediate_age_seconds{status="PROCESSING"}'
+        values: '0 1000 30000 1000 60000 1000 90000 1000 120000 1000 150000 1000 180000 1000'
+    alert_rule_test:
+      - eval_time: "3m"
+        alertname: DocsStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              status: PROCESSING
+            exp_annotations:
+              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
+              runbook_url: "infra/runbooks/restore-mongo.md"
+              summary: "Documento en estado intermedio (PROCESSING) hace mas de 15 min"
+
+  # Test 4: DocsAccumulating NO dispara si non_terminal = 5 (< 10)
+  # FOR=15m with interval=30s. eval_time=16m (960000ms).
+  # Need 15m of history -> from 1m (60000ms) to 16m.
+  - interval: "30s"
+    input_series:
+      - series: 'docservice_documents_non_terminal'
+        values: '60000 5 90000 5 120000 5 150000 5 180000 5 210000 5 240000 5 270000 5 300000 5 330000 5 360000 5 390000 5 420000 5 450000 5 480000 5 510000 5 540000 5 570000 5 600000 5 630000 5 660000 5 690000 5 720000 5 750000 5 780000 5 810000 5 840000 5 870000 5 900000 5 930000 5 960000 5'
+    alert_rule_test:
+      - eval_time: "16m"
+        alertname: DocsAccumulating
+        exp_alerts: []
+
+  # Test 5: DocsAccumulating DISPARA si non_terminal = 15 (> 10) con for=15m
+  - interval: "30s"
+    input_series:
+      - series: 'docservice_documents_non_terminal'
+        values: '60000 15 90000 15 120000 15 150000 15 180000 15 210000 15 240000 15 270000 15 300000 15 330000 15 360000 15 390000 15 420000 15 450000 15 480000 15 510000 15 540000 15 570000 15 600000 15 630000 15 660000 15 690000 15 720000 15 750000 15 780000 15 810000 15 840000 15 870000 15 900000 15 930000 15 960000 15'
+    alert_rule_test:
+      - eval_time: "16m"
+        alertname: DocsAccumulating
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              description: "La cola o el procesamiento no drena. Revisar PEL, DLQ y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales). Runbook: infra/runbooks/failover-redis.md"
+              runbook_url: "infra/runbooks/failover-redis.md"
+              summary: "Mas de 10 documentos en estados no terminales operativos por 15 min"

@@ -1,0 +1,77 @@
+# Compose aislado para pruebas de S4-P1-03: QueueNotAdvancing y DLQNotEmpty
+# Usa un stream de prueba separado y prometheus/alertmanager aislados
+
+name: s4p103-test
+
+services:
+  # Redis para tests aislados
+  redis-test:
+    image: redis:7.2
+    # Credencial efimera generada por scripts/test-chain-alerts.sh.
+    # :? aborta si no esta definida, en vez de levantar sin password.
+    command: ["--requirepass", "${REDIS_TEST_PASSWORD:?REDIS_TEST_PASSWORD requerido}"]
+    networks: [test-data]
+    volumes:
+      - redis-test-data:/data
+    mem_limit: 128m
+    cpus: 0.25
+
+  # Redis exporter para el test
+  redis-exporter-test:
+    image: oliver006/redis_exporter:v1.93.0
+    # Password por entorno, no por argv: no queda expuesto en /proc/<pid>/cmdline.
+    environment:
+      REDIS_ADDR: redis://redis-test:6379
+      REDIS_PASSWORD: ${REDIS_TEST_PASSWORD:?REDIS_TEST_PASSWORD requerido}
+      REDIS_EXPORTER_CHECK_SINGLE_STREAMS: stream:s4p103-test,stream:s4p103-test-dlq
+    networks: [test-data]
+    mem_limit: 128m
+    cpus: 0.25
+    depends_on:
+      - redis-test
+
+  # Prometheus para tests
+  prometheus-test:
+    image: prom/prometheus:v2.53.4
+    command:
+      - "--config.file=/etc/prometheus/prometheus.test.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./prometheus/prometheus.test.yml:/etc/prometheus/prometheus.test.yml:ro
+      - ./prometheus/alert.rules.test.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus-test-data:/prometheus
+    networks: [test-data, test-internal]
+    mem_limit: 512m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+
+  # Alertmanager para tests
+  alertmanager-test:
+    image: prom/alertmanager:v0.34.1
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-test-data:/alertmanager
+    networks: [test-internal]
+    mem_limit: 128m
+    cpus: 0.25
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+
+networks:
+  test-data:
+    name: s4p103_test_data
+    internal: true
+  test-internal:
+    name: s4p103_test_internal
+    internal: true
+
+volumes:
+  redis-test-data:
+  prometheus-test-data:
+  alertmanager-test-data:
