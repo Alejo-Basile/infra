@@ -593,15 +593,24 @@ services:
 
   # --- redis-exporter (S1-P1-13): expone Streams para QueueDepth/PEL/DLQ ------
   # redis_stream_length solo aparece con check-single-streams (v1.90+).
+  # S4-P1-03: incluir tanto stream principal como DLQ para alertas de cadena.
+  #
+  # El secreto se pasa por REDIS_PASSWORD_FILE, NUNCA por argv: un flag
+  # --redis.password queda visible en /proc/<pid>/cmdline y contradice el
+  # patron *_FILE que usa el resto del stack (commit b42c65b).
+  # Formato obligatorio del JSON (mapa URI -> password, ver contrib/sample-pwd-file.json
+  # de redis_exporter): {"redis://redis-streams:6379": "<password>"}
+  # OJO: la clave es la URI completa del REDIS_ADDR, no "password".
+  # No se usa `command:` con shell: la imagen no trae /bin/sh.
   redis-exporter:
     image: oliver006/redis_exporter:v1.93.0
     profiles: ["full"]
     <<: *hardening
-    secrets: [redis_streams_password, redis_streams_password_json]
+    secrets: [redis_streams_password_json]
     environment:
       REDIS_ADDR: redis://redis-streams:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
-      REDIS_EXPORTER_CHECK_SINGLE_STREAMS: ${REDIS_STREAM_KEY:-stream:pdf-processing}
+      REDIS_EXPORTER_CHECK_SINGLE_STREAMS: stream:pdf-processing,stream:pdf-processing-dlq
     networks: [data]
     mem_limit: 128m
     cpus: 0.25
