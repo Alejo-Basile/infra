@@ -19,10 +19,8 @@
 ```bash
 set -a && source .env && set +a
 
-docker exec infra-mongo-1 mongodump \
-  -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
-  --authenticationDatabase admin \
-  --oplog --archive=/tmp/mongo-backup-$(date +%F-%H%M).archive
+# El secreto viaja dentro del contenedor (nunca por argv del host, que se filtra en /proc).
+docker exec infra-mongo-1 sh -c 'umask 077; printf "uri: mongodb://%s@localhost:27017/?authSource=admin\npassword: %s\n" "$MONGO_INITDB_ROOT_USERNAME" "$(cat /run/secrets/mongo_initdb_root_password)" > /tmp/dump.yml; mongodump --config=/tmp/dump.yml --oplog --gzip --archive=/tmp/mongo-backup-$(date +%F-%H%M).archive; rm -f /tmp/dump.yml'
 
 docker cp infra-mongo-1:/tmp/mongo-backup-*.archive /tmp/
 ```
@@ -57,10 +55,8 @@ docker exec infra-mongo-restore-test \
 
 ```bash
 # Conteo de documentos por colección en el vivo:
-docker exec infra-mongo-1 mongosh \
-  -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
-  --authenticationDatabase admin --quiet \
-  --eval 'db.getSiblingDB("documents").documents.countDocuments({})'
+# El secreto viaja dentro del contenedor (nunca por argv del host).
+docker exec infra-mongo-1 sh -c 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /run/secrets/mongo_initdb_root_password)" --authenticationDatabase admin --quiet --eval "db.getSiblingDB(\"documents\").documents.countDocuments({})"'
 
 # Conteo en el restaurado:
 docker exec infra-mongo-restore-test mongosh --quiet \

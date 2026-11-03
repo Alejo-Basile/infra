@@ -1,0 +1,110 @@
+S6-P1-02 — Prueba de restauración de MongoDB + ejecución del reconciliador (evidencia)
+Fecha (UTC): 2026-10-31T06:14Z - 06:18Z
+Rama de evidencias: esta evidencia acompaña el fix de doc-service (rama aparte; ver abajo).
+Rama infra: S6-P1-02 se documenta acá; ningún archivo de infra cambió excepto runbooks/restore-mongo.md (defecto de secreto en argv).
+
+=== Alcance ===
+SPEC §6.5: el job de reconciliación es la red de seguridad que hace converger el estado
+en MongoDB con los objetos en MinIO tras fallos (webhook perdido, failover de Redis, worker caído).
+Este ensayo verifica: (a) restaurar un backup en un contenedor limpio, (b) ejecutar el
+reconciliador contra esa copia y (c) que converge: estados de documentos, reencolado en Redis
+y reporte cruzado Mongo ↔ MinIO ↔ Redis.
+
+No incluye el worker Rust (no desplegado: S5-P4-01 pendiente de decisión de scope).
+
+=== 1. Backup (vivo) ===
+Comando (secreto por archivo, nunca por argv):
+  mongodump --config=/tmp/dump.yml --oplog --gzip --archive=/tmp/s6-p1-02.archive
+  donde dump.yml tiene uri y password leídos de las variables de entorno/secreto del contenedor.
+Resultado: 2482 bytes; 5 documentos en `documents.documents`, 1 en `schema_versions`, 1 entrada de oplog.
+
+=== 2. Restauración en contenedor limpio ===
+  mongo:7.0, volumen nuevo `infra_mongo-restore-test`, `--replSet rs0`, rs.initiate(),
+  mongorestore --archive --gzip --oplogReplay.
+Resultado: 7 document(s) restored. Conteo por estado coincide con el vivo:
+  antes (vivo): COMPLETED=5, total=5
+  después (restaurado): COMPLETED=5, total=5, schema_versions=1
+Índices restaurados: status_1, updated_at_1, expires_at_1 (TTL).
+El change-stream watcher del reinicio retomó el stream tras eliminar el token de resume inválido
+(la copia restaurada traía el token del vivo; es inválido en el RS nuevo y se descarta limpiamente).
+
+=== 3. Cross-check inicial (estado restaurado, tal cual) ===
+POST /internal/reconcile sobre la copia:
+  expired_pending=0 recovered_uploaded=0 reenqueued=0 stuck_detected=0 orphans_purged=0
+  completed_no_txt=5 errors=0 lock_acquired=true
+  cross_check: total_documents=5, by_status={COMPLETED:5}, raw_bucket_objects=0,
+  txt_bucket_objects=0, stream_length=0, orphan_raw_objects=[], missing_raw_objects=null,
+  completed_no_txt=[test-doc-1..5], failed_no_reason=null, young_untouched=0
+
+HALLAZGO: los 5 documentos COMPLETED no tienen objeto en MinIO (los buckets live raw-pdfs y
+extracted-txt están vacíos). El cross-check lo detecta correctamente: es la deriva real que
+el reconciliador debe reportar. Esto no es un defecto del ensayo: es el estado vivo de los
+datos de prueba.
+
+=== 4. Defectos encontrados durante el ensayo (fixeados en doc-service, rama aparte) ===
+DEFECTO A — objectExists no mapeaba "clave no existe" del SDK:
+  isNotFound solo hacía matching de substrings sobre err.Error() ("not found", "NoSuchKey",
+  "404", "NotFound"). El error real de StatObject para clave ausente es
+  "stat bucket/key: The specified key does not exist." (sin esos tokens), así que
+  objectExists devolvía (false, err) y los caminos PENDING_UPLOAD → UPLOAD_EXPIRED y
+  UPLOADED → FAILED(object_missing) eran código muerto. Log medido:
+    error verificando objeto document_id=r-pending-missing
+      error="stat ...: The specified key does not exist."
+  Fix: type-assert a minio.ErrorResponse y tratar como not-found cuando
+  Code=="NoSuchKey" o StatusCode==404 (internal/reconciler/reconciler.go:isNotFound).
+
+DEFECTO B — listado de bucket no recursivo:
+  ListObjects usaba miniogo.ListObjectsOptions{} (sin Recursive: true), así que devolvía
+  common-prefixes ("raw-pdfs/", LastModified cero) en lugar de objetos anidados. Medido:
+    orphans_purged=1 (contó el prefijo fantasma "raw-pdfs/")
+    cross_check.raw_bucket_objects=1 (había 3 objetos reales)
+    missing_raw_objects=null a pesar de 5 docs sin objeto
+  Fix: Recursive: true + ignorar claves terminadas en "/" en sweepOrphans y crossCheck
+  (internal/adapters/minio/storage.go + reconciler.go).
+
+DEFECTO C (defensiva): sweepOrphans y crossCheck ignoran ahora cualquier clave terminada
+en "/" aunque el SDK devuelva prefijos.
+
+=== 5. Siembra de inconsistencias y convergencia ===
+En la copia restaurada se sembraron 4 documentos con created_at/updated_at hace 2 h:
+  r-pending-missing:  PENDING_UPLOAD, expires_at hace 1 h, objeto INEXISTENTE  → espera UPLOAD_EXPIRED
+  r-pending-recover:  PENDING_UPLOAD, expires_at hace 1 h, objeto EXISTE         → espera UPLOADED
+  r-uploaded-stuck:   UPLOADED,  objeto EXISTE                                   → espera reencolado (QUEUED)
+  r-uploaded-missing: UPLOADED,  objeto INEXISTENTE                              → espera FAILED(object_missing)
+Nota: se eliminó el índice TTL expires_at_1 de la COPIA restaurada (desvío declarado;
+el orden TTL-despúes-del-reconciliador está en SPEC §4 y el índice sigue en el vivo).
+Sin este desvío, el TTL borra los vencidos antes de que el reconciliador los vea.
+
+Sweep 1 (con fix):
+  expired_pending=1, recovered_uploaded=1, reenqueued=1, stuck_detected=0,
+  orphans_purged=0, completed_no_txt=5, errors=0.
+  Estados: r-pending-missing→UPLOAD_EXPIRED, r-pending-recover→UPLOADED,
+  r-uploaded-stuck→QUEUED (mensaje en stream:pdf-processing-rehearsal, XLEN 0→1),
+  r-uploaded-missing→FAILED (causa object_missing).
+  cross_check: raw_bucket_objects=3 (correcto; antes del fix reportaba 1),
+  orphan_raw_objects=["raw-pdfs/r-orphan.pdf"] (huérfano real, no el prefijo),
+  missing_raw_objects=null, completed_no_txt=[test-doc-1..5].
+
+Sweep 2 (idempotencia): todo en cero salvo cross_check (reporte de deriva, no muta).
+Convergencia verificada.
+
+=== 6. Verificación del código ===
+  go build ./... → OK
+  go test ./internal/reconciler/... ./internal/adapters/minio/... → OK (22 tests, incl.
+  TestIsNotFound extendido y TestCrossCheck_IgnoraEntradasDePrefijo nuevos)
+  docker build -t doc-service:s6-reconciler-fix . → OK (imagen usada en este ensayo)
+
+=== 7. Ramas y PRs ===
+- doc-service: fix del reconciliador + tests (rama aparte, PR contra doc-service/main).
+- infra: esta evidencia + corrección de runbooks/restore-mongo.md (secreto por archivo,
+  no por argv; ver el defecto abajo).
+
+=== 8. Defecto colateral: runbooks/restore-mongo.md expone el secreto por argv ===
+El paso 1 (mongodump) y el paso 3 (conteos con mongosh) pasan
+-p "$MONGO_INITDB_ROOT_PASSWORD" por argv → se filtra en /proc/<pid>/cmdline. Corregido
+con el patrón de archivo de configuración (uri + password leída del secreto), igual que
+se usa en el resto del stack. No cambia comportamiento, solo elimina la filtración.
+
+=== No verificado ===
+- Worker Rust (no desplegado): S5-P4-01 pendiente.
+- Failover bajo carga sostenida; tiempo de recuperación del reconciliador con pérdida real.
