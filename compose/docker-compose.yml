@@ -500,7 +500,13 @@ services:
       MINIO_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
-      REDIS_ADDR: redis-streams:6379
+      # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
+      # clavado al nodo que era primario al arrancar: tras un failover escribe
+      # contra una replica y falla con READONLY (medido, ver
+      # docs/evidencias/S6/S6-P1-01-failover-redis.txt). El binario ya soporta
+      # FailoverClient; solo faltaba pasarle los sentinels.
+      REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: myprimary
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
       REDIS_STREAM_KEY: ${REDIS_STREAM_KEY:-stream:pdf-processing}
       # Proteccion de los endpoints /internal/*.
