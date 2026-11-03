@@ -1,0 +1,96 @@
+# Test rules for S5-P1-04: espacio de disco en MinIO (70% warning / 85% critical)
+# https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+#
+# El expr usa minio_cluster_capacity_usable_free_bytes / _usable_total_bytes:
+# el par minio_cluster_disk_used_bytes/_total_bytes NO existe en minio 2025.7.23
+# (ver docs/evidencias/S5/S5-P1-04-espacio-minio.txt).
+#
+# OJO con `values`: en este formato de promtool, una secuencia de numeros planos
+# son VALORES muestreados cada `interval`, no pares timestamp/valor. Escribir
+# '0 25 30000 25' NO da (t=0,v=25)(t=30000,v=25): da valores 0, 25, 30000, 25.
+# Por eso aqui se usan listas planas y se deja que `interval` fije el muestreo.
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # Test 1: uso 60% -> ninguna alerta (warning exige > 70%)
+  # for=5m con interval=30s: 13 muestras cubren 0..6m, eval a 6m.
+  - interval: "30s"
+    input_series:
+      - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
+        values: '40 40 40 40 40 40 40 40 40 40 40 40 40'
+      - series: 'minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"}'
+        values: '100 100 100 100 100 100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: MinioDiskHigh
+        exp_alerts: []
+      - eval_time: "6m"
+        alertname: MinioDiskCritical
+        exp_alerts: []
+
+  # Test 2: uso 75% -> MinioDiskHigh DISPARA (warning), MinioDiskCritical NO
+  - interval: "30s"
+    input_series:
+      - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
+        values: '25 25 25 25 25 25 25 25 25 25 25 25 25'
+      - series: 'minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"}'
+        values: '100 100 100 100 100 100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: MinioDiskHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              server: "127.0.0.1:9000"
+            exp_annotations:
+              summary: "Disco de MinIO sobre 70 por ciento"
+              description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+              runbook_url: "infra/runbooks/minio-espacio.md"
+      - eval_time: "6m"
+        alertname: MinioDiskCritical
+        exp_alerts: []
+
+  # Test 3: uso 90% -> disparan las dos (warning y critical)
+  - interval: "30s"
+    input_series:
+      - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+      - series: 'minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"}'
+        values: '100 100 100 100 100 100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: MinioDiskHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              server: "127.0.0.1:9000"
+            exp_annotations:
+              summary: "Disco de MinIO sobre 70 por ciento"
+              description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+              runbook_url: "infra/runbooks/minio-espacio.md"
+      - eval_time: "6m"
+        alertname: MinioDiskCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              server: "127.0.0.1:9000"
+            exp_annotations:
+              summary: "Disco de MinIO sobre 85 por ciento (riesgo de rechazar escrituras)"
+              description: "Actuar ya: purgar huerfanos, verificar lifecycle y ampliar el volumen. Por encima de 85 por ciento no hay margen para una rafaga normal de PDFs de 25 MB. Ver runbook."
+              runbook_url: "infra/runbooks/minio-espacio.md"
+
+  # Test 4: borde exacto 85% no dispara critical (la comparacion es estricta)
+  - interval: "30s"
+    input_series:
+      - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
+        values: '15 15 15 15 15 15 15 15 15 15 15 15 15'
+      - series: 'minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"}'
+        values: '100 100 100 100 100 100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: MinioDiskCritical
+        exp_alerts: []

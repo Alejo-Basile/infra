@@ -70,15 +70,30 @@ groups:
   - name: s1-p1-13-infra
     interval: 30s
     rules:
+      # S5-P1-04: el expr anterior (minio_cluster_disk_used_bytes /
+      # minio_cluster_disk_total_bytes) usaba metricas que NO existen en
+      # minio 2025.7.23 —verificado contra /minio/v2/metrics/cluster—, asi que
+      # la regla era NoData permanente. capacity_usable_free/total si existe y
+      # mide presion real de disco sobre el volumen que respalda los buckets.
       - alert: MinioDiskHigh
-        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.7
+        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.70
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Disco MinIO sobre 70 por ciento (critico 85 por ciento)"
-          description: "Purgar huerfanos via reconciliador/lifecycle; si supera 85 por ciento ampliar volumen minio-data urgente."
-          runbook_url: "infra/runbooks/restore-mongo.md"
+          summary: "Disco de MinIO sobre 70 por ciento"
+          description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+          runbook_url: "infra/runbooks/minio-espacio.md"
+
+      - alert: MinioDiskCritical
+        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disco de MinIO sobre 85 por ciento (riesgo de rechazar escrituras)"
+          description: "Actuar ya: purgar huerfanos, verificar lifecycle y ampliar el volumen. Por encima de 85 por ciento no hay margen para una rafaga normal de PDFs de 25 MB. Ver runbook."
+          runbook_url: "infra/runbooks/minio-espacio.md"
 
       - alert: DocsNonTerminal
         # Deuda honestamente declarada: ningun exporter expone hoy este gauge.
