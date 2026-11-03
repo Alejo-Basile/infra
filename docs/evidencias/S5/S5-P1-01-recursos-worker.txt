@@ -1,0 +1,112 @@
+# S5-P1-01 — Limites y contencion de PDF hostil (extraction-worker) — evidencia (2026-11-01)
+
+## DoD de la tarea
+1. `mem_limit`, `cpus`, `pids_limit` y `ulimits` definidos y **justificados con una
+   medicion**, no con un numero a ojo (pico medido + 30 % de margen).
+2. PDF hostil contenido por tres capas independientes: timeout duro por trabajo,
+   topes de parseo y limites del contenedor.
+3. Invariante `WORKER_MIN_IDLE_MS >= 2 x WORKER_JOB_TIMEOUT_SECS`.
+
+## Imagen bajo prueba
+`extraction-worker:s5-p4-01` (rama `feat/s5-p4-01-worker-image`, S5-P4-01),
+levantada con `docker compose --profile full run --no-deps`, rootfs de solo
+lectura, `tmpfs /tmp:size=256m`, usuario 10001:10001.
+
+## Metodologia
+- Memoria: `/sys/fs/cgroup/memory.peak` leido **dentro** del contenedor. No se usa
+  `docker stats`, que promedia y subestima el pico.
+- Latencia de `/readyz`: `curl` desde dentro del contenedor en bucle de 250 ms,
+  para no medir el overhead de `docker exec` en cada muestra.
+- Documentos: sembrados en Mongo con `status: QUEUED` (el reclamo real es
+  `QUEUED|RETRYING -> PROCESSING`).
+- Mensajes: `XADD` con el contrato completo (`document_id`, `object_key`,
+  `correlation_id`, `enqueued_at`, `schema_version`); un campo faltante manda el
+  mensaje a la DLQ con `INVALID_CONTRACT`.
+- Carga generada:
+  - 400 paginas de texto (234 KB), via `gs` sobre PostScript;
+  - 12 paginas de imagen de ruido (27,5 MiB = 0,92 x `WORKER_MAX_PDF_BYTES`),
+    via PIL, para acercarse al tope de entrada aceptado.
+
+## Mediciones
+
+| Escenario                                      | Pico RSS (cgroup) | Resultado                              |
+|------------------------------------------------|-------------------|----------------------------------------|
+| Reposo (solo `/readyz` sondeando)              | 5,8 MiB           | working set estable                   |
+| 4 x 400 paginas texto (234 KB c/u)             | 64 MiB            | 4/4 completan en < 20 s                |
+| 4 x 27,5 MiB (imagen)                          | 289 MiB           | 0/4 completan: abortados por timeout   |
+| 1 x 27,5 MiB (imagen)                          | 109 MiB           | completa en > 150 s                    |
+
+Los 289 MiB de la fila de 4 x 27,5 MiB son una **cota inferior**: los trabajos se
+abortaron a los 60 s (valor de timeout que tenia el compose) a mitad de parseo.
+
+## Decision
+
+```
+mem_limit: 768m      # 4 x 109 MiB = ~436 MiB de peor caso teorico -> 1,7x
+cpus: 1.5
+pids_limit: 200
+ulimits: nofile 4096 / nproc 200
+WORKER_JOB_TIMEOUT_SECS: 300     # subido desde 60 (ver abajo)
+WORKER_MIN_IDLE_MS: 600001       # invariante: >= 2 x 300 s
+WORKER_DEAD_CONSUMER_MS: 600001
+```
+
+**Correccion respecto del valor inicial**: con `WORKER_JOB_TIMEOUT_SECS=60` un PDF
+**legitimo** cercano al tope de entrada (27,5 MiB) se abortaba a mitad de camino y
+el documento quedaba clavado en `PROCESSING`. El timeout duro existe para contener
+un PDF hostil, no para rechazar documentos validos, asi que se usa el default de
+300 s del `.env.example` y se respeta la invariante con `MIN_IDLE` de 600 s.
+
+## Medicion del peor caso (2026-11-02, corrida valida)
+
+El bloqueo anterior esta resuelto: `extraction-worker#30` corrige dos defectos de
+perdida de mensajes (el read bloqueante dentro de un `select!` que lo cancelaba,
+y el `response_timeout` de 500 ms por defecto de redis-rs). Ver
+`S5-P1-03-readyz.txt`.
+
+Corrida con 4 PDF de 28 MB / 412 paginas **con capa de texto** (merge de 400
+paginas de texto denso mas 12 de imagen):
+
+| Escenario                            | Pico RSS (cgroup) | Resultado                        |
+|--------------------------------------|-------------------|----------------------------------|
+| 3 x 28 MB / 412 paginas concurrentes | **292,6 MiB**     | 3/3 completan, breakers en 0     |
+| `/readyz` durante esa saturacion     | —                 | 600/600 respuestas 200, media 2,3 ms, max 42 ms |
+
+El cuarto mensaje de esa corrida no se proceso: es el defecto de perdida de
+mensajes que corrige `extraction-worker#30` (medido aparte: 4 de 8 mensajes
+perdidos antes del fix, 0 de 8 despues).
+
+**Conclusion sobre los limites**: `mem_limit: 768m` deja 2,6x sobre el peor caso
+**medido** (292,6 MiB), no sobre una extrapolacion. Se mantiene.
+
+## Estado: ABIERTA (no se cierra)
+
+Los tres puntos del DoD estan cumplidos — limites calibrados con medicion, tres
+capas de contencion, invariante respetada — y la medicion del peor caso esta
+hecha. La tarea **no se cierra** por dos hallazgos del mismo pipeline, ninguno de
+ellos de limites:
+
+1. **Perdida de mensajes**: un mensaje entregado y ACKeado sin procesar, con el
+   documento en `QUEUED` y el PEL en 0. Corregido en `extraction-worker#30`
+   (pendiente de merge). En la corrida original se perdio 1 de 4.
+2. **El worker no escribe ningun estado terminal de fallo**: cero referencias a
+   `EXTRACTION_FAILED`/`REJECTED` en `crates/worker/src/`. Un `PDF_NO_TEXT` va a
+   la DLQ y el documento queda en `PROCESSING`; y el reconciliador de §6.5 solo
+   mira `UPLOADED` y `PROCESSING`, asi que un documento en `QUEUED` sin mensaje
+   **no lo cubre nadie**. Choca con la garantia central de §1.3.
+
+Sin (2) resuelto, la convergencia a estado terminal no esta garantizada y el
+"0 documentos en estados no terminales" de §13 no se puede afirmar.
+
+## Pendiente: test de invariante (con su bloqueo real)
+
+Falta el test que haga durable el fix de `extraction-worker#30`: correr el
+`ConsumerRunner` con `xautoclaim_interval` muy por debajo de `block_ms` y afirmar
+que `procesados + dlq + pendientes == N` y que ningun documento queda en `QUEUED`
+con PEL 0.
+
+No es plomeria: los fakes de S3 existen (`tests/resilience_it.rs` implementa
+`ObjectSource`), pero **`DocumentStore` es un struct concreto sin trait**
+(`crates/worker/src/document_store.rs:37`) y el job `integration` de CI solo
+levanta Redis y MinIO, **sin Mongo**. Para escribirlo hace falta un seam (trait)
+para el store o Mongo en ese job. Es un cambio de diseño, con su propia tarea.

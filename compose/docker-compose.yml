@@ -552,6 +552,112 @@ services:
       - "traefik.http.routers.docv2health.tls=true"
       - "traefik.http.routers.docv2health.service=docv2"
 
+  # --- extraction-worker (SPEC 3.3): consumidor de Redis Streams ------------
+  # S5-P4-01 publica la imagen; S5-P1-01 pone los limites. El PDF hostil se
+  # contiene con tres capas distintas, no con una: timeout duro por trabajo
+  # (WORKER_JOB_TIMEOUT_SECS), topes de parseo (paginas / bytes de salida) y
+  # limites del contenedor (mem_limit / cpus / pids_limit / ulimits).
+  #
+  # INVARIANTE (SPEC 5.4): WORKER_MIN_IDLE_MS >= 2 x WORKER_JOB_TIMEOUT_SECS.
+  # Si el idle de XAUTOCLAIM queda por debajo del timeout duro, otro worker
+  # reclama un mensaje que el primero todavia esta procesando y dos instancias
+  # extraen el mismo documento a la vez.
+  #
+  # Los tres valores salen de la medicion del 2026-11-01 (evidencia
+  # docs/evidencias/S5/S5-P1-01-recursos-worker.txt): un PDF legitimo cercano
+  # al tope de WORKER_MAX_PDF_BYTES (27,5 MiB, 12 paginas de imagen) tarda mas
+  # de 150 s en extraerse. Con WORKER_JOB_TIMEOUT_SECS=60 el trabajo se abortaba
+  # a mitad de camino y el documento quedaba en PROCESSING; por eso se usa el
+  # default de 300 s, que mantiene la invariante con MIN_IDLE de 600 s.
+  #
+  # Nada de este servicio se publica al host: escucha /healthz, /readyz y
+  # /metrics en la red interna para Prometheus (SPEC 10).
+  extraction-worker:
+    image: ${EXTRACTION_WORKER_IMAGE:-ghcr.io/alejo-basile/extraction-worker}:${EXTRACTION_WORKER_TAG:-latest}
+    profiles: ["full"]
+    <<: *hardening
+    # El unico destino de escritura es /tmp (PDF descargado), cubierto por el
+    # tmpfs acotado de abajo: por eso el rootfs puede ser de solo lectura.
+    read_only: true
+    secrets:
+      - redis_streams_password
+      - mongo_worker_password
+      - svc_worker_access_key
+      - svc_worker_secret_key
+    environment:
+      HTTP_PORT: "8081"
+      # Redis Streams: la password llega por archivo y el entrypoint de la
+      # imagen arma REDIS_URL. Nunca en texto plano en este compose (SPEC 9).
+      REDIS_HOST: redis-streams
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
+      REDIS_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}
+      REDIS_GROUP: extraction-workers
+      REDIS_DLQ_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}-dlq
+      # Mongo con rol acotado a update sobre documents (ADR-0006, SPEC 6.3).
+      MONGO_HOST: mongo
+      MONGO_WORKER_USER: ${MONGO_WORKER_USER:?definir en .env}
+      MONGO_WORKER_PASSWORD_FILE: /run/secrets/mongo_worker_password
+      MONGO_DB: ${MONGO_DATABASE:-documents}
+      MONGO_TIMEOUT_MS: "3000"
+      # MinIO con credenciales propias del worker, nunca la root (SPEC 3.4).
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_RAW: raw-pdfs
+      S3_BUCKET_TXT: extracted-txt
+      S3_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
+      S3_OP_TIMEOUT_MS: "60000"
+      # Contencion del PDF hostil (SPEC 3.3). Ver INVARIANTE arriba.
+      WORKER_JOB_TIMEOUT_SECS: "300"
+      WORKER_MAX_CONCURRENCY: "4"
+      WORKER_MIN_IDLE_MS: "600001"
+      WORKER_DEAD_CONSUMER_MS: "600001"
+      WORKER_MAX_ATTEMPTS: "5"
+      WORKER_MAX_PAGES: "2000"
+      WORKER_MAX_PDF_BYTES: "31457280"
+      WORKER_MAX_OUTPUT_BYTES: "52428800"
+      WORKER_BLOCK_MS: "5000"
+      WORKER_XAUTOCLAIM_INTERVAL_SECS: "30"
+      WORKER_METRICS_INTERVAL_SECS: "15"
+      WORKER_SHUTDOWN_DRAIN_SECS: "4"
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: json
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # S5-P1-01: valores calibrados con la prueba de carga del 2026-11-01.
+    # Medido con /sys/fs/cgroup/memory.peak (no con docker stats, que suaviza):
+    #   4 x PDF de 400 paginas (234 KB)  -> 64 MiB  (completan en < 20 s)
+    #   4 x PDF de 27,5 MiB              -> 289 MiB (abortados por el timeout)
+    #   1 x PDF de 27,5 MiB              -> 109 MiB (completa en > 150 s)
+    # El peor caso teorico es 4 x 109 MiB = ~436 MiB, asi que 768m deja 1,7x
+    # sobre esa extrapolacion. Detalle en
+    # docs/evidencias/S5/S5-P1-01-recursos-worker.txt.
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 200
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+      nproc:
+        soft: 200
+        hard: 200
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
     image: prom/prometheus:v2.53.4
