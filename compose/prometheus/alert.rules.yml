@@ -167,7 +167,11 @@ groups:
           runbook_url: "infra/runbooks/escalado-worker.md"
 
       - alert: QueueNotAdvancing
-        expr: redis_stream_length{stream="stream:pdf-processing"} > 0 and changes(redis_stream_length{stream="stream:pdf-processing"}[5m]) == 0
+        # S5-P1-02: con XLEN esta regla disparaba en falso SIEMPRE: las entradas
+        # no se borran al consumirse, asi que > 0 y changes() == 0 son verdad
+        # para un stream sano pero no trimeado. Con PEL la senal es real: si el
+        # PEL no se mueve, o no hay workers o estan trabados.
+        expr: worker_pel_pending{group="extraction-workers"} > 0 and changes(worker_pel_pending{group="extraction-workers"}[5m]) == 0
         for: 0m
         labels:
           severity: warning

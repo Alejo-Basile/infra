@@ -22,7 +22,7 @@ tests:
   # DLQ: single sample at 0ms with value 0, then nothing - promtool interpolates 0 at eval_time
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+      - series: 'worker_pel_pending{group="extraction-workers"}'
         values: '360000 10 390000 8 420000 12 450000 5 480000 15 510000 3 540000 20 570000 18 600000 22 630000 15 660000 10'
       - series: 'redis_stream_length{stream="stream:pdf-processing-dlq"}'
         values: '0 0'
@@ -46,7 +46,7 @@ tests:
   # DLQ: single sample at 0ms with value 0
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+      - series: 'worker_pel_pending{group="extraction-workers"}'
         values: '360000 5 390000 5 420000 5 450000 5 480000 5 510000 5 540000 5 570000 5 600000 5 630000 5 660000 5'
       - series: 'redis_stream_length{stream="stream:pdf-processing-dlq"}'
         values: '0 0'
@@ -66,7 +66,7 @@ tests:
   # DLQ: single sample at 0ms with value 0
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+      - series: 'worker_pel_pending{group="extraction-workers"}'
         values: '360000 0 390000 0 420000 0 450000 0 480000 0 510000 0 540000 0 570000 0 600000 0 630000 5 660000 5'
       - series: 'redis_stream_length{stream="stream:pdf-processing-dlq"}'
         values: '0 0'
@@ -82,7 +82,7 @@ tests:
   # timestamps empiezan en eval_time (300000ms = 5m) para evitar interpolacion hacia atras
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+      - series: 'worker_pel_pending{group="extraction-workers"}'
         values: '300000 10 360000 10 420000 10'
       - series: 'redis_stream_length{stream="stream:pdf-processing-dlq"}'
         values: '300000 0 360000 0 420000 0'
@@ -98,7 +98,7 @@ tests:
   # DLQ empieza con 3 en t=eval_time (120000ms = 2m) -> alerta inmediata
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+      - series: 'worker_pel_pending{group="extraction-workers"}'
         values: '120000 10 180000 10 240000 10'
       - series: 'redis_stream_length{stream="stream:pdf-processing-dlq"}'
         values: '120000 3 180000 3 240000 3'
