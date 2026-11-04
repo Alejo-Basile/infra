@@ -1,0 +1,86 @@
+# S5-P1-02 — Ensayo del runbook de escalado y alerta de profundidad de cola (2026-11-03)
+
+## DoD de la tarea (plan-P1.md, seccion 3.6)
+
+> "Ante una rafaga de 500 documentos **salta la alerta**, y siguiendo el runbook un
+> operador escala sin consultar y la profundidad de la cola **baja a la mitad en
+> menos de 10 min**. Se prueba ensayando el runbook, no describiendolo."
+
+## Resultado: NO SE PUDO EJECUTAR — la alerta no puede dispararse
+
+El ensayo se detuvo en el paso previo a generar la rafaga: **la alerta no tiene
+ninguna serie que evaluar**, asi que generar 500 documentos no habria cambiado
+nada. Se documenta la causa para no repetir un ensayo que no puede pasar.
+
+## Evidencia cruda
+
+Reglas cargadas en Prometheus (`/api/v1/rules`), todas en `inactive`:
+
+```
+QueueDepthHigh     | state=inactive | expr= redis_stream_length{stream="stream:pdf-processing"} > 500
+PELBacklog         | state=inactive | expr= redis_stream_group_pending{stream="stream:pdf-processing"} > 100
+QueueNotAdvancing  | state=inactive | expr= redis_stream_length{stream="stream:pdf-processing"} > 0 and changes(...)==0
+```
+
+Series disponibles en Prometheus:
+
+```
+redis_stream_length                       -> 0 series
+redis_stream_group_pending                -> la metrica NO existe
+                                             (solo redis_stream_groups)
+```
+
+Configuracion del exporter (`compose/docker-compose.yml`, servicio `redis-exporter`):
+
+```
+image: oliver006/redis_exporter:v1.93.0
+REDIS_ADDR: redis://redis-streams:6379
+# sin `command:`; por lo tanto sin --check-single-streams / --check-streams
+```
+
+El propio archivo de reglas lo asume (linea 4): *"Queue/PEL/DLQ via redis-exporter
+con check-single-streams (redis_stream_length)"*. El flag nunca se agrego.
+
+## Causa raiz
+
+`redis_exporter` solo publica las familias `redis_stream_*` cuando se arranca con
+`--check-single-streams` (o `--check-streams`). Al no estar el flag, las metricas
+no se emiten y las tres alertas quedan **inertes para siempre**: evalúan una serie
+inexistente, y como Alertmanager no alerta por `NoData`, el fallo es silencioso.
+
+Impacto: `S5-P1-02` tiene el entregable mergeado (ADR-0019 + runbook, PR #36) pero
+**el DoD no se cumple**: la alerta que dispara el runbook no existe en la practica.
+
+## Hallazgos secundarios (importantes para el ensayo)
+
+1. **Prometheus no scrapea el worker.** No hay target a `:8081` en
+   `compose/prometheus/prometheus.yml`, asi que todas las metricas `worker_*`
+   (breakers, `worker_inflight`, gauges de cola, outcomes por documento) se
+   exponen pero **nadie las recoge**. Las alertas usan solo redis-exporter.
+2. **`XLEN` no es una medida de backlog.** Las entradas de un stream no
+   desaparecen al consumirse: `XREADGROUP` las mueve al PEL y `XLEN` queda igual
+   hasta que se hace `XDEL`/`XTRIM` o el paso a la DLQ. Con `XLEN` como metrica,
+   la alerta **no se resuelve consumiendo**, y el criterio del DoD ("la cola baja
+   a la mitad") es inmedible con esa metrica. La senal correcta es el *lag*
+   (entregas pendientes) o el tamano del PEL, no el largo total del stream.
+3. `PELBacklog` depende de `redis_stream_group_pending`, que esta version del
+   exporter no expone (solo `redis_stream_groups`). El comentario de la regla lo
+   anticipa ("si el exporter lo expone"), pero una alerta basada en NoData no
+   protege de nada.
+
+## Fix propuesto (antes de reintentar el ensayo)
+
+1. Agregar el flag al exporter en el compose:
+   `command: ["--check-single-streams", "--redis.addr=redis://redis-streams:6379"]`
+   (o `--check-streams`), y verificar que `redis_stream_length` pase a tener series.
+2. Cambiar el criterio de cola: alertar por lag/PEL (`XPENDING`-equivalente) en vez
+   de `XLEN`, o agregar `XTRIM`/retencion al stream para que el largo signifique algo.
+3. Reemplazar `redis_stream_group_pending` por una metrica que exista, o exponer el
+   PEL desde el worker (`worker_*`) y **scrapear el worker en Prometheus**.
+4. Recien entonces: rafaga de 500, esperar `for: 5m`, confirmar `firing`, ejecutar el
+   runbook y medir la caida con la metrica correcta.
+
+## Estado
+
+`S5-P1-02` queda **ABIERTA**. El runbook y la ADR estan mergeados; falta que la
+alerta exista de verdad y que el ensayo se pueda ejecutar.
