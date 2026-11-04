@@ -15,7 +15,12 @@ groups:
     interval: 15s
     rules:
       - alert: QueueDepthHigh
-        expr: redis_stream_length{stream="stream:pdf-processing"} > 500
+        # S5-P1-02: el exporter de Redis no publica redis_stream_length (0 series),
+        # asi que la alerta nunca disparaba. El worker expone el mismo dato en
+        # worker_stream_depth y Prometheus ya lo scrapea.
+        # TRADE-OFF: con el worker caido no hay serie (NoData) y esta alerta no
+        # dispara; falta una companera sobre up{job="extraction-worker"} == 0.
+        expr: worker_stream_depth{stream="stream:pdf-processing"} > 500
         for: 5m
         labels:
           severity: warning
@@ -25,7 +30,11 @@ groups:
           runbook_url: "infra/runbooks/failover-redis.md"
 
       - alert: PELBacklog
-        expr: redis_stream_group_pending{stream="stream:pdf-processing"} > 100
+        # S5-P1-02: redis_stream_group_pending no existe en esta version del
+        # exporter. worker_pel_pending es el backlog REAL: sube cuando los workers
+        # no dan abasto y BAJA cuando consumen, que es lo que el runbook necesita
+        # medir. XLEN no baja nunca (las entradas quedan hasta XTRIM/XDEL).
+        expr: worker_pel_pending{group="extraction-workers"} > 100
         for: 10m
         labels:
           severity: warning
