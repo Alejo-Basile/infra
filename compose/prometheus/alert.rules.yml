@@ -152,6 +152,20 @@ groups:
       # S4-P1-03: La cola no avanza (profundidad constante > 0 durante 5 min)
       # La ventana de 5 min ya esta en changes(...[5m]); NO agregar 'for: 5m' adicional
       # (duplicaria el tiempo a ~10 min). Anti-flapping opcional: for: 1m (~6 min total).
+      # S5-P1-02: companera obligatoria de las alertas de cola. Si el worker
+      # esta caido, worker_stream_depth y worker_pel_pending no tienen serie
+      # (NoData) y Alertmanager no alerta por NoData: el backlog crece en
+      # silencio. Esta regla es la que rompe ese silencio.
+      - alert: WorkerDown
+        expr: up{job="extraction-worker"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "extraction-worker caido o no scrapeable por 10m"
+          description: "Ningun worker consume la cola: el PEL y el stream crecen sin atencion. Revisar el contenedor y escalar segun el runbook de escalado (ADR-0019). Ojo: esta alerta dispara mientras el worker no este desplegado."
+          runbook_url: "infra/runbooks/escalado-worker.md"
+
       - alert: QueueNotAdvancing
         expr: redis_stream_length{stream="stream:pdf-processing"} > 0 and changes(redis_stream_length{stream="stream:pdf-processing"}[5m]) == 0
         for: 0m
