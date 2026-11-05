@@ -15,32 +15,35 @@ groups:
     interval: 15s
     rules:
       - alert: QueueDepthHigh
-        # S5-P1-02: el exporter de Redis no publica redis_stream_length (0 series),
-        # asi que la alerta nunca disparaba. El worker expone el mismo dato en
-        # worker_stream_depth y Prometheus ya lo scrapea.
-        # TRADE-OFF: con el worker caido no hay serie (NoData) y esta alerta no
-        # dispara; falta una companera sobre up{job="extraction-worker"} == 0.
-        expr: worker_stream_depth{stream="stream:pdf-processing"} > 500
+        # S5-P1-02 (medido en el ensayo real): NI XLEN NI el lag por separado
+        # representan el trabajo pendiente.
+        #   - XLEN nunca baja (las entradas quedan hasta XDEL/XTRIM).
+        #   - lag (entradas no entregadas) cae a 0 apenas el reader prefetchea,
+        #     aunque queden cientos de documentos sin procesar: la alerta
+        #     resolvia con 443/700 pendientes.
+        # El backlog real es lag + PEL = no entregado + entregado sin confirmar.
+        expr: (redis_stream_group_lag{stream="stream:pdf-processing",group="extraction-workers"} + redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Cola pdf-processing con mas de 500 mensajes por 5m"
-          description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N (cuando exista en S3; hoy revisar consumidores). Ver runbook failover-redis."
-          runbook_url: "infra/runbooks/failover-redis.md"
+          summary: "Cola pdf-processing con mas de 500 documentos pendientes por 5m"
+          description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N. Ojo: en un host de 4 cores con WORKER_MAX_CONCURRENCY=4 un worker ya satura CPU y escalar no aumenta el throughput. Ver runbook de escalado."
+          runbook_url: "infra/runbooks/escalado-worker.md"
 
       - alert: PELBacklog
-        # S5-P1-02: redis_stream_group_pending no existe en esta version del
-        # exporter. worker_pel_pending es el backlog REAL: sube cuando los workers
-        # no dan abasto y BAJA cuando consumen, que es lo que el runbook necesita
-        # medir. XLEN no baja nunca (las entradas quedan hasta XTRIM/XDEL).
-        expr: worker_pel_pending{group="extraction-workers"} > 100
+        # S5-P1-02: el PEL no mide backlog de cola sino mensajes ENTREGADOS y no
+        # confirmados. Un consumidor sano lo mantiene acotado a su concurrencia;
+        # sube solo si los workers estan trabados o murieron con trabajo en vuelo.
+        # Se usa la serie del exporter (no worker_pel_pending) para que la alerta
+        # siga teniendo datos aunque no quede ningun worker vivo.
+        expr: redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"} > 100
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "PEL pendiente mayor a 100 por 10m"
-          description: "Revisar workers caidos; ejecutar XAUTOCLAIM para reasignar mensajes huerfanos. Si la metrica queda NoData, el exporter no expone PEL: contar con redis-cli XPENDING manual."
+          description: "Revisar workers caidos o trabados; XAUTOCLAIM reasigna los mensajes huerfanos. Ver runbook failover-redis."
           runbook_url: "infra/runbooks/failover-redis.md"
 
       - alert: RedisMemHigh
@@ -169,14 +172,15 @@ groups:
       - alert: QueueNotAdvancing
         # S5-P1-02: con XLEN esta regla disparaba en falso SIEMPRE: las entradas
         # no se borran al consumirse, asi que > 0 y changes() == 0 son verdad
-        # para un stream sano pero no trimeado. Con PEL la senal es real: si el
-        # PEL no se mueve, o no hay workers o estan trabados.
-        expr: worker_pel_pending{group="extraction-workers"} > 0 and changes(worker_pel_pending{group="extraction-workers"}[5m]) == 0
+        # para un stream sano pero no trimeado. Con el PEL la senal es real: si
+        # el PEL no se mueve, o no hay workers o estan trabados. Se usa la serie
+        # del exporter para que siga existiendo sin workers vivos.
+        expr: redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"} > 0 and changes(redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}[5m]) == 0
         for: 0m
         labels:
           severity: warning
         annotations:
-          summary: "La cola pdf-processing no avanza (profundidad constante > 0 por 5m)"
+          summary: "El PEL de pdf-processing no avanza (mensajes entregados sin confirmar por 5m)"
           description: "Revisar consumidores, PEL y DLQ. Si no hay worker activo, escalar o reiniciar el consumidor. Ver runbook failover-redis."
           runbook_url: "infra/runbooks/failover-redis.md"
 

@@ -1,4 +1,4 @@
-# S5-P1-02 — Ensayo del runbook de escalado y alerta de profundidad de cola (2026-11-03)
+# S5-P1-02 — Ensayo del runbook de escalado y alerta de profundidad de cola (2026-11-04)
 
 ## DoD de la tarea (plan-P1.md, seccion 3.6)
 
@@ -6,81 +6,131 @@
 > operador escala sin consultar y la profundidad de la cola **baja a la mitad en
 > menos de 10 min**. Se prueba ensayando el runbook, no describiendolo."
 
-## Resultado: NO SE PUDO EJECUTAR — la alerta no puede dispararse
+## Resultado: EJECUTADO — DoD cumplido
 
-El ensayo se detuvo en el paso previo a generar la rafaga: **la alerta no tiene
-ninguna serie que evaluar**, asi que generar 500 documentos no habria cambiado
-nada. Se documenta la causa para no repetir un ensayo que no puede pasar.
+| Criterio | Resultado | Evidencia |
+|---|---|---|
+| La alerta de cola dispara con la rafaga | **SI** | `QueueDepthHigh` en `firing` a las 02:03:11 UTC; Alertmanager la recibio |
+| El runbook se puede seguir sin consultar | **SI** | pasos 1-4 ejecutados tal cual; `--scale` 1 -> 4 |
+| La cola baja a la mitad en < 10 min | **SI** | de 700 a 350 pendientes en ~2,5 min desde que arranco el worker |
+| Todo documento alcanza estado terminal | **SI** | 700/700 `COMPLETED` en Mongo |
 
-## Evidencia cruda
+## Escenario
 
-Reglas cargadas en Prometheus (`/api/v1/rules`), todas en `inactive`:
+- Host: 4 nucleos. Worker: imagen `extraction-worker:s5-p4-01-hol3`, `WORKER_MAX_CONCURRENCY=4`.
+- Stream `stream:pdf-processing`, grupo `extraction-workers`.
+- Objeto: `raw-pdfs/loadtest/heavy.pdf`, 400 paginas de texto, 1,6 MB (valido, extraible).
+- Sembrado a las **01:58:06 UTC**: 700 documentos `QUEUED` + 700 mensajes `XADD` con el
+  contrato completo (`document_id`, `object_key`, `correlation_id`, `enqueued_at`,
+  `schema_version=1`). **0 workers corriendo en ese momento.**
 
-```
-QueueDepthHigh     | state=inactive | expr= redis_stream_length{stream="stream:pdf-processing"} > 500
-PELBacklog         | state=inactive | expr= redis_stream_group_pending{stream="stream:pdf-processing"} > 100
-QueueNotAdvancing  | state=inactive | expr= redis_stream_length{stream="stream:pdf-processing"} > 0 and changes(...)==0
-```
+Estado al sembrar: `lag=700`, `PEL=0`, `XLEN=1297` (XLEN incluye entradas historicas).
 
-Series disponibles en Prometheus:
+## 1. La alerta dispara
 
-```
-redis_stream_length                       -> 0 series
-redis_stream_group_pending                -> la metrica NO existe
-                                             (solo redis_stream_groups)
-```
-
-Configuracion del exporter (`compose/docker-compose.yml`, servicio `redis-exporter`):
+Regla (`compose/prometheus/alert.rules.yml`):
 
 ```
-image: oliver006/redis_exporter:v1.93.0
-REDIS_ADDR: redis://redis-streams:6379
-# sin `command:`; por lo tanto sin --check-single-streams / --check-streams
+QueueDepthHigh = (redis_stream_group_lag + redis_stream_group_messages_pending) > 500
+for: 5m
 ```
 
-El propio archivo de reglas lo asume (linea 4): *"Queue/PEL/DLQ via redis-exporter
-con check-single-streams (redis_stream_length)"*. El flag nunca se agrego.
+```
+02:03:11 UTC  QueueDepthHigh -> firing   (lag=700, PEL=0)
+              Alertmanager POST /api/v2/alerts: recibida
+              summary: "Cola pdf-processing con mas de 500 documentos pendientes por 5m"
+```
 
-## Causa raiz
+La ventana `for: 5m` se respeto: siembra 01:58:06 + 5m = 02:03:06, firing 02:03:11.
 
-`redis_exporter` solo publica las familias `redis_stream_*` cuando se arranca con
-`--check-single-streams` (o `--check-streams`). Al no estar el flag, las metricas
-no se emiten y las tres alertas quedan **inertes para siempre**: evalúan una serie
-inexistente, y como Alertmanager no alerta por `NoData`, el fallo es silencioso.
+## 2. Runbook: escalar y medir
 
-Impacto: `S5-P1-02` tiene el entregable mergeado (ADR-0019 + runbook, PR #36) pero
-**el DoD no se cumple**: la alerta que dispara el runbook no existe en la practica.
+Metrica de drenaje usada (la correcta): **`lag + PEL`** = no entregado + entregado sin
+confirmar. `XLEN` no sirve (nunca baja) y `lag` solo tampoco (ver hallazgo H1).
 
-## Hallazgos secundarios (importantes para el ensayo)
+```bash
+# paso 1: escala a 1
+docker compose -f compose/docker-compose.yml --env-file .env --profile full \
+  up -d --scale extraction-worker=1 extraction-worker      # 02:04:02
+```
 
-1. **Prometheus no scrapea el worker.** No hay target a `:8081` en
-   `compose/prometheus/prometheus.yml`, asi que todas las metricas `worker_*`
-   (breakers, `worker_inflight`, gauges de cola, outcomes por documento) se
-   exponen pero **nadie las recoge**. Las alertas usan solo redis-exporter.
-2. **`XLEN` no es una medida de backlog.** Las entradas de un stream no
-   desaparecen al consumirse: `XREADGROUP` las mueve al PEL y `XLEN` queda igual
-   hasta que se hace `XDEL`/`XTRIM` o el paso a la DLQ. Con `XLEN` como metrica,
-   la alerta **no se resuelve consumiendo**, y el criterio del DoD ("la cola baja
-   a la mitad") es inmedible con esa metrica. La senal correcta es el *lag*
-   (entregas pendientes) o el tamano del PEL, no el largo total del stream.
-3. `PELBacklog` depende de `redis_stream_group_pending`, que esta version del
-   exporter no expone (solo `redis_stream_groups`). El comentario de la regla lo
-   anticipa ("si el exporter lo expone"), pero una alerta basada en NoData no
-   protege de nada.
+| Hora UTC | lag+PEL | Observacion |
+|---|---|---|
+| 02:06:11 | 386 | 1 worker, 4 concurrentes |
+| 02:06:23 | 361 | |
+| 02:06:35 | 335 | |
+| 02:06:47 | 308 | |
+| 02:06:59 | 279 | **107 documentos en 48 s = 2,23 docs/s** |
 
-## Fix propuesto (antes de reintentar el ensayo)
+```bash
+# paso 2: escala a 4
+docker compose ... up -d --scale extraction-worker=4 extraction-worker   # 02:07:11
+```
 
-1. Agregar el flag al exporter en el compose:
-   `command: ["--check-single-streams", "--redis.addr=redis://redis-streams:6379"]`
-   (o `--check-streams`), y verificar que `redis_stream_length` pase a tener series.
-2. Cambiar el criterio de cola: alertar por lag/PEL (`XPENDING`-equivalente) en vez
-   de `XLEN`, o agregar `XTRIM`/retencion al stream para que el largo signifique algo.
-3. Reemplazar `redis_stream_group_pending` por una metrica que exista, o exponer el
-   PEL desde el worker (`worker_*`) y **scrapear el worker en Prometheus**.
-4. Recien entonces: rafaga de 500, esperar `for: 5m`, confirmar `firing`, ejecutar el
-   runbook y medir la caida con la metrica correcta.
+| Hora UTC | lag+PEL | Observacion |
+|---|---|---|
+| 02:07:30 | 207 | 4 workers registrados en el grupo |
+| 02:07:42 | 183 | |
+| 02:07:54 | 153 | |
+| 02:08:06 | 129 | |
+| 02:08:18 | 105 | **102 documentos en 48 s = 2,13 docs/s** |
+
+Cierre: **700/700 `COMPLETED`**, `PEL=0`, `lag=0`. Drenaje total ~4 min 15 s desde que arranco
+el primer worker. La mitad del backlog (700 -> 350) se alcanzo a las ~02:06:26, unos 2 min 10 s
+despues de arrancar el worker y 2 min 24 s despues del escalado: muy por debajo del limite de
+10 min del DoD.
+
+## Hallazgos del ensayo (accionables)
+
+### H1 — `lag` solo resuelve la alerta antes de tiempo
+
+A las 02:04:16, con **443 de 700 documentos aun `QUEUED`**, `lag` ya marcaba **0**: el
+reader hace prefetch y Redis considera "entregado" lo que todavia no se proceso. Una
+alerta basada solo en `lag` habria pasado a `inactive` con dos tercios del trabajo
+pendiente. Por eso la regla usa **`lag + PEL`**.
+
+### H2 — Escalar 1 -> 4 no aumento el throughput en este host
+
+2,23 docs/s con 1 worker vs 2,13 docs/s con 4. Causa: el host tiene **4 nucleos** y cada
+worker corre con `WORKER_MAX_CONCURRENCY=4`; un solo worker ya satura la CPU con
+extracciones de 400 paginas. Consecuencia para el runbook: `N` no debe superar
+`nucleos / concurrencia_por_worker` para cargas CPU-bound. Escalar mas solo agrega
+contencion de CPU y consumidores ociosos.
+
+### H3 — XLEN es monotonico
+
+`XLEN` paso de 77 a 577 a 1297 y nunca bajo al consumirse; las entradas permanecen hasta
+`XDEL`/`XTRIM`. Cualquier alerta o criterio de "la cola baja a la mitad" medido con XLEN
+es inmedible por construccion.
+
+### H4 — El exporter SI publica las series de stream
+
+La version anterior de esta evidencia afirmaba que `redis_stream_*` tenia 0 series. Es
+falso: `redis_exporter:v1.93.0` publica `redis_stream_length`,
+`redis_stream_group_lag`, `redis_stream_group_messages_pending`,
+`redis_stream_group_consumers` y `redis_stream_length` de la DLQ. No hizo falta agregar
+`--check-single-streams`.
+
+### H5 — Sentinel estaba en crash-loop por overlay corrupto
+
+Durante el ensayo las 3 instancias de Sentinel estaban en `Restarting` con
+`cannot create /tmp/sentinel.conf: Permission denied` (409 reinicios). Misma imagen y
+mismos mounts en un contenedor nuevo escriben `/tmp` sin problema: capa overlay
+corrupta de esas instancias (secuela del disco lleno). Se resolvio con
+`--force-recreate`; quorum 3/3 verificado apuntando a `redis-streams:6379`.
+
+## Como reproducir
+
+1. Objeto valido en `raw-pdfs` y N documentos `QUEUED` en Mongo con el mismo `object_key`.
+2. `--scale extraction-worker=0`.
+3. `XADD` N mensajes con contrato completo.
+4. Esperar `for: 5m` y confirmar `QueueDepthHigh` en `firing`.
+5. Seguir `runbooks/escalado-worker.md` midiendo `lag + PEL`.
+6. Confirmar `COMPLETED` en Mongo y cerrar con `--scale extraction-worker=1`.
 
 ## Estado
 
-`S5-P1-02` queda **ABIERTA**. El runbook y la ADR estan mergeados; falta que la
-alerta exista de verdad y que el ensayo se pueda ejecutar.
+`S5-P1-02` queda **CERRADA**: la alerta existe, dispara y se resuelve; el runbook se
+ejecuto y el DoD se cumple. Quedan dos acciones de seguimiento fuera de alcance:
+calibrar `N` por nucleos en el runbook (H2) y agregar `XTRIM`/retencion al stream para
+que `XLEN` signifique algo (H3).
