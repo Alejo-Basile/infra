@@ -6,7 +6,8 @@ improvisa: la cola es la señal, la CPU no. Este runbook implementa la decisión
 
 ## Cuándo usarlo
 
-- `QueueDepthHigh` en `firing`: `stream:pdf-processing` con más de 500 mensajes por 5 minutos.
+- `QueueDepthHigh` en `firing`: `stream:pdf-processing` con más de 500 documentos pendientes
+  (`lag + PEL`) por 5 minutos.
 - `QueueNotAdvancing` en `firing`: profundidad constante mayor a 0, con workers sanos y sin
   `DLQNotEmpty`.
 - Ráfaga conocida por negocio (campaña, carga masiva) en la que se decide escalar antes de que la
@@ -17,16 +18,15 @@ improvisa: la cola es la señal, la CPU no. Este runbook implementa la decisión
 ## Prerrequisitos
 
 - Acceso al host con el stack `infra` desplegado y `.env` en la raíz del repo `infra/`.
-- El servicio `extraction-worker` **desplegado**. Hoy todavía no existe en
-  `compose/docker-compose.yml` (llega con S5-P4-01); comprobarlo antes de empezar:
+- El servicio `extraction-worker` desplegado (S5-P4-01). Comprobarlo antes de empezar:
 
   ```bash
   docker compose -f compose/docker-compose.yml --env-file .env --profile full \
     config --services | grep -x extraction-worker
   ```
 
-  Si no imprime nada, este runbook no aplica: las alertas de cola se atienden revisando
-  consumidores y la DLQ a mano hasta que el worker exista.
+  La imagen se publica como `ghcr.io/<org>/extraction-worker`; en local se puede fijar
+  `EXTRACTION_WORKER_IMAGE`/`EXTRACTION_WORKER_TAG` para usar una build propia.
 - El servicio no debe declarar `container_name` fijo ni publicar puertos al host: en ambos casos
   `--scale` falla o choca. Los nombres reales son `infra-extraction-worker-<n>`.
 
@@ -34,7 +34,7 @@ improvisa: la cola es la señal, la CPU no. Este runbook implementa la decisión
 
 | Alerta | Qué es | Acción |
 |---|---|---|
-| `QueueDepthHigh` | Entran documentos más rápido de lo que se procesan | **Escalar** (§Procedimiento) |
+| `QueueDepthHigh` | Entran documentos más rápido de lo que se procesan (`lag + PEL` > 500) | **Escalar** (§Procedimiento) |
 | `QueueNotAdvancing` | Hay trabajo y no avanza | Verificar consumidores; si están sanos, **escalar**. Si no hay ninguno, reiniciar el consumidor antes de escalar |
 | `PELBacklog` | Mensajes reclamados sin `XACK` | **No escalar**: hay workers caídos o colgados. Revisar logs y `XPENDING`; `XAUTOCLAIM` los reasigna cuando vence el idle |
 | `DLQNotEmpty` | Fallos definitivos | **No escalar**: diagnosticar la causa raíz (`XRANGE` de la DLQ) y corregir antes de reintentar |
@@ -56,23 +56,38 @@ rd() { docker compose -f compose/docker-compose.yml --env-file .env exec -T -e R
 ```
 
 ```bash
-rd XLEN stream:pdf-processing                      # profundidad de la cola principal
 rd XLEN stream:pdf-processing-dlq                  # fallos definitivos (debe ser 0)
 rd XPENDING stream:pdf-processing extraction-workers   # resumen del PEL
 rd XINFO GROUPS stream:pdf-processing              # consumidores registrados y lag
 ```
 
-Anotar los cuatro valores con timestamp. Son la línea base del antes.
+**La profundidad que importa es `lag + PEL`**, no `XLEN`:
+
+- `lag` (entradas no entregadas) baja a 0 apenas el worker hace prefetch, aunque queden
+  cientos de documentos sin procesar. Medido en el ensayo: `lag=0` con 443/700 pendientes.
+- `XLEN` no baja nunca al consumir: las entradas quedan hasta `XDEL`/`XTRIM`.
+- `lag + PEL` es el trabajo real que falta. Es la misma señal que evalúa `QueueDepthHigh`.
+
+```bash
+# lag + PEL, el numero que hay que anotar antes y despues
+rd XINFO GROUPS stream:pdf-processing | awk '/^lag/{l=$2} /^pending/{p=$2} END{print l+p}'
+```
+
+Anotar ese valor con timestamp. Es la línea base del antes.
 
 ### 2. Calcular N
 
 ```text
-N = ceil(XLEN / 500), acotado a 4 réplicas por host en la v1
+N = ceil((lag + PEL) / 500)
+N = min(N, nucleos_del_host / WORKER_MAX_CONCURRENCY)   # tope por CPU
+N = min(N, 4)                                            # tope provisional de la v1
 ```
 
+- **El tope por CPU no es opcional en cargas CPU-bound.** Medido: con 4 núcleos y
+  `WORKER_MAX_CONCURRENCY=4`, pasar de 1 a 4 workers mantuvo el throughput en ~2,2 docs/s
+  (2,23 vs 2,13). Un worker ya satura la CPU; las réplicas extra solo agregan contención.
+  Escalar réplicas rinde cuando el host tiene núcleos de sobra o la carga es I/O-bound.
 - Si la alerta es `QueueNotAdvancing` con cola chica pero quieta, sumar **una** réplica.
-- El tope de 4 es provisional hasta que S5-P1-01 mida el consumo real por extracción; si el host
-  tiene menos núcleos que `N`, el límite real es la cantidad de núcleos.
 - Nunca escalar por encima de lo que la RAM del host permite: cada réplica corre con los límites
   de `mem_limit` definidos en el compose.
 
@@ -88,9 +103,9 @@ docker compose -f compose/docker-compose.yml --env-file .env --profile full \
 ### 4. Verificar que los consumidores nuevos entraron
 
 ```bash
-docker compose -f compose/docker-compose.yml --env-file .env ps extraction-worker
+docker compose -f compose/docker-compose.yml --env-file .env --profile full ps extraction-worker
 rd XINFO GROUPS stream:pdf-processing    # "consumers" debe reflejar N
-rd XLEN stream:pdf-processing            # debe empezar a bajar
+rd XINFO GROUPS stream:pdf-processing    # "lag" debe empezar a bajar
 rd XPENDING stream:pdf-processing extraction-workers
 ```
 
@@ -99,14 +114,16 @@ Los workers nuevos se registran en el consumer group `extraction-workers` al pri
 
 ### 5. Confirmar el objetivo
 
-La profundidad de la cola debe **bajar al menos a la mitad en menos de 10 minutos** desde el
+La profundidad (`lag + PEL`) debe **bajar al menos a la mitad en menos de 10 minutos** desde el
 escalado. Si no baja:
 
-- `XINFO GROUPS` muestra los consumidores pero `XLEN` no baja → el worker no está completando
+- `XINFO GROUPS` muestra los consumidores pero `lag + PEL` no baja → el worker no está completando
   trabajos: mirar logs y `XPENDING`, no escalar más.
 - `consumers` no aumentó → el servicio no arrancó (revisar `ps`, logs y límites de memoria).
-- La cola drena pero el PEL crece → `WORKER_AUTOCLAIM_IDLE_MS` mal calibrado frente al timeout
+- La cola drena pero el PEL crece → `WORKER_MIN_IDLE_MS` mal calibrado frente al timeout
   duro (SPEC §5.4); se corrige en configuración, no con réplicas.
+- `lag + PEL` baja igual de rápido con más réplicas que con una → el cuello es la CPU del host:
+  volver a `1` y escalar en otro host (H2 del ensayo de S5-P1-02).
 
 ## Rollback
 
@@ -135,9 +152,10 @@ docker compose -f compose/docker-compose.yml --env-file .env --profile full \
 
 ## Evidencia
 
-Cada ejecución deja un registro en `docs/evidencias/S5/S5-P1-02-escalado.txt` con: valores de
-`XLEN`/`XPENDING` antes y después, `N` aplicado, timestamp del escalado y minuto en que la
-profundidad se redujo a la mitad. Sin credenciales ni valores de secretos en el archivo.
+Cada ejecución deja un registro en `docs/evidencias/S5/S5-P1-02-ensayo-escalado.txt` con:
+`lag + PEL` antes y después, `N` aplicado, timestamp del escalado y minuto en que la profundidad
+se redujo a la mitad. Sin credenciales ni valores de secretos en el archivo.
 
-> Estado: **pendiente**. El ensayo con una ráfaga de 500 documentos requiere el worker desplegado
-> (S5-P4-01) y sus límites calibrados (S5-P1-01).
+> Estado: **ensayado** (2026-11-04, 700 documentos, `docs/evidencias/S5/S5-P1-02-ensayo-escalado.txt`).
+> La alerta disparó a los 5 min, el runbook se siguió tal cual y el backlog drenó completo.
+> Pendiente de seguimiento: `XTRIM`/retención del stream para que `XLEN` signifique algo.
