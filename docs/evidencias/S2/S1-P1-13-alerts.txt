@@ -1,57 +1,114 @@
-# S1-P1-13 — Alertas accionables — evidencia sintaxis/config (2026-10-16)
-# DoD completo exige ademas firing provocando cada condicion con stack full arriba.
-# Este archivo prueba: reglas validas + alertmanager valido + compose registra servicios.
-# Firing queda pendiente de runtime con .env real (no se ejecuta sin secretos).
+# S1-P1-13 — Alertas accionables — evidencia sintaxis + firing (2026-11-06)
 
-## promtool check rules
-Checking /alert.rules.yml
-  SUCCESS: 8 rules found
+## Resumen ejecutivo
+- 12 reglas activas en `alert.rules.yml` (retirada `DocsNonTerminal` obsoleta, T-01).
+- 3 alertas **firing real** (disco MinIO 88.86%, DLQ con 12 mensajes).
+- 2 **defectos** descubiertos al provocar: drift de métrica `docservice_business_*` vs
+  `docservice_documents_*` (DocsStuck/DocsAccumulating en NoData) y `redis_stream_group_lag`
+  que reporta 0 aunque exista backlog real (QueueDepthHigh no mide backlog por lag).
+- El resto de alertas requiere provocaciones riesgosas o con ventana de 5-10 min.
 
-## amtool check-config
-Checking '/alertmanager.yml'  SUCCESS
-Found:
- - global config
- - route
- - 0 inhibit rules
- - 1 receivers
- - 0 templates
+---
 
-## promtool check config (prometheus.yml + rule_files)
-Checking /etc/prometheus/prometheus.yml
-  SUCCESS: 1 rule files found
- SUCCESS: /etc/prometheus/prometheus.yml is valid prometheus config file syntax
-Checking /etc/prometheus/alert.rules.yml
-  SUCCESS: 8 rules found
+## 1. Firing real (observado en Alertmanager :9093, 2026-11-06)
 
-## compose --services (con env dummy solo para interpolar, sin secretos reales)
-mongo
-redis-streams
-minio
-doc-service
-minio-notify-init
-monolito
-loki
-prometheus
-grafana
-minio-init
-redis-exporter
-redis-ratelimit
-mongo-init
-traefik
-alertmanager
+| Alerta | Estado | Valor / señal | Condición | Runbook |
+|---|---|---|---|---|
+| `MinioDiskHigh` | active (warning) | 88.86% usado | `(1 - usable_free/usable_total) > 0.70` por 5m | `infra/runbooks/minio-espacio.md` |
+| `MinioDiskCritical` | active (critical) | 88.86% usado | `(1 - usable_free/usable_total) > 0.85` por 5m | `infra/runbooks/minio-espacio.md` |
+| `DLQNotEmpty` | active (critical) | `redis_stream_length{stream="stream:pdf-processing-dlq"}=12` | `> 0` | `infra/runbooks/failover-redis.md` |
 
-## Archivos del cambio
-- compose/prometheus/alert.rules.yml (8 reglas, cada una con description/runbook)
-- compose/prometheus/alertmanager.yml (receiver local)
-- compose/prometheus/prometheus.yml (rule_files + alerting + jobs redis-streams/minio)
-- compose/docker-compose.yml (alertmanager-data, MINIO_PROMETHEUS_AUTH_TYPE=public, servicios alertmanager + redis-exporter)
+Timestamps (Alertmanager `startsAt`):
+- `MinioDiskHigh` / `MinioDiskCritical`: `2026-11-06T20:24:11.665Z` (disco 88.86%).
+- `DLQNotEmpty`: `2026-11-06T20:19:13.273Z` (12 entradas en la DLQ).
 
-## Deudas honestas (no bloquean sintaxis, si el firing total)
-- PELBacklog usa redis_stream_group_pending: si el exporter no la expone queda NoData -> contar manual con XPENDING.
-- DocsNonTerminal usa docservice_docs_non_terminal: ningun exporter la expone hoy -> conteo manual via mongosh hasta que el reconciliador (S3) la exponga.
-- HighErrorRate/LatencyP95High van via Traefik porque doc-service no expone http_requests_total ni histograma (deuda S3).
+Recuperación: no ejecutada en este ensayo. El disco MinIO requiere purgar huérfanos /
+verificar lifecycle (fuera de T-02); la DLQ no se borra sin diagnosticar (`failover-redis.md`).
 
-## Pendiente para cerrar DoD
-1. `docker compose --profile full up -d` con .env real
-2. Provocar cada condicion (XADD a DLQ, XADD masivo, 5xx forzado) y capturar `firing` en Alertmanager UI :9093
-3. Anexar capturas a este archivo
+---
+
+## 2. Defectos descubiertos al provocar (bloquean el cierre completo)
+
+### 2.1 Drift de métrica de negocio (DocsStuck / DocsAccumulating)
+- Las reglas usan `docservice_documents_non_terminal` y
+  `docservice_documents_oldest_intermediate_age_seconds` (sin `business_`).
+- El contenedor corriendo `infra-doc-service-1` expone
+  `docservice_business_documents_non_terminal` y
+  `docservice_business_documents_oldest_intermediate_age_seconds`.
+- Causa raíz (investigación subagente): el contenedor vivo es un **build local de un commit
+  intermedio del collector S4-P1-02 (`4c31a83`)** que aún llevaba `Subsystem: "business"`.
+  El HEAD del repo (`eb0967f`) ya declara las métricas SIN `Subsystem` (contrato fijado en
+  `collector_test.go` `TestBusinessMetricNames`). La imagen desplegada quedó stale y nunca se
+  reconstruyó tras el rename.
+- Efecto: `DocsStuck` y `DocsAccumulating` quedan en **NoData** (no pueden disparar).
+- **Fix**: reconstruir y redesplegar la imagen desde HEAD (`eb0967f`). NO tocar `metrics.go`
+  ni `alert.rules.yml` (ya usan `docservice_documents_*`). Vía `deploy-doc-service.sh <tag>`
+  o build local (`docker compose -f compose/docker-compose.yml -f compose/docker-compose.build.yml
+  --profile full up -d --build doc-service`). Cuidado: sin `pull_policy`, `up` reutiliza la
+  imagen local vieja.
+
+### 2.2 `redis_stream_group_lag` no refleja el backlog real (QueueDepthHigh)
+- Ensayo: worker detenido + `XADD` de 501 entradas → `XLEN` 1297→1798, pero
+  `redis_stream_group_lag` siguió en **0**.
+- Causa raíz (investigación subagente): Redis es 7.2 (`docker-compose.yml:143`), que sí emite
+  `entries-read`/`lag`. Pero el consumer group `extraction-workers` se creó con
+  `XGROUP CREATE ... 0 MKSTREAM` **sin `ENTRIESREAD`**, lo que deja `entries_read` en estado
+  inválido. Redis entonces no puede estimar la distancia (`last-delivered-id` queda estrictamente
+  entre first y last entry) y devuelve `lag` **nil**; el exporter (`redigo.ScanStruct`) mapea
+  nil → 0. (Evidencia de que el lag SÍ funcionó: `S5-P1-02-ensayo-escalado.txt` registró
+  `lag=700` real el 2026-11-04, antes de quedar inválido el grupo.)
+- Efecto: `QueueDepthHigh` (expr `lag + messages_pending > 500`) solo mide el PEL, no el
+  backlog no entregado. Con worker caído el backlog real crece en silencio (el lag no lo ve).
+- **Fix**: (1) inmediato `XGROUP SETID stream:pdf-processing extraction-workers 0 ENTRIESREAD 0`
+  (repara el grupo; re-entrega hasta 1798 entradas pero la dedup por claim en Mongo + PUTs
+  idempotentes evitan reprocesar `COMPLETED`; PEL se preserva). (2) código: añadir
+  `ENTRIESREAD 0` al `XGROUP CREATE` en `extraction-worker/.../consumer/group.rs:32-39` para
+  grupos futuros.
+
+---
+
+## 3. Estado por alerta (12 reglas activas)
+
+| Alerta | Estado en este ensayo |
+|---|---|
+| `QueueDepthHigh` | No dispara — defecto 2.2 (lag=0 con backlog real) |
+| `PELBacklog` | No provocada — requiere 100 pending por 10m |
+| `RedisMemHigh` | No provocada — requiere llenar Redis a >80% (noeviction, riesgo) |
+| `HighErrorRate` | No provocada — sin serie de 5xx en Traefik |
+| `LatencyP95High` | No provocada — sin serie de histograma p95 |
+| `MinioDiskHigh` | **Firing real** (88.86%) |
+| `MinioDiskCritical` | **Firing real** (88.86%) |
+| `DocsStuck` | NoData — defecto 2.1 |
+| `DocsAccumulating` | NoData — defecto 2.1 |
+| `WorkerDown` | No provocada — `up{job="extraction-worker"}=1`; requiere 10m caído |
+| `QueueNotAdvancing` | No provocada — requiere PEL estancado 5m |
+| `DLQNotEmpty` | **Firing real** (12 msgs) |
+
+---
+
+## 4. Evidencia de sintaxis/config (válida, 2026-10-16, actualizada a 12 reglas)
+
+```
+promtool check rules /etc/prometheus/alert.rules.yml   → SUCCESS: 12 rules found
+promtool test rules /etc/prometheus/tests/s4-p1-02.rules.test.yml → SUCCESS
+amtool check-config /alertmanager.yml                 → SUCCESS
+promtool check config /etc/prometheus/prometheus.yml  → SUCCESS (1 rule file)
+```
+
+> `promtool` no está en PATH del host; se ejecuta con
+> `docker run --rm --entrypoint promtool -v <dir>:/etc/prometheus:ro prom/prometheus:v2.53.4`.
+
+---
+
+## 5. Pendiente para cerrar DoD (S1-P1-13)
+
+1. Resolver defecto 2.1: redeploy del doc-service con las métricas `docservice_documents_*`
+   (o alinear las reglas), y re-probar `DocsStuck`/`DocsAccumulating`.
+2. Resolver defecto 2.2: confirmar por qué `entries-read` no se puebla (config del exporter
+   o versión de Redis) para que `redis_stream_group_lag` mida backlog, y re-probar
+   `QueueDepthHigh`.
+3. Provocar con sign-off explícito las que tocan el entorno: `RedisMemHigh` (llenar Redis),
+   `PELBacklog`/`QueueNotAdvancing` (PEL estancado), `WorkerDown` (10m caído),
+   `HighErrorRate`/`LatencyP95High` (5xx/latencia reales).
+4. Capturar la recuperación de `MinioDiskHigh/Critical` (purgar huérfanos) y de `DLQNotEmpty`
+   (replay), con timestamp, para cerrar el ciclo firing→resolución.

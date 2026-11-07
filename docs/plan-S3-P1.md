@@ -27,7 +27,7 @@ S2 cerró con la Fase 1 completa. Lo que S3 **no rehace** y lo que hereda:
 | `S1-P1-07` Redis AOF | ✅ HECHO | Ninguno |
 | `S1-P1-09/10` Mongo RS + usuarios | ✅ HECHO | Ninguno |
 | `S1-P1-12` Observabilidad | ✅ PARCIAL aceptado | `S3-P1-03` (trazabilidad) |
-| `S1-P1-13` Alertas accionables | ✅ CERRADO | Ninguno |
+| `S1-P1-13` Alertas accionables | ⏳ PARCIAL (2026-11-06): reglas válidas + 3 firing real; 2 defectos (drift métrica `docservice_business_*`, `redis_stream_group_lag`=0) bloquean cierre | Resolver defectos y re-probar (ver `evidencias/S2/S1-P1-13-alerts.txt`) |
 | `S1-P1-15` Hardening contenedores | ✅ CERRADO | Ninguno |
 | `S1-P1-14` Backups restaurando | ✅ CERRADO | Ninguno |
 | `S2-P1-01` Secretos + rotación | ✅ CERRADO | Ninguno |
