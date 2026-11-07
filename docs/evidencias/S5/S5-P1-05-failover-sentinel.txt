@@ -1,0 +1,245 @@
+# S5-P1-05 — Ensayo de failover de Redis Sentinel con el worker Rust (2026-11-07)
+
+## DoD de la tarea (docs/plan_pasos_finales_S5_P1.md, T-10)
+
+> "Levantar Compose con `full` y `sentinel`, detener el master actual y medir hasta que el
+> worker reconecte y procese mensajes. Registrar mensajes recuperados/perdidos y validar
+> la convergencia."
+
+Criterios de aceptación textuales:
+
+> "La evidencia identifica el master antes/después, tiempo de reconexión, errores
+> `READONLY`, mensajes pendientes y resultado terminal; no expone secretos; 0 mensajes
+> perdidos no es criterio."
+
+## Resultado: EJECUTADO — criterios cubiertos, con un hallazgo operativo (H1)
+
+| Criterio | Resultado | Evidencia |
+|---|---|---|
+| Maestro antes / después | `redis-streams` → `redis-streams-replica-1` | §1 |
+| Tiempo de reconexión | detección ~1,2 s; elección 8,0 s; conexión estable a los 46 s | §2 |
+| Errores `READONLY` | **0** | §3 |
+| Mensajes pendientes (PEL) | pico **168** → **0** | §4 |
+| Resultado terminal | **200/200 `COMPLETED`** | §5 |
+| Recuperados / perdidos | encontrados **200/200**, perdidos **0** | §6 |
+| Sin secretos | sí: la contraseña solo se lee dentro del contenedor | todo el documento |
+
+El criterio "0 mensajes perdidos" **no** se usa como garantía: la replicación Sentinel es
+asíncrona y la convergencia depende del reconciliador (SPEC §6.5). Acá se informa el
+número observado, no una promesa.
+
+## Escenario
+
+- Stack: `docker compose -f compose/docker-compose.yml --env-file .env` con perfiles
+  `full` + `sentinel`.
+- Worker: imagen construida para este ensayo `extraction-worker:t10-sentinel` (incluye el
+  fix de autenticación de Sentinel descrito en «Defecto previo»), arrancada con un override que habilita el modo
+  Sentinel. `WORKER_MAX_CONCURRENCY=4`.
+- Modo Sentinel del worker:
+  - `REDIS_SENTINEL_ADDRS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379`
+  - `REDIS_MASTER_NAME=myprimary`
+  - `REDIS_SENTINEL_PASSWORD` sin definir (los sentinels no tienen `requirepass`).
+- Stream `stream:pdf-processing`, grupo `extraction-workers`, DLQ `stream:pdf-processing-dlq`.
+- Objeto: `loadtest/heavy.pdf` (bucket `raw-pdfs`), 1,6 MB, extraíble. La clave del mensaje
+  es la del bucket (`loadtest/heavy.pdf`), sin el prefijo `raw-pdfs/`.
+- Sembrado a las **21:12:35 UTC**: 200 documentos `QUEUED` + 200 `XADD` con contrato plano
+  (`document_id`, `object_key`, `correlation_id`, `enqueued_at`, `schema_version=1`).
+  `XLEN` pasó de 1297 a 1497 (`+200`), `PEL` inicial 0.
+- Prefijo de los documentos del ensayo: `failover-20261107T211233Z-*`.
+
+> Nota: el stack ya tenía 1297 entradas históricas en el stream y 13 entradas en la DLQ
+> antes del ensayo. Ninguna corresponde a este ensayo (todos los documentos del prefijo
+> terminaron `COMPLETED`).
+
+### Defecto previo encontrado y corregido antes del ensayo
+
+El worker **no arrancaba** en modo Sentinel contra este stack: `build_sentinel_client`
+enviaba `AUTH` incondicionalmente a los sentinels usando la contraseña del master, y los
+sentinels no tienen `requirepass`. Resultado: crash-loop con
+`redis: Password authentication failed - AuthenticationFailed`.
+
+Corrección (código, en revisión, no desplegada al compose base):
+
+- `extraction-worker/crates/worker/src/consumer/config.rs`: nueva opción
+  `REDIS_SENTINEL_PASSWORD` (`Option<String>`), validada como dependiente de
+  `REDIS_SENTINEL_ADDRS`.
+- `extraction-worker/crates/worker/src/consumer/redis_conn.rs`: la autenticación contra
+  sentinels es **opt-in** y **nunca** reutiliza la contraseña del master. Con
+  `REDIS_SENTINEL_PASSWORD` vacío no se envía `AUTH` a Sentinel.
+- Tests unitarios agregados (config y `sentinel_auth_solo_usa_redis_sentinel_password`).
+  `cargo test -p extraction-worker`: 71 tests de lib en verde.
+
+## 1. Maestro antes / después
+
+Antes del ensayo, los tres sentinels coincidían:
+
+```
+sentinel-1=redis-streams  sentinel-2=redis-streams  sentinel-3=redis-streams
+redis-streams: role:master connected_slaves:2
+redis-streams-replica-1: role:slave master_link_status:up
+redis-streams-replica-2: role:slave master_link_status:up
+```
+
+Se detuvo el maestro con `docker compose stop redis-streams` a las **21:12:46.083 UTC**.
+
+Después del failover, los tres sentinels coinciden en el nuevo maestro:
+
+```
+sentinel-1=redis-streams-replica-1  sentinel-2=redis-streams-replica-1  sentinel-3=redis-streams-replica-1
+redis-streams: role:slave master_host:redis-streams-replica-1 master_link_status:up
+redis-streams-replica-1: role:master connected_slaves:2
+redis-streams-replica-2: role:slave master_host:redis-streams-replica-1 master_link_status:up
+```
+
+El nodo viejo se volvió a levantar a las 21:17:40 y entró como réplica (`master_link_status:up`),
+sin split brain.
+
+## 2. Tiempo de reconexión
+
+Medición sobre logs y timestamps del ensayo:
+
+| Hito | Hora UTC | Respecto del kill |
+|---|---|---|
+| `stop redis-streams` | 21:12:46.083 | — |
+| Worker detecta el socket muerto y empieza a re-resolver | 21:12:47.306 | **+1,2 s** |
+| Los 3 sentinels eligen `redis-streams-replica-1` | 21:12:54.078 | **+8,0 s** |
+| Última re-resolución registrada (conexión ya estabilizada) | 21:13:32.077 | +46 s |
+
+El worker resolvió el master por Sentinel en cada reconexión: **7** eventos
+`conexion con el master inservible; re-resolviendo` entre 21:12:47 y 21:13:32 (errores de
+transporte `REDIS_IO`: timed out / broken pipe). No hubo ningún `READONLY`, evidencia de
+que nunca intentó escribir contra una réplica: el cliente ya era Sentinel-aware y apuntó
+al nuevo maestro.
+
+El worker no reinició el proceso (`RestartCount=0`): sobrevivió al failover y reconectó.
+
+## 3. Errores READONLY
+
+**0** ocurrencias de `READONLY` / marcador `REDIS_FAILOVER` en los logs del worker durante
+todo el ensayo. Los errores observados fueron de transporte (socket muerto), no de rol:
+
+| Clase (logs del worker) | Cantidad | Ventana |
+|---|---|---|
+| `conexion con el master inservible; re-resolviendo` (`REDIS_IO`) | 7 | 21:12:47–21:13:32 |
+| `operacion fallo; evaluando reintento` (transitorios) | 5 | 21:12:47 |
+| `lectura del stream fallo` (breaker abierto) | 59 | 21:12:48–21:13:17 |
+| `no se pudo leer el delivery count; el mensaje queda pendiente` | 164 | 21:12:47 |
+| `procesado pero el XACK fallo; queda pendiente` | 4 | 21:12:47 |
+| `xautoclaim fallo` | 1 | 21:13:02 |
+
+Conclusión: el failover no produjo escrituras en réplica. La ráfaga de errores abrió el
+circuit breaker compartido durante ~30 s (comportamiento esperado), y luego se recuperó.
+
+## 4. Mensajes pendientes y reanudación (hallazgo H1)
+
+Al momento del kill, el reader había entregado prácticamente todo el lote y el PEL quedó en
+**168** mensajes (`COMPLETED=36`). Durante el failover, los jobs en vuelo no pudieron hacer
+XACK (breaker abierto): quedaron pendientes.
+
+El stream ya estaba entregado hasta la cola (`last-delivered-id` = último id generado), así
+que el reader no tenía mensajes nuevos que leer (`>` vacío). La única vía de recuperación
+era `XAUTOCLAIM`, y ahí apareció el hallazgo:
+
+- `WORKER_MIN_IDLE_MS` por defecto ≈ 600 s (`job_timeout_secs*2000+1000`); acá se usó
+  `600001`. Los 168 pendientes no fueron reclamables hasta **600 s después** de haber sido
+  entregados, es decir ~21:22:47.
+- `WORKER_BATCH_COUNT` por defecto es **1** y `WORKER_XAUTOCLAIM_INTERVAL_SECS` es **30**.
+  Con eso, cada tick reclamaba **un** mensaje: recuperación a ~1 documento / 30 s.
+
+Secuencia observada con la configuración por defecto:
+
+| Hora UTC | Estado |
+|---|---|
+| 21:12:46 | kill; `COMPLETED=36`, `PEL=168` |
+| 21:13:32 | conexión estabilizada, sin más errores; PEL sigue alto |
+| 21:17:40 | todavía 36 completados (esperando `min_idle`) |
+| 21:22:47 | vence `min_idle`; empieza el drenaje por `XAUTOCLAIM` a 1/30 s |
+| 21:37:26 | `COMPLETED=65`, `QUEUED=135`, `PEL=139` |
+
+O sea: el failover se recuperó, pero el **drenaje del PEL quedó dominado por
+`min_idle` + `batch=1` + tick de 30 s**, no por la reconexión. Es un riesgo operativo, no
+una pérdida: los mensajes siguen en el PEL y se pueden reclamar.
+
+Para cerrar la convergencia dentro de una ventana práctica, se reinició el worker con la
+misma imagen y una configuración de reclamo más agresiva (solo variables de entorno, sin
+cambios de código):
+
+```
+WORKER_BATCH_COUNT=50
+WORKER_XAUTOCLAIM_INTERVAL_SECS=5
+WORKER_MIN_IDLE_MS=30000
+```
+
+Resultado: `PEL` 134 → 0 en ~1 min, sin errores nuevos.
+
+## 5. Resultado terminal y convergencia
+
+Estado final de los 200 documentos del ensayo:
+
+```
+total=200
+[ { _id: 'COMPLETED', n: 200 } ]
+documentos fuera de estado terminal: 0
+```
+
+- Último `completed_at`: **2026-11-07T21:41:23.131Z** (`COMPLETED`).
+- `PEL` final del grupo `extraction-workers`: **0**.
+- `XINFO GROUPS`: `pending=0`, `last-delivered-id` = último id generado del stream.
+- `/readyz` del worker: `healthy`; `RestartCount=0`.
+
+Convergencia validada: todos los documentos alcanzaron estado terminal y no quedaron
+mensajes pendientes sin reclamar.
+
+## 6. Recuperados / perdidos
+
+Conteo por `XREVRANGE` del stream filtrado por el prefijo del ensayo:
+
+```
+mensajes encontrados en el maestro nuevo = 200 de 200
+perdidos = 0
+```
+
+Ninguno de los 200 documentos del ensayo fue a la DLQ. La DLQ quedó en 13 entradas, las
+mismas que antes del ensayo (históricas, ajenas al prefijo).
+
+## 7. Hallazgos y recomendaciones
+
+- **H1 (operativo):** tras un failover, si el reader ya entregó todo el lote, la
+  recuperación depende de `XAUTOCLAIM`. Con los defaults (`min_idle≈600 s`, `batch=1`,
+  tick 30 s) el drenaje es ~1 msg / 30 s. Recomendación: para operación normal mantener
+  `min_idle` alto (evita robar trabajos vivos), pero documentar que, ante un failover con
+  PEL grande, el operador puede bajar `WORKER_MIN_IDLE_MS` / `WORKER_XAUTOCLAIM_INTERVAL_SECS`
+  y subir `WORKER_BATCH_COUNT` al reiniciar el worker para acelerar la recuperación.
+  Queda como decisión de producto si conviene un valor más agresivo por defecto o un
+  camino de recuperación dedicado.
+- **H2 (corregido en código):** el worker debe autenticar contra Sentinel de forma
+  opt-in (`REDIS_SENTINEL_PASSWORD`), nunca con la contraseña del master. Sin esto, un
+  stack con sentinels sin `requirepass` deja al worker en crash-loop.
+- El cliente Rust es Sentinel-aware y sobrevive al failover sin reinicio; no se observaron
+  escrituras `READONLY`.
+
+## Reproducción
+
+```bash
+cd infra
+C="docker compose -f compose/docker-compose.yml --env-file .env"
+
+# Preflight: maestro y quorum
+for s in 1 2 3; do $C exec -T "sentinel-$s" redis-cli -p 26379 SENTINEL get-master-addr-by-name myprimary | head -1; done
+
+# Sembrar 200 documentos + 200 mensajes (script del ensayo, fuera del repo)
+# ...
+
+# Emergencia: detener el maestro
+$C --profile full stop redis-streams
+
+# Seguir maestro nuevo
+NEW=$($C exec -T sentinel-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name myprimary | head -1)
+$C exec -T "$NEW" sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli XPENDING stream:pdf-processing extraction-workers'
+
+# Restaurar el nodo viejo como réplica
+$C --profile full start redis-streams
+```
+
+La contraseña nunca se pasa por `argv`: se lee dentro del contenedor con
+`REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password)`.
