@@ -226,6 +226,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     secrets: [redis_streams_password, redis_streams_password_json]
     environment:
       REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
@@ -246,6 +249,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     secrets: [redis_streams_password, redis_streams_password_json]
     environment:
       REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
@@ -266,6 +272,9 @@ services:
     image: redis:7.2
     profiles: ["sentinel"]
     <<: *hardening-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     secrets: [redis_streams_password, redis_streams_password_json]
     environment:
       REDIS_STREAMS_PASSWORD_FILE: /run/secrets/redis_streams_password
@@ -287,6 +296,7 @@ services:
     image: redis:7.2
     profiles: ["core", "full"]
     <<: *hardening-data
+    read_only: true
     secrets: [redis_ratelimit_password]
     entrypoint: ["/bin/sh", "-c", "export REDIS_RATELIMIT_PASSWORD=$$(cat /run/secrets/redis_ratelimit_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_RATELIMIT_PASSWORD"]
     volumes:
@@ -356,9 +366,14 @@ services:
       SVC_DOCSERVICE_SECRET_KEY_FILE: /run/secrets/svc_docservice_secret_key
       SVC_WORKER_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
       SVC_WORKER_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
+      # Retencion configurable por entorno (T-05); defaults = decision de negocio.
+      RAW_PDFS_EXPIRE_DAYS: ${RAW_PDFS_EXPIRE_DAYS:-7}
+      EXTRACTED_TXT_EXPIRE_DAYS: ${EXTRACTED_TXT_EXPIRE_DAYS:-30}
     volumes:
       - ./minio/init-buckets.sh:/init-buckets.sh:ro
-    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+      - ./minio/lifecycle-buckets.sh:/lifecycle-buckets.sh:ro
+      - ./minio/init-all.sh:/init-all.sh:ro
+    entrypoint: ["/bin/sh", "/init-all.sh"]
     networks: [data]
     mem_limit: 128m
     cpus: 0.25
@@ -403,6 +418,9 @@ services:
     image: traefik:v3.7
     profiles: ["full"]
     <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       # El cliente Docker de Traefik negocia una API vieja; algunos daemons
       # exigen >= 1.40. Se fija explicitamente (ajustar si el daemon varia).
@@ -436,6 +454,9 @@ services:
       context: ${MONOLITO_BUILD_CONTEXT:-../../../pdf-extractext}
     profiles: ["full"]
     <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
     depends_on:
       mongo-init:
         condition: service_completed_successfully
@@ -476,6 +497,9 @@ services:
     image: ${DOC_SERVICE_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_TAG:-latest}
     profiles: ["full"]
     <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
     secrets:
       - mongo_app_password
       - svc_docservice_access_key
@@ -592,6 +616,9 @@ services:
       REDIS_PORT: "6379"
       REDIS_DB: "0"
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
+      # Compose los omite si no estan definidos; definir ambos activa Sentinel.
+      REDIS_SENTINEL_ADDRS:
+      REDIS_MASTER_NAME:
       REDIS_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}
       REDIS_GROUP: extraction-workers
       REDIS_DLQ_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}-dlq

@@ -23,11 +23,29 @@ rule_has_days() {
     | grep -Eq "\"Days\":[[:space:]]*${days}([^0-9]|$)"
 }
 
+# ¿Existe UNA regla de expiracion por dias con un valor DISTINTO a $days?
+# Mismo enfoque que rule_has_days: se buscan lineas con "Days" cuyo numero no
+# sea exactamente $days (un valor de mas digitos, ej. 70 vs 7, tambien cuenta).
+# Sin lifecycle configurado `ilm rule ls` falla y no hay salida: NO es
+# incompatible (todavia no hay ninguna regla).
+incompatible_rule_exists() {
+  bucket=$1
+  days=$2
+  mc ilm rule ls --json "$ALIAS/$bucket" 2>/dev/null \
+    | grep -E "\"Days\":[[:space:]]*[0-9]+" \
+    | grep -Ev "\"Days\":[[:space:]]*${days}([^0-9]|$)" >/dev/null
+}
+
 apply_rule() {
   bucket=$1
   days=$2
   if rule_has_days "$bucket" "$days"; then
     echo "Lifecycle ya presente: $ALIAS/$bucket expira a los ${days} dias (sin cambios)."
+  elif incompatible_rule_exists "$bucket" "$days"; then
+    # Regla con dias DISTINTOS: agregar otra crearia un conflicto de reglas.
+    # Fallar ruidoso es mejor que duplicar en silencio (T-05).
+    echo "ERROR: $ALIAS/$bucket ya tiene una regla de expiracion distinta a ${days} dias; no se agrega una segunda regla." >&2
+    exit 1
   else
     # --prefix "" aplica la regla a todo el bucket (sin filtro de prefijo).
     mc ilm rule add --expire-days "$days" --prefix "" "$ALIAS/$bucket"

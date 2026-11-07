@@ -23,10 +23,34 @@
 - loki: read_only=true + tmpfs /tmp:size=128m,noexec,nosuid,nodev
 - redis-exporter: read_only=true (sin tmpfs: no escribe en FS)
 
-## Servicios NO read_only (necesitan escribir en FS)
-- mongo, redis-streams(+replicas), sentinel-1/2/3, minio: escriben en /data
-- traefik: escribe certs dinámicas
-- monolito, doc-service: escriben en /tmp
+## Servicios NO read_only (necesitan escribir en FS) — tras T-04 (2026-11-06)
+Quedan 8 contenedores con ReadOnly=false (Grupo C: excepción / defer):
+- mongo, mongo-init: el entrypoint hace chown/mkdir de /data/configdb en el rootfs (sin volumen) y mongod escribe el socket en /tmp.
+- redis-streams, redis-streams-replica-1, redis-streams-replica-2: read_only seria viable (solo escribe /data, en volumen) PERO recrearlos fuerza un failover de Sentinel; se difiere para coordinar con T-08/T-10.
+- minio: el entrypoint Bitnami escribe config en /opt/bitnami y /bitnami (rootfs, sin volumen).
+- minio-init, minio-notify-init: el cliente mc escribe su config ~/.mc en el rootfs.
+
+## Post-fix (T-04) — read_only aplicado a 7 servicios (2026-11-06)
+Servicios modificados en compose/docker-compose.yml:
+- doc-service: read_only=true + tmpfs /tmp:size=64m,noexec,nosuid,nodev
+- monolito: read_only=true + tmpfs /tmp:size=128m,noexec,nosuid,nodev (recibe PDFs de hasta 25 MB por body)
+- sentinel-1: read_only=true + tmpfs /tmp:size=32m,noexec,nosuid,nodev (escribe /tmp/sentinel.conf)
+- sentinel-2: read_only=true + tmpfs /tmp:size=32m,noexec,nosuid,nodev (escribe /tmp/sentinel.conf)
+- sentinel-3: read_only=true + tmpfs /tmp:size=32m,noexec,nosuid,nodev (escribe /tmp/sentinel.conf)
+- traefik: read_only=true + tmpfs /tmp:size=32m,noexec,nosuid,nodev
+- redis-ratelimit: read_only=true (sin tmpfs: appendonly no, solo escribe el volumen /data)
+
+Auditoria post-fix (docker inspect, 2026-11-06) — los 7 quedaron ReadOnly=true:
+/infra-doc-service-1|User=10001|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=300
+/infra-monolito-1|User=appuser|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=200
+/infra-traefik-1|User=|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=100
+/infra-redis-ratelimit-1|User=|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=100
+/infra-sentinel-1-1|User=|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=50
+/infra-sentinel-2-1|User=|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=50
+/infra-sentinel-3-1|User=|ReadOnly=true|SecurityOpt=[no-new-privileges:true]|Pids=50
+
+Totales del stack (21 contenedores infra): 13 ReadOnly=true, 8 ReadOnly=false (Grupo C arriba).
+Tras recrear los 7: Up (healthy) en los 7; sin rollback.
 
 ## Los 5 verifican Up + healthy tras el fix (compose ps)
 infra-alertmanager-1     Up (healthy)
@@ -36,6 +60,4 @@ infra-prometheus-1       Up
 infra-redis-exporter-1   Up
 
 ## Las 5 cosas en TODAS las imágenes del stack (completo)
-Ver archivo S1-P1-15-baseline.txt (todos los contenedores del stack, incluidos
-los que no tienen read_only). Los 5 controles (user, cap_drop, readonly, no-new-privileges,
-pids_limit) presentes en cada servicio.
+Baseline completo capturado en S1-P1-15-baseline.txt (21 contenedores, 2026-11-06). Los 5 controles registrados por servicio.

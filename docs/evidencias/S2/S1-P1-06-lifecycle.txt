@@ -143,3 +143,290 @@ Cierre
 - El valor `extracted-txt: 30d` es un default ajustable por negocio
   (env EXTRACTED_TXT_EXPIRE_DAYS); cambiarlo no requiere editar el script.
 - Rollback: `mc ilm rule rm --id <id> local/<bucket>`.
+
+
+================================================================================
+T-06 — Verificación en MinIO aislado (init-all.sh) — Fecha: 2026-11-06T22:26:18-03:00
+================================================================================
+Objetivo (plan_pasos_finales_S5_P1.md T-06): ejecutar el wrapper T-05
+`init-all.sh` de punta a punta contra un MinIO AISLADO, y verificar
+(1) reglas activas 7d/30d, (2) idempotencia en la segunda corrida,
+(3) fail-on-incompatible ante retención distinta, (4) expiración efectiva
+solo con objetos de prueba. Producción NO se tocó (ver T-06.7).
+
+Aislamiento (definido ANTES de cualquier comando)
+-------------------------------------------------
+- Contenedor: `minio-t06`, imagen `bitnamilegacy/minio:2025.7.23-debian-12-r5`
+  (la MISMA que `infra-minio-1` en producción; banner
+  `Version: DEVELOPMENT.2025-07-23T15-54-02Z (go1.24.6 linux/amd64)`).
+- Red: `minio-t06-net`, con alias DNS `minio` anadido AL SERVIDOR
+  (los scripts hardcodean `http://minio:9000`).
+- Puertos host: `19000->9000` (API) y `19001->9001` (consola). Nunca 9000/9001.
+- Credenciales de prueba inventadas (NUNCA las de `.env` de producción):
+      MINIO_ROOT_USER=testroot
+      MINIO_ROOT_PASSWORD=<redacted>
+      SVC_DOCSERVICE_ACCESS_KEY=test-doc   / SVC_DOCSERVICE_SECRET_KEY=test-doc-secret-123456
+      SVC_WORKER_ACCESS_KEY=test-worker    / SVC_WORKER_SECRET_KEY=test-worker-secret-123456
+  (distintas de root: el guardarraíl de init-buckets.sh lo exige).
+- Cliente mc: `bitnamilegacy/minio-client:2025.7.21` (mismo tag que el job compose).
+- Scratch: `/tmp/opencode/t06.MbJI7g` (fuera del worktree).
+- Wrapper ejecutado (camino pedido: (a), de punta a punta), montando los TRES
+  scripts en sus rutas absolutas (igual que en compose):
+  $ docker run --rm --network minio-t06-net --entrypoint /bin/sh \
+      -e MINIO_ROOT_USER=testroot -e MINIO_ROOT_PASSWORD=<redacted> \
+      -e SVC_DOCSERVICE_ACCESS_KEY=test-doc -e SVC_DOCSERVICE_SECRET_KEY=test-doc-secret-123456 \
+      -e SVC_WORKER_ACCESS_KEY=test-worker -e SVC_WORKER_SECRET_KEY=test-worker-secret-123456 \
+      -e RAW_PDFS_EXPIRE_DAYS=7 -e EXTRACTED_TXT_EXPIRE_DAYS=30 \
+      -v "$PWD/infra/compose/minio/init-all.sh:/init-all.sh:ro" \
+      -v "$PWD/infra/compose/minio/init-buckets.sh:/init-buckets.sh:ro" \
+      -v "$PWD/infra/compose/minio/lifecycle-buckets.sh:/lifecycle-buckets.sh:ro" \
+      bitnamilegacy/minio-client:2025.7.21 /init-all.sh
+  (env FLAT, no *_FILE: resolve_secret acepta cualquiera de los dos).
+
+
+T-06.1) Primer intento — FALLÓ por el montaje del test (NO por el script)
+-------------------------------------------------------------------------
+$ <mismo comando que arriba, pero con --network-alias minio en el contenedor CLIENTE>
+Added `local` successfully.
+mc: <ERROR> Unable to make bucket `local/raw-pdfs`. Put "http://minio:9000/raw-pdfs/": dial tcp 172.26.0.3:9000: connect: connection refused
+EXIT=1
+
+Causa: el alias `minio` estaba en el contenedor cliente, así que `minio` resolvía
+al propio cliente (172.26.0.3) y no al servidor (172.26.0.2). Corrección:
+$ docker network disconnect minio-t06-net minio-t06
+$ docker network connect --alias minio minio-t06-net minio-t06
+$ docker inspect ... -> Aliases: ["minio"]
+Lección: el alias DNS `minio` va en el SERVIDOR, no en el cliente mc.
+
+Nota de montaje: `init-all.sh` invoca `/init-buckets.sh` y `/lifecycle-buckets.sh`
+por ruta absoluta (igual que en compose), así que hay que montar los tres archivos
+en `/`; montar solo el directorio en `/scripts` no alcanza. No es un bug: coincide
+con los `volumes:` del servicio `minio-init`.
+
+
+T-06.2) Primera ejecución correcta (crea buckets + reglas)
+----------------------------------------------------------
+$ <comando del encabezado, RAW_PDFS_EXPIRE_DAYS=7 EXTRACTED_TXT_EXPIRE_DAYS=30>
+Added `local` successfully.
+Bucket created successfully `local/raw-pdfs`.
+Bucket created successfully `local/extracted-txt`.
+Buckets listos: raw-pdfs, extracted-txt
+Created policy `docservice-rw` successfully.
+Created policy `worker-extract` successfully.
+Usuario creado: test-doc
+Usuario creado: test-worker
+Attached Policies: [docservice-rw]
+To User: test-doc
+Attached Policies: [worker-extract]
+To User: test-worker
+Verificado: test-doc existe con policy adjunta.
+Verificado: test-worker existe con policy adjunta.
+MinIO inicializado: buckets + politicas + usuarios de servicio.
+Lifecycle configuration rule added with ID `dbn7oh9loub010i88gsg` to local/raw-pdfs.
+Lifecycle agregado: local/raw-pdfs expira a los 7 dias.
+Lifecycle configuration rule added with ID `dbn7oh9loub0182ba42g` to local/extracted-txt.
+Lifecycle agregado: local/extracted-txt expira a los 30 dias.
+--- Reglas activas ---
+== local/raw-pdfs ==
+│ dbn7oh9loub010i88gsg │ Enabled │ -      │ -    │              7 │ false               │
+== local/extracted-txt ==
+│ dbn7oh9loub0182ba42g │ Enabled │ -      │ -    │             30 │ false               │
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+MinIO bootstrap completo: buckets + identidades + lifecycle.
+EXIT=0
+
+IDs de regla guardados: raw-pdfs=`dbn7oh9loub010i88gsg` (7d),
+extracted-txt=`dbn7oh9loub0182ba42g` (30d).
+
+mc ilm rule ls (ambos buckets, salida real):
+$ docker run --rm --network minio-t06-net --entrypoint mc \
+    -e MC_HOST_local="http://testroot:<redacted>@minio:9000" \
+    bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/raw-pdfs
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│ Expiration for latest version (Expiration)                                            │
+├──────────────────────┬─────────┬────────┬──────┬────────────────┬─────────────────────┤
+│ ID                   │ STATUS  │ PREFIX │ TAGS │ DAYS TO EXPIRE │ EXPIRE DELETEMARKER │
+├──────────────────────┼─────────┼────────┼──────┼────────────────┼─────────────────────┤
+│ dbn7oh9loub010i88gsg │ Enabled │ -      │ -    │              7 │ false               │
+└──────────────────────┴─────────┴────────┴──────┴────────────────┴─────────────────────┘
+(mismo formato para local/extracted-txt con ID dbn7oh9loub0182ba42g y 30 días)
+
+
+T-06.3) Segunda ejecución — idempotencia
+----------------------------------------
+Conteo ANTES (`mc ilm rule ls --json local/$b | grep -o '"ID"' | wc -l`):
+local/raw-pdfs: 1 regla(s)
+local/extracted-txt: 1 regla(s)
+
+$ <mismo comando del encabezado, segunda corrida>
+...
+MinIO inicializado: buckets + politicas + usuarios de servicio.
+Lifecycle ya presente: local/raw-pdfs expira a los 7 dias (sin cambios).
+Lifecycle ya presente: local/extracted-txt expira a los 30 dias (sin cambios).
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+MinIO bootstrap completo: buckets + identidades + lifecycle.
+EXIT=0
+
+Conteo DESPUÉS:
+local/raw-pdfs: 1 regla(s)
+local/extracted-txt: 1 regla(s)
+
+`mc ilm rule ls` tras la segunda corrida: mismos IDs (`dbn7oh9loub010i88gsg`,
+`dbn7oh9loub0182ba42g`) y mismos días (7/30).
+=> EXIT=0, cero reglas nuevas, IDs idénticos: IDEMPOTENCIA VERIFICADA.
+
+
+T-06.4) Retención configurable → fail-on-incompatible (exit 1)
+--------------------------------------------------------------
+$ <comando del encabezado con RAW_PDFS_EXPIRE_DAYS=9 EXTRACTED_TXT_EXPIRE_DAYS=45>
+...
+MinIO inicializado: buckets + politicas + usuarios de servicio.
+ERROR: local/raw-pdfs ya tiene una regla de expiracion distinta a 9 dias; no se agrega una segunda regla.
+EXIT=1
+
+Estado de las reglas DESPUÉS del fallo (sin cambios, sin reglas duplicadas):
+$ mc ilm rule ls --json local/raw-pdfs
+{"status":"success","target":"local/raw-pdfs","config":{"Rules":[{"Expiration":{"Days":7},"ID":"dbn7oh9loub010i88gsg","Status":"Enabled"}]},"updatedAt":"2026-11-07T01:17:57Z"}
+$ mc ilm rule ls --json local/extracted-txt
+{"status":"success","target":"local/extracted-txt","config":{"Rules":[{"Expiration":{"Days":30},"ID":"dbn7oh9loub0182ba42g","Status":"Enabled"}]},"updatedAt":"2026-11-07T01:17:57Z"}
+
+Reejecución con los defaults 7/30:
+$ <comando del encabezado, RAW_PDFS_EXPIRE_DAYS=7 EXTRACTED_TXT_EXPIRE_DAYS=30>
+...
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+MinIO bootstrap completo: buckets + identidades + lifecycle.
+EXIT=0
+
+=> El job FALLA (exit 1, mensaje con "distinta") ante retención incompatible,
+   no duplica reglas, y vuelve a exit 0 con los valores aprobados 7/30.
+
+
+T-06.5) Expiración efectiva (solo objetos de prueba, bucket descartable)
+------------------------------------------------------------------------
+Bucket descartable (NUNCA raw-pdfs/extracted-txt):
+$ mc mb local/expiry-test
+Bucket created successfully `local/expiry-test`.
+EXIT=0
+
+Intento con expiración inmediata (0 días):
+$ mc ilm rule add --expire-days 0 --prefix "" local/expiry-test
+mc: <ERROR> Unable to generate new lifecycle rules for the input: expiration days cannot be set to zero.
+EXIT=1
+=> MinIO rechaza `--expire-days 0`. Ajuste documentado: se usó `--expire-days 1`.
+
+$ mc ilm rule add --expire-days 1 --prefix "" local/expiry-test
+Lifecycle configuration rule added with ID `dbn7p1825pi000emthgg` to local/expiry-test.
+EXIT=0
+$ mc ilm rule ls local/expiry-test
+│ dbn7p1825pi000emthgg │ Enabled │ -      │ -    │              1 │ false               │
+
+Objetos de prueba subidos (timestamp 2026-11-07 01:19:34/35 UTC, 5 B y 6 B):
+$ mc cp /scratch/obj.txt local/expiry-test/obj.txt   -> `local/expiry-test/obj.txt` EXIT=0
+$ mc cp /scratch/obj2.txt local/expiry-test/obj2.txt -> `local/expiry-test/obj2.txt` EXIT=0
+$ mc ls local/expiry-test
+[2026-11-07 01:19:34 UTC]     5B STANDARD obj.txt
+[2026-11-07 01:19:35 UTC]     6B STANDARD obj2.txt
+
+Cobertura de la regla (mc stat):
+$ mc stat local/expiry-test/obj.txt
+Name      : obj.txt
+Date      : 2026-11-07 01:19:34 UTC
+Size      : 5 B
+Expiration: 2026-11-09 00:00:00 UTC (lifecycle-rule-id: dbn7p1825pi000emthgg)
+(igual para obj2.txt)
+
+Scanner: el subcomando `start` NO existe en este mc:
+$ mc admin scanner start local/expiry-test
+mc: <ERROR> `start` is not a recognized command. Get help using `--help` flag.
+$ mc admin scanner --help
+COMMANDS:
+  status  summarize scanner events on MinIO server in real-time
+  trace   show trace for scanner operations
+
+Estado del scanner observado (`docker run -t ... mc admin scanner status local/expiry-test`;
+requiere TTY, sin él falla con "could not open a new TTY"):
+Scanner Activity: ●∙∙
+Est. full scan time: 0d0h15m; Estimated 2700.26/month
+Current cycle:         (between cycles)
+Active drives:         0
+Objects Scanned:       0 objects; Avg: 0ms
+ILM checks:            0 versions; Avg: 0ms
+`mc admin scanner trace local/expiry-test` (15 s): sin eventos en la ventana.
+
+Re-chequeo tras ~60 s (2026-11-07T01:20Z):
+$ mc ls local/expiry-test
+[2026-11-07 01:19:34 UTC]     5B STANDARD obj.txt
+[2026-11-07 01:19:35 UTC]     6B STANDARD obj2.txt
+=> Los objetos SIGUEN PRESENTE. NO se reclama un borrado que no ocurrió:
+   ESTADO: REGLA ACTIVA + OBJETO CUBIERTO (mc stat muestra Expiration con el
+   rule-id de la regla). Borrado PENDIENTE del próximo ciclo del scanner que
+   alcance la fecha de expiración.
+   Motivos observables: (1) la fecha de expiración calculada es 2026-11-09
+   00:00:00 UTC (MinIO redondea a medianoche UTC: subida 01:19 UTC + 1 día →
+   medianoche siguiente), todavía futura; (2) el borrado lo aplica el scanner
+   de forma asíncrona, no en el `mc cp`.
+
+Intervalo del scanner (verificado, corrige el supuesto de "24 h"):
+- El código de MinIO (`cmd/data-scanner.go`) usa `dataScannerStartDelay = 1 * time.Minute`
+  como pausa entre ciclos por defecto, y `MINIO_SCANNER_CYCLE` (o `scanner speed`)
+  lo ajusta; con speed=default el ciclo es 1 min.
+- Cada ciclo escanea ~1/16 del namespace (`dataUsageUpdateDirCycles = 16`), así que
+  un objeto es visitado completo cada ~16 ciclos.
+- La doc oficial (docs.min.io "Object Lifecycle Management" / "Scanner") dice que el
+  scanner es de baja prioridad y que "may not detect an object as eligible ... until
+  after the lifecycle rule period has passed": NO hay garantía de timing.
+- El "24 h" del enunciado corresponde al ciclo diario de lifecycle de AWS S3, no a
+  este build de MinIO. En esta instancia aislada el scanner estimó full scan en 15 min.
+- No se forzó ninguna cadencia (solo lectura): no existe comando de "start" para
+  forzar el ciclo en este mc.
+
+
+T-06.6) Validación de sintaxis del comando de bootstrap (sin ejecutar contra producción)
+-----------------------------------------------------------------------------------------
+Desde `infra/` (NO se ejecutó `docker compose run minio-init`: eso escribiría en
+producción; el wrapper ya se probó de punta a punta contra el aislado):
+$ docker compose -f compose/docker-compose.yml --profile full --env-file .env config --quiet
+exit=0
+$ docker compose -f compose/docker-compose.yml --profile core --env-file .env config --quiet
+exit=0
+$ docker compose -f compose/docker-compose.yml --profile full --env-file .env run --rm --no-deps --quiet
+(acepta los flags en ese orden; falla solo por el nombre de servicio ausente:
+ "requires at least 1 arg(s), only received 0", exit=1; no creó contenedores)
+
+=> Comando de reejecución documentado en `runbooks/minio-lifecycle.md`:
+   `docker compose -f compose/docker-compose.yml --profile full --env-file .env run --rm minio-init`
+
+
+T-06.7) Confirmación de aislamiento y limpieza
+----------------------------------------------
+Producción antes y después (solo inspección `docker ps`, sin exec ni mc):
+$ docker ps --filter name=infra-minio-1
+8753c4530680 Up 8 hours (healthy) 9000-9001/tcp   (id y uptime sin cambios)
+
+Ningún comando de esta tarea usó `MC_HOST_local` apuntando a `infra_data`/producción,
+ni `docker exec` en `infra-minio-1`, ni los puertos 9000/9001. No existen contenedores
+`*-run-*` nuevos de compose (verificado con `docker ps -a | grep minio-init`: solo
+`infra-minio-init-1 Exited (0) 10 days ago`, el histórico).
+
+Limpieza (timestamp 2026-11-06T22:26:18-03:00):
+$ docker rm -f minio-t06
+minio-t06                       (exit=0)
+$ docker network rm minio-t06-net
+minio-t06-net                   (exit=0)
+Verificación: 0 contenedores `minio-t06*`, 0 redes `minio-t06-net`.
+El directorio scratch `/tmp/opencode/t06.MbJI7g` queda para que lo borre el parent.
+
+
+Cierre T-06
+-----------
+- Reglas activas mostradas: raw-pdfs=7d (`dbn7oh9loub010i88gsg`),
+  extracted-txt=30d (`dbn7oh9loub0182ba42g`), ambas `Enabled`.
+- Segunda ejecución idempotente: exit 0, mismos IDs, 1 regla por bucket antes/después.
+- Fail-on-incompatible verificado: exit 1 con "distinta"; reglas intactas; exit 0
+  al volver a 7/30.
+- Expiración efectiva: regla activa + objeto cubierto + borrado PENDIENTE del
+  scanner (fecha 2026-11-09 aún futura; `mc admin scanner start` no existe).
+- Producción no se tocó; entorno aislado eliminado.
+- Bugs en los scripts: NINGUNO hallado (el fallo de T-06.1 fue del montaje del test,
+  corregido reubicando el alias DNS en el servidor).
+- Runbook operativo: `infra/runbooks/minio-lifecycle.md` (nuevo).
