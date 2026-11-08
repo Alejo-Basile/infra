@@ -1,12 +1,18 @@
-# S1-P1-13 — Alertas accionables — evidencia sintaxis + firing (2026-11-06)
+# S1-P1-13 — Alertas accionables — evidencia sintaxis + firing (2026-11-06, re-verificado 2026-11-07)
 
 ## Resumen ejecutivo
 - 12 reglas activas en `alert.rules.yml` (retirada `DocsNonTerminal` obsoleta, T-01).
-- 3 alertas **firing real** (disco MinIO 88.86%, DLQ con 12 mensajes).
-- 2 **defectos** descubiertos al provocar: drift de métrica `docservice_business_*` vs
-  `docservice_documents_*` (DocsStuck/DocsAccumulating en NoData) y `redis_stream_group_lag`
-  que reporta 0 aunque exista backlog real (QueueDepthHigh no mide backlog por lag).
-- El resto de alertas requiere provocaciones riesgosas o con ventana de 5-10 min.
+- **4 alertas firing real** a 2026-11-07 (`QueueDepthHigh`, `MinioDiskHigh`,
+  `MinioDiskCritical`, `DLQNotEmpty`).
+- **3 defectos** descubiertos al provocar:
+  1. drift de métrica `docservice_business_*` vs `docservice_documents_*`
+     (DocsStuck/DocsAccumulating en NoData) — **fix verificado en vivo** (§6.3);
+  2. `redis_stream_group_lag` que reportaba 0 aunque exista backlog real
+     (QueueDepthHigh no mide backlog) — el grupo volvió a medir, pero la alerta ahora
+     quema un **contador fantasma** sin backlog real (§7.2);
+  3. el worker en modo directo queda **muerto** (`READONLY`) cuando el maestro original
+     vuelve como réplica tras un failover, sin que ninguna alerta lo detecte (§7.1).
+- El resto de alertas requiere provocaciones riesgosas o con ventana de 5-17 min.
 
 ---
 
@@ -100,15 +106,198 @@ promtool check config /etc/prometheus/prometheus.yml  → SUCCESS (1 rule file)
 
 ---
 
-## 5. Pendiente para cerrar DoD (S1-P1-13)
+## 5. Pendiente para cerrar DoD (S1-P1-13) — estado 2026-11-07
 
-1. Resolver defecto 2.1: redeploy del doc-service con las métricas `docservice_documents_*`
-   (o alinear las reglas), y re-probar `DocsStuck`/`DocsAccumulating`.
-2. Resolver defecto 2.2: confirmar por qué `entries-read` no se puebla (config del exporter
-   o versión de Redis) para que `redis_stream_group_lag` mida backlog, y re-probar
-   `QueueDepthHigh`.
+1. **Defecto 2.1 — FIX VERIFICADO en vivo, falta la prueba de firing.**
+   Causa raíz refinada: la imagen que corría era `ghcr.io/alejo-basile/doc-service:latest`
+   (revision `210be28c`, 2026-10-21), **anterior** al rename y anterior al collector de
+   métricas de negocio: no expone ni `docservice_business_*` ni `docservice_documents_*`
+   (verificado: solo 4 series `docservice_*` de API/relay/webhook).
+   Fix aplicado y verificado el 2026-11-07: despliegue de `doc-service:local` (build desde
+   HEAD `eb0967f`) → expone `docservice_documents_non_terminal` y
+   `docservice_documents_oldest_intermediate_age_seconds{status=...}` (6 estados), que son
+   exactamente las series que consultan `DocsAccumulating` y `DocsStuck`.
+   Falta todavía **provocar** el firing: >10 documentos en estados intermedios durante 15 min
+   (`DocsAccumulating`, `for: 15m`) y antigüedad >900 s (`DocsStuck`, `for: 2m`). Requiere
+   retener documentos en estado intermedio ~17 min.
+2. **Defecto 2.2 — el grupo volvió a medir, pero la alerta quema un contador fantasma.**
+   El grupo `extraction-workers` hoy expone `entries-read=1297` y `lag=723`
+   (`XINFO GROUPS`), o sea `lag` volvió a ser válido, y con eso **`QueueDepthHigh` dispara**
+   (`active`, `startsAt=2026-11-07T21:22:41.869Z`).
+   Pero el firing **no es backlog real**: `pending=0`, `last-delivered-id` ==
+   `last-generated-id` (nada por entregar) y los 1425 documentos de Mongo están todos en
+   `COMPLETED`. La causa es aritmética de contadores acumulados
+   (`entries_added_total=2020` nunca baja al recortar el stream, contra
+   `entries_read=1297`): la diferencia queda permanente y la alerta no puede resolverse sola.
+   Detalle y reparación en §7 y en `runbooks/failover-redis.md` §4
+   ("`lag` fantasma"). El fix de código que crea el grupo con `ENTRIESREAD` ya está en
+   `extraction-worker` (PR #32), pero no evita este caso: el desync nace del recorte del
+   stream y del estado heredado del grupo tras el failover.
 3. Provocar con sign-off explícito las que tocan el entorno: `RedisMemHigh` (llenar Redis),
    `PELBacklog`/`QueueNotAdvancing` (PEL estancado), `WorkerDown` (10m caído),
    `HighErrorRate`/`LatencyP95High` (5xx/latencia reales).
 4. Capturar la recuperación de `MinioDiskHigh/Critical` (purgar huérfanos) y de `DLQNotEmpty`
-   (replay), con timestamp, para cerrar el ciclo firing→resolución.
+   (replay de 13 mensajes), con timestamp, para cerrar el ciclo firing→resolución.
+5. **Firing de `DocsStuck` / `DocsAccumulating`:** con el fix del defecto 2.1 aplicado
+   (§6.3) las series existen, pero hace falta provocar la condición: >10 documentos en
+   estados intermedios durante 15 min (`for: 15m`) y antigüedad >900 s (`for: 2m`).
+   Retenerlos exige **detener el worker ~17 min** (mientras el worker está vivo los
+   documentos se procesan y no se quedan en estado intermedio), lo que además dispara
+   `WorkerDown`. Requiere sign-off.
+
+---
+
+## 7. Re-verificación live: estado del pipeline y hallazgo de backlog fantasma (2026-11-07)
+
+### 7.1 Hallazgo: el maestro original quedó como réplica y el worker directo estaba muerto
+
+Después del ensayo de failover (T-10), el nodo `redis-streams` **volvió como réplica** del
+nodo promovido (comportamiento normal de Sentinel), y Sentinel mantiene `myprimary` →
+`redis-streams-replica-1`:
+
+| Contenedor | `ROLE` | `master_link_status` |
+|---|---|---|
+| `infra-redis-streams-1` | `slave` (de `redis-streams-replica-1`) | `up` |
+| `infra-redis-streams-replica-1-1` | `master` | — |
+| `infra-redis-streams-replica-2-1` | `slave` (de `redis-streams-replica-1`) | `up` |
+
+El worker que estaba desplegado (imagen vieja `extraction-worker:s5-p4-01-hol3`, **modo
+directo** contra `REDIS_HOST=redis-streams`) moría al instante:
+
+```
+consumer finalizado con error: grupo: redis: ReadOnly: You can't write against a read only replica.
+```
+
+El contenedor figuraba `running (healthy)` (su healthcheck es HTTP) mientras no consumía
+nada: **el pipeline estaba parado y ninguna alerta lo detectaba** (`QueueNotAdvancing`
+exige `pending > 0`).
+
+**Corrección aplicada:** worker desplegado con la imagen nueva (`extraction-worker:t10-sentinel`,
+la del PR #32) y el override versionado `compose/docker-compose.sentinel-worker.yml`, que
+activa `REDIS_SENTINEL_ADDRS` + `REDIS_MASTER_NAME`. Tras el cambio el worker **arranca
+limpio, sin `READONLY`**, y sigue al maestro vigente.
+
+```bash
+docker compose -f compose/docker-compose.yml \
+  -f compose/docker-compose.sentinel-worker.yml \
+  --env-file .env --profile full up -d --no-build extraction-worker
+```
+
+La imagen se elige con `EXTRACTION_WORKER_IMAGE` / `EXTRACTION_WORKER_TAG` en `.env`
+(local: `extraction-worker:t10-sentinel`; tras mergear el PR #32, el tag publicado).
+El modo directo sigue disponible para tests y desarrollo (compose base, sin el override).
+
+### 7.2 Hallazgo: `QueueDepthHigh` en `firing` sin backlog real
+
+Estado real de la cola y del trabajo:
+
+```
+XINFO GROUPS stream:pdf-processing (en el maestro)
+  pending            0
+  last-delivered-id  1794085958420-0
+  entries-read       1297
+  lag                723
+
+XINFO STREAM stream:pdf-processing
+  length             1497
+  last-generated-id  1794085958420-0      <-- igual al last-delivered-id del grupo
+
+métricas (Prometheus)
+  redis_stream_entries_added_total        2020   (acumulado desde que arrancó Redis)
+  redis_stream_group_entries_read         1297
+  redis_stream_group_messages_pending        0
+  redis_stream_group_lag                   723
+
+Mongo: db.documents.aggregate([{$group:{_id:"$status",n:{$sum:1}}}])
+  [ { _id: 'COMPLETED', n: 1425 } ]        <-- sin documentos sin terminar
+```
+
+`pending=0` + `last-delivered-id == last-generated-id` ⇒ **no hay nada por entregar**, y los
+1425 documentos están terminales. La alerta se apoya en
+`entries_added_total - entries_read + pending > 500`; `entries_added_total` es acumulado y
+nunca baja al recortar el stream, así que la diferencia (723) es un **fantasma permanente**:
+la alerta no puede resolverse sola aunque el pipeline esté sano.
+
+Reparación documentada en `runbooks/failover-redis.md` §4 ("`lag` fantasma"):
+`XGROUP SETID stream:pdf-processing extraction-workers 0 ENTRIESREAD 0` realinea los
+contadores y re-entrega las entradas ya procesadas (la deduplicación por documento las
+descarta). **Pendiente de sign-off**: implica una ráfaga de reprocesamiento.
+
+### 7.3 Estado final del entorno (2026-11-07, después de esta re-verificación)
+
+- `doc-service`: imagen `doc-service:local` (build desde HEAD `eb0967f`) — expone
+  `docservice_documents_*`. La imagen publicada `ghcr.io/alejo-basile/doc-service:latest`
+  (revision `210be28c`) queda intacta para rollback.
+- `extraction-worker`: imagen `extraction-worker:t10-sentinel` + override de modo Sentinel.
+  Sigue al maestro vigente; sin errores `READONLY`.
+- Stack `full`: 16 contenedores `running`, healthchecks OK.
+- Alertas activas: `QueueDepthHigh` (fantasma, §7.2), `MinioDiskHigh`,
+  `MinioDiskCritical`, `DLQNotEmpty` (13 mensajes).
+
+---
+
+## 6. Re-verificación live (2026-11-07)
+
+Stack `full` operativo (16 contenedores, todos `running`; healthchecks OK en los que lo tienen).
+
+### 6.1 Alertas activas en Alertmanager (`GET /api/v2/alerts`, vía `infra-alertmanager-1`)
+
+| Alerta | Estado | `startsAt` |
+|---|---|---|
+| `QueueDepthHigh` | active | 2026-11-07T21:22:41.869Z |
+| `MinioDiskCritical` | active | 2026-11-08T01:30:11.665Z |
+| `MinioDiskHigh` | active | 2026-11-08T01:30:11.665Z |
+| `DLQNotEmpty` | active | 2026-11-08T01:25:13.273Z |
+
+### 6.2 Estado del grupo de consumo (Redis `stream:pdf-processing`)
+
+```
+name                  extraction-workers
+consumers             5
+pending               0
+last-delivered-id     1794085958420-0
+entries-read          1297
+lag                   723
+```
+
+`entries-read` poblado ⇒ `redis_stream_group_lag` mide backlog real ⇒ `QueueDepthHigh` viable.
+Volúmenes del stream: `XLEN stream:pdf-processing=1497`, `XLEN stream:pdf-processing-dlq=13`.
+
+### 6.3 Métricas de documentos (doc-service)
+
+Antes (imagen `ghcr.io/alejo-basile/doc-service:latest`, revision `210be28c`):
+
+```
+docservice_api_documents_created_total
+docservice_relay_enqueue_errors_total
+docservice_relay_enqueued_total
+docservice_webhook_events_total
+```
+→ sin series de estado de documentos ⇒ `DocsStuck` / `DocsAccumulating` en **NoData**.
+
+Después (`doc-service:local`, build desde HEAD `eb0967f`, desplegado 2026-11-07):
+
+```
+docservice_documents_non_terminal 0
+docservice_documents_oldest_intermediate_age_seconds{status="UPLOADED"} 0
+docservice_documents_oldest_intermediate_age_seconds{status="QUEUED"} 0
+docservice_documents_oldest_intermediate_age_seconds{status="PROCESSING"} 0
+docservice_documents_oldest_intermediate_age_seconds{status="RETRYING"} 0
+docservice_documents_oldest_intermediate_age_seconds{status="EXTRACTION_FAILED"} 0
+docservice_documents_oldest_intermediate_age_seconds{status="COMPENSATING"} 0
+```
+
+Coinciden con `alert.rules.yml`:
+- `DocsAccumulating`: `docservice_documents_non_terminal > 10` (`for: 15m`).
+- `DocsStuck`: `max by (status) (docservice_documents_oldest_intermediate_age_seconds) > 900` (`for: 2m`).
+
+### 6.4 Estado del entorno tras esta re-verificación
+
+- `doc-service` corre con la imagen local `doc-service:local` (build HEAD). La imagen publicada
+  `ghcr.io/alejo-basile/doc-service:latest` queda intacta para rollback:
+  `docker compose ... up -d --no-build doc-service`.
+- `extraction-worker` corre en **modo Sentinel** (override
+  `compose/docker-compose.sentinel-worker.yml`) para seguir al maestro vigente; ver §7.1.
+- El release a GHCR de HEAD sigue pendiente de decisión humana (merge de PR o tag `v*`),
+  igual que en `plan-S3-P1.md` §4 (`S3-P1-01`, "Pendiente (humano)").
+

@@ -158,6 +158,86 @@ Volvé a los valores conservadores cuando el PEL esté en 0.
   Es opt-in: si falta, el worker no envía `AUTH` a Sentinel (y eso es lo correcto cuando
   los sentinels no piden contraseña).
 
+### El maestro original vuelve como réplica (post-failover)
+
+Después de un failover, el nodo que era maestro **se reincorpora como réplica** del nuevo
+maestro (comportamiento normal de Sentinel). El compose base sigue apuntando a
+`REDIS_HOST=redis-streams`, así que un worker en **modo directo** pasa a escribir contra una
+réplica y muere:
+
+```
+consumer finalizado con error: grupo: redis: ReadOnly: You can't write against a read only replica.
+```
+
+El contenedor queda `Up (healthy)` (su healthcheck es HTTP) pero **no consume**: el pipeline
+está parado y ninguna alerta lo delata (`QueueNotAdvancing` exige `pending > 0`).
+
+Diagnóstico — quién es el maestro ahora:
+
+```bash
+for c in infra-redis-streams-1 infra-redis-streams-replica-1-1 infra-redis-streams-replica-2-1; do
+  echo "== $c"
+  docker exec "$c" sh -c \
+    'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli ROLE | head -1'
+done
+docker exec infra-sentinel-1-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name myprimary
+```
+
+Corrección — worker en modo Sentinel (override versionado, T-09):
+
+```bash
+docker compose -f compose/docker-compose.yml \
+  -f compose/docker-compose.sentinel-worker.yml \
+  --env-file .env --profile full up -d --no-build extraction-worker
+```
+
+El override solo activa `REDIS_SENTINEL_ADDRS` + `REDIS_MASTER_NAME`; la imagen se elige con
+`EXTRACTION_WORKER_IMAGE` / `EXTRACTION_WORKER_TAG` en `.env`. El modo directo sigue
+disponible para tests y desarrollo (compose base, sin el override).
+
+Rollback al modo directo: recrear el worker **sin** el override, y solo después de confirmar
+que el nodo de `REDIS_HOST` volvió a ser maestro (`ROLE` = `master`).
+
+### `lag` fantasma: `QueueDepthHigh` quemando sin backlog real
+
+`redis_stream_entries_added_total` es un **contador acumulado**: cuenta cada `XADD` desde que
+arrancó Redis y nunca baja cuando las entradas se borran del stream (`XDEL`, `MAXLEN`).
+`redis_stream_group_entries_read` cuenta las entradas entregadas a **ese** grupo. La regla
+resta ambos:
+
+```
+entries_added_total - group_entries_read + messages_pending > 500
+```
+
+Cuando el stream se recorta (o el grupo se recrea o hereda un estado de un failover), la
+diferencia queda **permanente**: el backlog real ya se drenó, pero el contador no vuelve a 0
+y la alerta queda en `firing` para siempre.
+
+Cómo confirmar que es fantasma y no backlog:
+
+```bash
+# a) el grupo no tiene nada por entregar
+docker exec "$NEW" sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) \
+  redis-cli XINFO GROUPS stream:pdf-processing'
+#    -> pending=0 y last-delivered-id == last-generated-id
+# b) no hay documentos sin terminar
+docker exec infra-mongo-1 sh -c 'mongosh --quiet ... --eval \
+  "db.documents.aggregate([{\$group:{_id:\"\$status\",n:{\$sum:1}}}])"'
+#    -> solo COMPLETED
+```
+
+Reparación (realinea los contadores; re-entrega entradas ya procesadas y la deduplicación
+por documento las descarta):
+
+```bash
+docker exec "$NEW" sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) \
+  redis-cli XGROUP SETID stream:pdf-processing extraction-workers 0 ENTRIESREAD 0'
+```
+
+Después el worker vuelve a recibir las entradas y `entries_read` se realinea con
+`entries_added_total`; la alerta resuelve cuando el backlog real queda bajo el umbral durante
+`for: 5m`. Costo: el worker reprocesa en lote lo ya completado (deduplicación por documento).
+
 ## 5. Logs a mirar
 
 ```bash
