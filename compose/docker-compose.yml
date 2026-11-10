@@ -312,6 +312,38 @@ services:
       timeout: 3s
       retries: 6
 
+  # --- rate-limiter (P1-04): servicio ForwardAuth sobre el Redis efimero -----
+  # Solo red interna: no se publica al host. Lee la password desde el secret,
+  # nunca inline. Identidad por cliente y tuning distribuido quedan para S7
+  # (ADR-0005); esta version minima da 429 en el gateway.
+  ratelimitd:
+    build:
+      context: ../../platform-services/rate-limiter
+      dockerfile: Dockerfile
+    image: ratelimitd:p4-04
+    profiles: ["full"]
+    <<: *hardening
+    user: "10001:10001"
+    read_only: true
+    secrets: [redis_ratelimit_password]
+    environment:
+      LISTEN_ADDR: ":8090"
+      REDIS_ADDR: redis-ratelimit:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_ratelimit_password
+    networks: [internal, data]
+    depends_on:
+      redis-ratelimit:
+        condition: service_healthy
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
   # --- MinIO (SPEC 3.4): API S3 interna; exposicion publica SOLO via Traefik -
   # NOTA: la imagen oficial minio/minio no esta accesible desde este entorno
   # (Docker Hub deniega el pull). Se usa la imagen legacy de Bitnami con tag
@@ -567,7 +599,7 @@ services:
       - "traefik.http.routers.docv2.tls=true"
       # Buffering de 1 MB SOLO para el JSON del contrato v2; el PDF sube directo
       # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
-      - "traefik.http.routers.docv2.middlewares=body-limit-1mb@file"
+      - "traefik.http.routers.docv2.middlewares=rate-limit@file,body-limit-1mb@file"
       - "traefik.http.services.docv2.loadbalancer.server.port=8080"
       # Healthcheck expuesto al edge (preflight de E2E-01): solo /healthz.
       - "traefik.http.routers.docv2health.rule=Host(`api.localhost`) && Path(`/healthz`)"
