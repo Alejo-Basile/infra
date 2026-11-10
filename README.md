@@ -10,6 +10,7 @@ Contiene todo lo necesario para levantar y operar la plataforma de soporte a los
 - Configuración de **Traefik** (`traefik/`), **MinIO**, **Redis** (AOF streams + LRU ratelimit) y **MongoDB** (Replica Set `rs0`).
 - `scripts/bootstrap.sh` (verificación de toolchains), `scripts/gen-certs.sh` (TLS local con mkcert) y `scripts/verify-networks.sh` (topología).
 - Runbooks operativos (`runbooks/`) y **ADRs globales** (`docs/adr/`, incluida **ADR-0016**: host dedicado de S3).
+- Runbook de lifecycle/retención de MinIO (reinspección y cambio de reglas): `runbooks/minio-lifecycle.md`.
 
 ## Qué NO hace este repo
 

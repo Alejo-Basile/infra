@@ -1,0 +1,24 @@
+# Override: extraction-worker in Sentinel mode (plan S5-P1, T-09).
+#
+# The base compose keeps the worker in direct mode (REDIS_HOST=redis-streams)
+# for local development and tests. This override enables Sentinel discovery so
+# the worker resolves the current master (myprimary) instead of trusting a
+# fixed node, and reconnects after a failover or a READONLY error.
+#
+# Usage (the worker image is selected via EXTRACTION_WORKER_IMAGE /
+# EXTRACTION_WORKER_TAG in .env):
+#
+#   docker compose -f compose/docker-compose.yml \
+#     -f compose/docker-compose.sentinel-worker.yml \
+#     --env-file .env --profile full up -d --no-build extraction-worker
+#
+# Rollback to direct mode: recreate the worker without this override.
+#
+# The Sentinels in this stack run without requirepass, so no Sentinel password is
+# configured here. Set REDIS_SENTINEL_PASSWORD only if the Sentinels are
+# protected; it is never derived from the master password.
+services:
+  extraction-worker:
+    environment:
+      REDIS_SENTINEL_ADDRS: "sentinel-1:26379,sentinel-2:26379,sentinel-3:26379"
+      REDIS_MASTER_NAME: "myprimary"

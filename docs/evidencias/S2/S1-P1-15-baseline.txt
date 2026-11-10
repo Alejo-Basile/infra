@@ -1,0 +1,31 @@
+# S1-P1-15 — Baseline de hardening de contenedores — evidencia (2026-11-06)
+
+## Método
+docker inspect con --format acotado a los 5 controles, sobre todos los
+contenedores del proyecto Compose `infra` (running + exited, perfiles sentinel y
+jobs de init incluidos). Se excluyen Config.Env y cualquier valor secreto.
+Interpretación: User vacío = root; CapDrop vacío = sin caps dropped;
+SecurityOpt vacío = sin no-new-privileges; Pids=0 = ilimitado.
+
+## Baseline (valor observado por contenedor)
+/alertmanager-1: User=nobody CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=50
+/doc-service-1: User=10001 CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=300
+/extraction-worker-1: User=10001:10001 CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=200
+/grafana-1: User=472 CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=100
+/loki-1: User=10001 CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=100
+/minio-1: User=1001 CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=200
+/minio-init-1: User=1001 CapDrop=[] ReadOnly=false SecurityOpt=[] Pids=100
+/minio-notify-init-1: User=1001 CapDrop=[] ReadOnly=false SecurityOpt=[] Pids=100
+/mongo-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=200
+/mongo-init-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100
+/monolito-1: User=appuser CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=200
+/prometheus-1: User=nobody CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=100
+/redis-exporter-1: User=59000:59000 CapDrop=[ALL] ReadOnly=true SecurityOpt=[no-new-privileges:true] Pids=50
+/redis-ratelimit-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100
+/redis-streams-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100
+/redis-streams-replica-1-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100
+/redis-streams-replica-2-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100
+/sentinel-1-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=50
+/sentinel-2-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=50
+/sentinel-3-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=50
+/traefik-1: User= CapDrop=[ALL] ReadOnly=false SecurityOpt=[no-new-privileges:true] Pids=100

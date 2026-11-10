@@ -2,9 +2,12 @@
 # https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 #
 # Series usadas (las publica redis_exporter, no el worker):
-#   redis_stream_group_lag{stream,group}              -> backlog real (no entregado)
+#   redis_stream_entries_added_total{stream}          -> entradas añadidas (XINFO STREAM)
+#   redis_stream_group_entries_read{stream,group}     -> entradas leídas por el grupo
 #   redis_stream_group_messages_pending{stream,group} -> PEL (entregado sin ACK)
 #   redis_stream_length{stream}                       -> XLEN (monotonico, solo DLQ)
+# El backlog no entregado = entries_added_total - entries_read (el campo `lag` de
+# XINFO GROUPS es nil en Redis 7.2.16, por eso no se usa redis_stream_group_lag).
 #
 # Timestamps en MILISEGUNDOS. eval_time e interval en strings ("30s", "7m").
 # NOTA promtool: changes() sobre una serie constante devuelve N-1, no 0, asi que
@@ -75,8 +78,10 @@ tests:
   # (el backlog real: no entregado + entregado sin confirmar)
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_group_lag{stream="stream:pdf-processing",group="extraction-workers"}'
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
         values: '0 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300'
     alert_rule_test:
@@ -86,7 +91,6 @@ tests:
           - exp_labels:
               severity: "warning"
               stream: "stream:pdf-processing"
-              group: "extraction-workers"
             exp_annotations:
               summary: "Cola pdf-processing con mas de 500 documentos pendientes por 5m"
               description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N. Ojo: en un host de 4 cores con WORKER_MAX_CONCURRENCY=4 un worker ya satura CPU y escalar no aumenta el throughput. Ver runbook de escalado."
@@ -95,8 +99,10 @@ tests:
   # Test 6: QueueDepthHigh NO dispara si el backlog supera 500 hace menos de 5m
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_group_lag{stream="stream:pdf-processing",group="extraction-workers"}'
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
         values: '0 10 20 30 40 50 100 200 300 300 300 300 300'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 10 20 30 40 50 100 200 300 400 500 600 700'
     alert_rule_test:
@@ -107,8 +113,10 @@ tests:
   # Test 7: QueueDepthHigh NO dispara con lag + PEL por debajo del umbral
   - interval: "30s"
     input_series:
-      - series: 'redis_stream_group_lag{stream="stream:pdf-processing",group="extraction-workers"}'
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
         values: '0 100 200 300 400 450 480 490 499 480 470 460 450'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 2 4 6 8 10 12 14 16 18 20 22 24'
     alert_rule_test:

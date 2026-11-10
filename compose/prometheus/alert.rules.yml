@@ -2,8 +2,7 @@
 # Cada alerta trae la ACCION en annotations (description/runbook), no solo el sintoma.
 # Senales:
 # - Queue/PEL/DLQ via redis-exporter con check-single-streams (redis_stream_length).
-#   PEL usa redis_stream_group_pending si el exporter lo expone; si queda NoData,
-#   ver nota DocsNonTerminal/PEL abajo (requiere exporter custom en S3).
+#   PEL usa redis_stream_group_pending si el exporter lo expone.
 # - HighErrorRate/LatencyP95High via Traefik (doc-service solo expone 2 counters,
 #   sin http_requests_total ni histograma — deuda S3, no se toca Go en S2).
 # - MinioDiskHigh via /minio/v2/metrics/cluster (MINIO_PROMETHEUS_AUTH_TYPE=public).
@@ -21,8 +20,12 @@ groups:
         #   - lag (entradas no entregadas) cae a 0 apenas el reader prefetchea,
         #     aunque queden cientos de documentos sin procesar: la alerta
         #     resolvia con 443/700 pendientes.
-        # El backlog real es lag + PEL = no entregado + entregado sin confirmar.
-        expr: (redis_stream_group_lag{stream="stream:pdf-processing",group="extraction-workers"} + redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
+        #   - En Redis 7.2.16 el campo lag de XINFO GROUPS es nil (el exporter
+        #     lo mapea a 0), por eso no se usa redis_stream_group_lag.
+        # El backlog real es no entregado + entregado sin confirmar.
+        #   no entregado = redis_stream_entries_added_total - redis_stream_group_entries_read
+        #   entregado sin confirmar = PEL (redis_stream_group_messages_pending)
+        expr: (redis_stream_entries_added_total{stream="stream:pdf-processing"} - ignoring(group) redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"} + ignoring(group) redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
         for: 5m
         labels:
           severity: warning
@@ -106,19 +109,6 @@ groups:
           summary: "Disco de MinIO sobre 85 por ciento (riesgo de rechazar escrituras)"
           description: "Actuar ya: purgar huerfanos, verificar lifecycle y ampliar el volumen. Por encima de 85 por ciento no hay margen para una rafaga normal de PDFs de 25 MB. Ver runbook."
           runbook_url: "infra/runbooks/minio-espacio.md"
-
-      - alert: DocsNonTerminal
-        # Deuda honestamente declarada: ningun exporter expone hoy este gauge.
-        # El reconciliador (S3) debe exponer docservice_docs_non_terminal.
-        # Hasta entonces: conteo manual via mongosh (ver evidencia S1-P1-13-alerts.txt).
-        expr: docservice_docs_non_terminal > 10
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Documentos en estado intermedio sobre umbral por 15m"
-          description: "Revisar reconciliador; forzar sweep. Si la metrica esta en NoData, contar manual: db.documents.countDocuments({status: {$in: ['UPLOADED','PROCESSING']}})."
-          runbook_url: "infra/runbooks/restore-mongo.md"
 
   - name: s4-p1-02-business
     interval: 30s
