@@ -449,6 +449,11 @@ services:
   # Cuando exista doc-service se activa el router /api/v2/documents (labels).
   traefik:
     image: traefik:v3.7
+    user: "65532"
+    # Provider Docker: el usuario 65532 debe pertenecer al grupo del socket del
+    # host (varia por maquina: getent group docker). Sin esto Traefik no puede
+    # leer labels, los routers de los servicios no se crean y todo responde 404.
+    group_add: ["${DOCKER_GID:?definir en .env}"]
     profiles: ["full"]
     <<: *hardening
     read_only: true
