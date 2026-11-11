@@ -1,62 +1,36 @@
-# Runbook: MongoDB TTL + Gracia (S1-P1-11v)
+# Runbook: MongoDB TTL + gracia (S1-P1-11v)
 
-## Configuración Actual
+## Estado verificado — 2026-11-10
 
-- **Colección**: `documents`
-- **Índice TTL**: `expires_at_1` (TTL index, `expireAfterSeconds: 0`)
-- **Campo TTL**: `expires_at` (ISODate)
+MongoDB tiene los índices `_id_`, `status_1`, `updated_at_1` y `expires_at_1` (`expireAfterSeconds: 0`); existe una migración registrada. En la comprobación en vivo no había `PENDING_UPLOAD` ni documentos en riesgo a 20 o 5 minutos.
 
-## Cálculo de `expires_at`
+## Cálculo real
 
-```
-expires_at = ahora + ventana_de_subida + gracia
-```
+El código corregido en `doc-service` establece `expires_at = created_at + ventana_de_subida (15 min) + DOC_UPLOAD_GRACE_MIN (30 min) = 45 min`. Con `DOC_UPLOAD_GRACE_MIN=30`, `RECONCILE_INTERVAL_MIN=10` y `MIN_SAFETY_AGE_MIN=15`:
 
-Donde:
-- **ventana_de_subida**: Tiempo máximo que el cliente tiene para subir el PDF (ej. 15 min)
-- **gracia**: Buffer ≥ **2 × intervalo_del_reconciliador**
-  - Reconciliador v1: corre cada **5–10 min**
-  - → gracia mínima = **2 × 10 min = 20 min**
-  - → TTL efectivo no menor a **~25–30 min** tras vencer la ventana
+- Margen posterior al fin de la ventana: `30 min`.
+- Umbral requerido por la regla `2 × intervalo`: `2 × 10 = 20 min`.
+- El margen posterior cumple: `30 >= 20 min`. La validación compara la gracia posterior a la ventana con `2 × RECONCILE_INTERVAL_MIN`.
 
-## Fórmula Implementada por P2 (issue #10)
+El contenedor en ejecución aún no incorpora este cálculo: hay que reconstruirlo para aplicar el fix. Hasta entonces, no asumir que el servicio vivo calcula 45 minutos.
 
-```go
-// En migraciones Go (internal/repository/mongo/migrations.go)
-const (
-    uploadWindowMinutes = 15
-    graceMultiplier     = 2
-    reconciliatorIntervalMinutes = 10 // configuración del job
-)
+El riesgo está latente: la consulta en vivo registró cero documentos en los rangos de riesgo. El TTL recolecta documentos vencidos; la decisión de transición corresponde al reconciliador. No crear índices manualmente: son gestionados por migraciones.
 
-expiresAt := time.Now().Add(
-    time.Duration(uploadWindowMinutes + graceMultiplier*reconciliatorIntervalMinutes) * time.Minute
-)
+## Comprobación operativa
+
+Ejecutar en la base `documents` para comprobar candidatos cuyo vencimiento esté a menos de 20 minutos:
+
+```javascript
+const now = new Date();
+db.documents.countDocuments({
+  status: "PENDING_UPLOAD",
+  expires_at: { $lt: new Date(now.getTime() + 20 * 60 * 1000) }
+}); // esperado: 0
 ```
 
-**Resultado**: `expires_at = ahora + 35 min` (15 + 2×10)
-
-## Verificación de Riesgo Crítico (SPEC §4)
-
-> "El TTL no decide el expirado: decide el reconciliador."
-
-- El job de reconciliación corre cada 5–10 min
-- Hace `HEAD` del objeto en MinIO ANTES de que el TTL borre el documento
-- Si objeto existe → promociona a `UPLOADED` y limpia/extiende `expires_at`
-- Si objeto NO existe → marca `UPLOAD_EXPIRED`
-- **Luego** el TTL recolecta registros YA DECIDIDOS
-
-## Chequeo: Sin Documentos con Gracia Insuficiente
-
-```bash
-# Verificar que todos los PENDING_UPLOAD tienen expires_at > ahora + 20 min
-db.documents.find({
-    status: "PENDING_UPLOAD",
-    expires_at: { $lt: new Date(Date.now() + 20*60*1000) }
-})
-# Debe retornar 0 documentos
-```
+Confirmar también los índices con `db.documents.getIndexes()` y que `schema_versions` contenga al menos una migración aplicada.
 
 ## Evidencia
-- `docs/evidencias/S1/S1-P1-11-indexes.txt` (salida `getIndexes()` + `rs.status()` + docs PENDING_UPLOAD)
-- `infra/runbooks/mongo-ttl.md` (documentado)
+
+- `docs/evidencias/S1/S1-P1-11-indexes.txt` — inspección histórica de índices.
+- Verificación en vivo: 2026-11-10; índices TTL, `schema_versions=1`, `PENDING_UPLOAD=0`, `risk_20min=0`, `risk_5min=0`.

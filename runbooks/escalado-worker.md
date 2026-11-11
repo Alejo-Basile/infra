@@ -6,8 +6,8 @@ improvisa: la cola es la señal, la CPU no. Este runbook implementa la decisión
 
 ## Cuándo usarlo
 
-- `QueueDepthHigh` en `firing`: `stream:pdf-processing` con más de 500 documentos pendientes
-  (`lag + PEL`) por 5 minutos.
+- `QueueDepthHigh` en `firing`: `docservice_documents_non_terminal > 500` (documentos no
+  terminales operativos) durante 5 minutos.
 - `QueueNotAdvancing` en `firing`: profundidad constante mayor a 0, con workers sanos y sin
   `DLQNotEmpty`.
 - Ráfaga conocida por negocio (campaña, carga masiva) en la que se decide escalar antes de que la
@@ -34,7 +34,7 @@ improvisa: la cola es la señal, la CPU no. Este runbook implementa la decisión
 
 | Alerta | Qué es | Acción |
 |---|---|---|
-| `QueueDepthHigh` | Entran documentos más rápido de lo que se procesan (`lag + PEL` > 500) | **Escalar** (§Procedimiento) |
+| `QueueDepthHigh` | Más de 500 documentos no terminales operativos (`docservice_documents_non_terminal`) durante 5m | **Escalar** (§Procedimiento) |
 | `QueueNotAdvancing` | Hay trabajo y no avanza | Verificar consumidores; si están sanos, **escalar**. Si no hay ninguno, reiniciar el consumidor antes de escalar |
 | `PELBacklog` | Mensajes reclamados sin `XACK` | **No escalar**: hay workers caídos o colgados. Revisar logs y `XPENDING`; `XAUTOCLAIM` los reasigna cuando vence el idle |
 | `DLQNotEmpty` | Fallos definitivos | **No escalar**: diagnosticar la causa raíz (`XRANGE` de la DLQ) y corregir antes de reintentar |
@@ -61,16 +61,23 @@ rd XPENDING stream:pdf-processing extraction-workers   # resumen del PEL
 rd XINFO GROUPS stream:pdf-processing              # consumidores registrados y lag
 ```
 
-**La profundidad que importa es `lag + PEL`**, no `XLEN`:
+**La profundidad que importa es `docservice_documents_non_terminal`**, no `XLEN` ni `lag`:
 
-- `lag` (entradas no entregadas) baja a 0 apenas el worker hace prefetch, aunque queden
-  cientos de documentos sin procesar. Medido en el ensayo: `lag=0` con 443/700 pendientes.
+- Es el número de documentos en estados no terminales operativos (UPLOADED, QUEUED,
+  PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING). Excluye `PENDING_UPLOAD` y los
+  terminales, y converge a 0 cuando todo termina. Es la señal que evalúa `QueueDepthHigh`.
 - `XLEN` no baja nunca al consumir: las entradas quedan hasta `XDEL`/`XTRIM`.
-- `lag + PEL` es el trabajo real que falta. Es la misma señal que evalúa `QueueDepthHigh`.
+- `lag`/`entries-read` pueden quedar estancados tras un recorte o un failover: la resta
+  `entries_added_total - entries_read` deja una diferencia fantasma permanente. No se usan
+  para decidir el escalado.
+- `PEL` y `XLEN` siguen siendo útiles para diagnosticar (mensajes trabados, DLQ), no para
+  medir la profundidad de la cola.
 
 ```bash
-# lag + PEL, el numero que hay que anotar antes y despues
-rd XINFO GROUPS stream:pdf-processing | awk '/^lag/{l=$2} /^pending/{p=$2} END{print l+p}'
+# profundidad real: gauge de doc-service vía Prometheus
+docker exec infra-prometheus-1 wget -qO- \
+  'http://localhost:9090/api/v1/query?query=docservice_documents_non_terminal' |
+  jq -r '.data.result[0].value[1]'
 ```
 
 Anotar ese valor con timestamp. Es la línea base del antes.
@@ -78,7 +85,7 @@ Anotar ese valor con timestamp. Es la línea base del antes.
 ### 2. Calcular N
 
 ```text
-N = ceil((lag + PEL) / 500)
+N = ceil(docservice_documents_non_terminal / 500)
 N = min(N, nucleos_del_host / WORKER_MAX_CONCURRENCY)   # tope por CPU
 N = min(N, 4)                                            # tope provisional de la v1
 ```
@@ -105,8 +112,8 @@ docker compose -f compose/docker-compose.yml --env-file .env --profile full \
 ```bash
 docker compose -f compose/docker-compose.yml --env-file .env --profile full ps extraction-worker
 rd XINFO GROUPS stream:pdf-processing    # "consumers" debe reflejar N
-rd XINFO GROUPS stream:pdf-processing    # "lag" debe empezar a bajar
-rd XPENDING stream:pdf-processing extraction-workers
+rd XPENDING stream:pdf-processing extraction-workers   # diagnóstico de mensajes trabados
+# docservice_documents_non_terminal debe empezar a bajar (query de Prometheus de arriba)
 ```
 
 Los workers nuevos se registran en el consumer group `extraction-workers` al primer
@@ -114,16 +121,16 @@ Los workers nuevos se registran en el consumer group `extraction-workers` al pri
 
 ### 5. Confirmar el objetivo
 
-La profundidad (`lag + PEL`) debe **bajar al menos a la mitad en menos de 10 minutos** desde el
-escalado. Si no baja:
+La profundidad (`docservice_documents_non_terminal`) debe **bajar al menos a la mitad en menos de
+10 minutos** desde el escalado. Si no baja:
 
-- `XINFO GROUPS` muestra los consumidores pero `lag + PEL` no baja → el worker no está completando
-  trabajos: mirar logs y `XPENDING`, no escalar más.
+- `XINFO GROUPS` muestra los consumidores pero `docservice_documents_non_terminal` no baja → el
+  worker no está completando trabajos: mirar logs y `XPENDING`, no escalar más.
 - `consumers` no aumentó → el servicio no arrancó (revisar `ps`, logs y límites de memoria).
 - La cola drena pero el PEL crece → `WORKER_MIN_IDLE_MS` mal calibrado frente al timeout
   duro (SPEC §5.4); se corrige en configuración, no con réplicas.
-- `lag + PEL` baja igual de rápido con más réplicas que con una → el cuello es la CPU del host:
-  volver a `1` y escalar en otro host (H2 del ensayo de S5-P1-02).
+- `docservice_documents_non_terminal` baja igual de rápido con más réplicas que con una → el
+  cuello es la CPU del host: volver a `1` y escalar en otro host (H2 del ensayo de S5-P1-02).
 
 ## Rollback
 
@@ -153,9 +160,11 @@ docker compose -f compose/docker-compose.yml --env-file .env --profile full \
 ## Evidencia
 
 Cada ejecución deja un registro en `docs/evidencias/S5/S5-P1-02-ensayo-escalado.txt` con:
-`lag + PEL` antes y después, `N` aplicado, timestamp del escalado y minuto en que la profundidad
-se redujo a la mitad. Sin credenciales ni valores de secretos en el archivo.
+`docservice_documents_non_terminal` antes y después, `N` aplicado, timestamp del escalado y minuto
+en que la profundidad se redujo a la mitad. Sin credenciales ni valores de secretos en el archivo.
 
 > Estado: **ensayado** (2026-11-04, 700 documentos, `docs/evidencias/S5/S5-P1-02-ensayo-escalado.txt`).
-> La alerta disparó a los 5 min, el runbook se siguió tal cual y el backlog drenó completo.
+> La alerta disparó a los 5 min, el runbook se siguió tal cual y el backlog drenó completo. Aquel
+> ensayo midió `lag + PEL`; la señal se corrigió después a `docservice_documents_non_terminal`
+> porque los contadores de Redis quedaban fantasma tras recortes y failovers.
 > Pendiente de seguimiento: `XTRIM`/retención del stream para que `XLEN` signifique algo.

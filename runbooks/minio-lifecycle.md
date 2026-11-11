@@ -6,7 +6,12 @@ cambiar las reglas de expiración, y cómo revertirlas. Las retencias vigentes s
 `plan-S2-P1.md` §4; ajustables por env sin editar scripts).
 
 Evidencia de la verificación: `docs/evidencias/S2/S1-P1-06-lifecycle.txt`
-(sección T-06, ejecutada en un MinIO aislado el 2026-11-06).
+(sección T-06, ejecutada en un MinIO aislado el 2026-11-06) y
+`docs/evidencias/S5/S5-P1-07-lifecycle-minio.txt` (staging, 2026-11-09).
+
+Los valores de 7 y 30 días son **provisionales** y deben calibrarse con datos
+reales de carga y retención antes de considerarlos definitivos. Se pueden ajustar
+por entorno mediante `RAW_PDFS_EXPIRE_DAYS` y `EXTRACTED_TXT_EXPIRE_DAYS`.
 
 ## Quick path
 
@@ -119,6 +124,10 @@ un objeto que "ya no está".
   documentación de MinIO avisa que puede detectar la elegibilidad **después** de
   vencer el período. Verificado en T-06: `mc admin scanner start` no existe; la
   fecha que devuelve `mc stat` en `Expiration` es la referencia confiable.
+  Para una prueba puntual de purga bajo demanda puede usarse un job `expire`
+  mediante `mc batch start <alias> <jobfile>` (la expiración se aplica
+  inmediatamente durante el job); esto no sustituye el scanner pasivo, que
+  sigue siendo la vía de producción para las reglas lifecycle de 7/30 días.
 
 ### (b) Borrado tras completar el procesamiento — el estado REAL del código
 
@@ -143,6 +152,38 @@ documento no se puede completar. La expiración por edad no distingue estados de
 la SAGA; el borrado "por aplicación" (que sería preciso) hoy no existe para ese
 bucket. Ante un backlog > 7 días, revisar este runbook junto con
 `runbooks/minio-espacio.md` antes de tocar retenciones.
+
+### Coherencia con el reconciliador y Mongo TTL
+
+La expiración de `raw-pdfs` a los 7 días es una **recolección posterior**, no el
+mecanismo que decide el resultado de una carga. El reconciliador detecta los
+`PENDING_UPLOAD` vencidos consultando MinIO con `HEAD` cada 5–10 minutos
+(SPEC §6.5); el TTL de Mongo solo recolecta documentos cuya decisión ya fue
+registrada (SPEC §4). La secuencia es: decisión del reconciliador → eventual
+recolección del registro por TTL y, de forma independiente, recolección de
+objetos por edad mediante lifecycle. Lifecycle no consulta el estado del
+documento y su scanner no ofrece un plazo exacto.
+
+**Regla operativa: nunca acortar la retención por debajo de la ventana de
+decisión del reconciliador.** Una retención más breve puede borrar el objeto
+antes de que el `HEAD` permita decidir correctamente; es un riesgo crítico
+identificado en SPEC §12. Los valores 7/30 días siguen siendo provisionales,
+ajustables por entorno y pendientes de calibración con datos reales.
+
+### Abort de multipart incompletos (mecanismo nativo de MinIO)
+
+MinIO no implementa `AbortIncompleteMultipartUpload` como acción de lifecycle:
+el servidor descarta ese campo de la regla (minio/minio#19115, comportamiento
+intencional). La versión fijada de `mc` (`2025.7.21`) tampoco ofrece una opción
+de abort en `ilm rule add` o `ilm rule edit`. No se debe simular ni agregar una
+regla de bucket inexistente.
+
+La política de abort observada en staging es el recolector nativo, configurado
+a nivel de servidor: `api stale_uploads_expiry=24h` y
+`api stale_uploads_cleanup_interval=6h`. Es provisional, aplica por igual a
+`raw-pdfs` y `extracted-txt`, y no se modificó la configuración del servidor.
+La evidencia de configuración y de que el campo de lifecycle no persiste está
+en `docs/evidencias/S5/S5-P1-07-lifecycle-minio.txt`.
 
 ---
 

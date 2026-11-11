@@ -1,6 +1,17 @@
 # Middlewares y routers declarativos (file provider) — S0-P1-03 / S1-P1-16
 http:
   middlewares:
+    # Static key `api-v2` creates one global bucket; per-client identity (IP/API key)
+    # is deferred to S7 per ADR-0005. This minimal version provides gateway 429s.
+    rate-limit:
+      forwardAuth:
+        address: "http://ratelimitd:8090/check?key=api-v2&rate=10&burst=20"
+        authResponseHeaders:
+          - Retry-After
+          - X-RateLimit-Remaining
+          - X-RateLimit-Retry-After
+          - X-RateLimit-Degraded
+
     # Limite de tamano SOLO para endpoints JSON (SPEC §3.1 / ADR-0011):
     # el PDF NO pasa por el gateway (subida directa a MinIO via URL
     # prefirmada POST); el limite real del PDF vive en la politica

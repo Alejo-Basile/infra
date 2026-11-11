@@ -1,0 +1,83 @@
+S5-P1-09 — Alertas accionables (T4)
+Fecha de verificación: 2026-11-10
+
+## Reglas y pruebas deterministas
+
+Comando:
+docker run --rm -v "$PWD/infra/compose/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.53.4 check rules /etc/prometheus/alert.rules.yml
+Salida observada:
+Checking /etc/prometheus/alert.rules.yml
+SUCCESS: 19 rules found
+
+Comando:
+docker run --rm -v "$PWD/infra/compose/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/s4-p1-02.rules.test.yml /etc/prometheus/tests/s4-p1-03.rules.test.yml /etc/prometheus/tests/s5-p1-04.rules.test.yml /etc/prometheus/tests/s5-p1-09.rules.test.yml
+Salida observada:
+Unit Testing: s4-p1-02.rules.test.yml — SUCCESS
+Unit Testing: s4-p1-03.rules.test.yml — SUCCESS
+Unit Testing: s5-p1-04.rules.test.yml — SUCCESS
+Unit Testing: s5-p1-09.rules.test.yml — SUCCESS
+
+Comando:
+REDIS_TEST_PASSWORD=alert-test-only docker compose --env-file infra/.env -f infra/compose/docker-compose.test-alerts.yml config
+Salida observada:
+Extracto exacto de la salida:
+name: s4p103-test
+  alertmanager-test:
+    image: prom/alertmanager:v0.34.1
+  prometheus-test:
+    image: prom/prometheus:v2.53.4
+  redis-exporter-test:
+    image: oliver006/redis_exporter:v1.93.0
+  redis-test:
+    image: redis:7.2
+El valor REDIS_TEST_PASSWORD usado fue solo de prueba (`alert-test-only`).
+
+## Señales observadas en el stack activo
+
+Comando:
+docker exec infra-extraction-worker-1 curl -fsS http://localhost:8081/metrics
+Salida observada relevante:
+worker_documents_total{outcome="rejected"} 6
+worker_dlq_total{cause="INVALID_CONTRACT"} 6
+worker_stream_depth{stream="stream:pdf-processing"} 2028
+worker_pel_pending{group="extraction-workers"} 0
+No apareció una métrica de histograma de duración de extracción en esa salida.
+
+Comando:
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=redis_sentinel_switch_master_total%20or%20redis_aof_enabled%20or%20traefik_tls_certs_not_after%20or%20worker_extraction_duration_seconds_bucket'
+Salida observada relevante:
+redis_aof_enabled{instance="redis-exporter:9121",job="redis-exporter"} 1
+traefik_tls_certs_not_after para api.localhost y s3.localhost
+La consulta no devolvió redis_sentinel_switch_master_total ni worker_extraction_duration_seconds_bucket.
+
+Comando:
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/alerts' | jq -c '.data.alerts[] | select(.labels.alertname=="DLQNotEmpty") | {labels: .labels, state: .state, activeAt: .activeAt}'
+Salida observada:
+DLQNotEmpty state=firing; stream=stream:pdf-processing-dlq.
+
+Comando:
+docker exec infra-alertmanager-1 wget -qO- 'http://localhost:9093/api/v2/alerts' | jq -c '.[] | select(.labels.alertname=="DLQNotEmpty") | {labels: .labels, status: .status.state}'
+Salida observada:
+DLQNotEmpty status=active; stream=stream:pdf-processing-dlq.
+
+## Prueba integrada aislada
+
+Comando:
+bash infra/scripts/test-chain-alerts.sh
+Salida observada de la ejecución completa:
+Las diez familias sintéticas QueueDepthHigh, PELBacklog, ExtractionErrors, SentinelFailoverObserved, RedisPersistenceOrReplicaIssue, HighErrorRate, TraefikRateLimited, AcmeCertificateExpiring, MinioDiskHigh, DocsStuck y DocServiceNotReady reportaron `FIRING; Alertmanager active`.
+QueueNotAdvancing: FIRING; Alertmanager recibió QueueNotAdvancing.
+DLQNotEmpty: FIRING; Alertmanager recibió DLQNotEmpty.
+XLEN del stream aislado permaneció en 1 en cinco lecturas consecutivas. El script borró los dos mensajes de prueba y detuvo los contenedores sin borrar volúmenes.
+
+Una ejecución anterior no alcanzó QueueNotAdvancing porque la comprobación ocurrió antes del siguiente ciclo de evaluación; se amplió la espera a 330s (ventana de 5m más margen para intervalo de evaluación de 30s). Otra ejecución consultó DLQ antes de un ciclo completo; el script ahora espera 45s para scrape, evaluación y envío a Alertmanager.
+
+Importante: las diez familias se dispararon con métricas fixture en el stack aislado, no mediante fallas reales en los servicios del stack staging. Es evidencia de reglas de prueba y transporte Prometheus→Alertmanager, no de que las diez señales operativas reales estén instrumentadas y disparen.
+
+## Pendiente de staging
+
+- Ejecutar de nuevo `bash infra/scripts/test-chain-alerts.sh` y conservar salida completa de ambas alertas y recepción en Alertmanager.
+- Para cada familia, provocar el umbral de forma controlada en el stack staging real y consultar Prometheus `/api/v1/alerts` y Alertmanager `/api/v2/alerts`; el fixture aislado no sustituye esta aceptación.
+- Ejecutar cada runbook enlazado una vez y guardar comandos/resultados sin credenciales, IDs de documentos ni contenido sensible.
+- Desplegar Grafana con perfil `full`, comprobar `/api/health` y el dashboard `s5-p1-alertas`; verificar específicamente datos de latencia de extracción y estado/evento Sentinel cuando esos exporters estén disponibles.
+- El test integrado dejó volúmenes Docker `s4p103-test_*` retenidos; el script solo detiene los contenedores y no los elimina.

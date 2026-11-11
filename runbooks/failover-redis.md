@@ -112,6 +112,20 @@ Qué mirar:
 - `XPENDING` con entradas viejas significa que hay trabajos reclamados por un worker
   que murió: los recupera `XAUTOCLAIM`, no este runbook.
 
+## 4.1 `WAIT` después de `XADD`
+
+En el relay, ejecutar `WAIT 1 <timeout_ms>` inmediatamente después de `XADD` y en la
+misma conexión. `WAIT` solo reduce la ventana de pérdida mientras la replicación
+asíncrona alcanza al menos una réplica; no garantiza por sí mismo la retención frente a
+cualquier fallo. La convergencia la garantiza el reconciliador (SPEC §6.5). En la
+verificación de staging del 2026-11-10, `WAIT 1 5000` devolvió `1` después de un `XADD`.
+
+## 4.2 `min-idle-time` del consumer group
+
+Para el equipo del worker: configurar `min-idle-time >= 2 x job_timeout`; con el timeout
+duro de 60 s, usar 120 s como mínimo (SPEC §5.4). Así un worker lento conserva su mensaje
+en vuelo y otra instancia no lo reclama antes de que termine.
+
 Prueba de que el cliente sigue **escribiendo** en el maestro nuevo (la que distingue un
 cliente Sentinel-aware de uno de dirección fija):
 
@@ -203,15 +217,17 @@ que el nodo de `REDIS_HOST` volvió a ser maestro (`ROLE` = `master`).
 `redis_stream_entries_added_total` es un **contador acumulado**: cuenta cada `XADD` desde que
 arrancó Redis y nunca baja cuando las entradas se borran del stream (`XDEL`, `MAXLEN`).
 `redis_stream_group_entries_read` cuenta las entradas entregadas a **ese** grupo. La regla
-resta ambos:
+anterior restaba ambos:
 
 ```
 entries_added_total - group_entries_read + messages_pending > 500
 ```
 
 Cuando el stream se recorta (o el grupo se recrea o hereda un estado de un failover), la
-diferencia queda **permanente**: el backlog real ya se drenó, pero el contador no vuelve a 0
-y la alerta queda en `firing` para siempre.
+diferencia queda **permanente**: el backlog real ya se drenó, pero el contador no vuelve a 0.
+`QueueDepthHigh` ya no depende de ese contador ni de `lag`: usa
+`docservice_documents_non_terminal`, que converge a 0 cuando los documentos llegan a un
+estado terminal. Por eso el fantasma resuelve sin reparar el grupo.
 
 Cómo confirmar que es fantasma y no backlog:
 
@@ -226,17 +242,16 @@ docker exec infra-mongo-1 sh -c 'mongosh --quiet ... --eval \
 #    -> solo COMPLETED
 ```
 
-Reparación (realinea los contadores; re-entrega entradas ya procesadas y la deduplicación
-por documento las descarta):
+Mantenimiento opcional: realinear el grupo vuelve a entregar entradas ya procesadas y la
+deduplicación por documento las descarta. No es requisito para que `QueueDepthHigh` resuelva.
 
 ```bash
 docker exec "$NEW" sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) \
   redis-cli XGROUP SETID stream:pdf-processing extraction-workers 0 ENTRIESREAD 0'
 ```
 
-Después el worker vuelve a recibir las entradas y `entries_read` se realinea con
-`entries_added_total`; la alerta resuelve cuando el backlog real queda bajo el umbral durante
-`for: 5m`. Costo: el worker reprocesa en lote lo ya completado (deduplicación por documento).
+Después el worker vuelve a recibir las entradas. Costo: el worker reprocesa en lote lo ya
+completado (deduplicación por documento).
 
 ## 5. Logs a mirar
 

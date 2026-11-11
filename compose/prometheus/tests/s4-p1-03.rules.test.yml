@@ -71,11 +71,10 @@ tests:
               stream: "stream:pdf-processing-dlq"
             exp_annotations:
               description: "Revisar XRANGE, corregir causa raiz y reintentar con la herramienta de replay. No borrar sin diagnosticar."
-              runbook_url: "infra/runbooks/failover-redis.md"
+              runbook_url: "infra/runbooks/errores-extraccion.md"
               summary: "DLQ con mensajes (fallos definitivos)"
 
-  # Test 5: QueueDepthHigh DISPARA cuando lag + PEL > 500 sostenido 5m
-  # (el backlog real: no entregado + entregado sin confirmar)
+  # Test 5: QueueDepthHigh DISPARA cuando XLEN > 500 sostenido 5m.
   - interval: "30s"
     input_series:
       - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
@@ -84,6 +83,8 @@ tests:
         values: '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300 300'
+      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600'
     alert_rule_test:
       - eval_time: "6m"
         alertname: QueueDepthHigh
@@ -92,8 +93,8 @@ tests:
               severity: "warning"
               stream: "stream:pdf-processing"
             exp_annotations:
-              summary: "Cola pdf-processing con mas de 500 documentos pendientes por 5m"
-              description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N. Ojo: en un host de 4 cores con WORKER_MAX_CONCURRENCY=4 un worker ya satura CPU y escalar no aumenta el throughput. Ver runbook de escalado."
+              summary: "XLEN de stream:pdf-processing supera 500 por 5m"
+              description: "Comparar XLEN con XPENDING/lag y documentos no terminales antes de escalar. Si es backlog real, escalar workers con docker compose --profile full up -d --scale extraction-worker=N."
               runbook_url: "infra/runbooks/escalado-worker.md"
 
   # Test 6: QueueDepthHigh NO dispara si el backlog supera 500 hace menos de 5m
@@ -105,6 +106,8 @@ tests:
         values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 10 20 30 40 50 100 200 300 400 500 600 700'
+      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+        values: '100 100 100 100 100 100 100 100 100 100 600 600 600'
     alert_rule_test:
       - eval_time: "6m"
         alertname: QueueDepthHigh
@@ -119,6 +122,8 @@ tests:
         values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
       - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
         values: '0 2 4 6 8 10 12 14 16 18 20 22 24'
+      - series: 'redis_stream_length{stream="stream:pdf-processing"}'
+        values: '450 450 450 450 450 450 450 450 450 450 450 450 450'
     alert_rule_test:
       - eval_time: "6m"
         alertname: QueueDepthHigh

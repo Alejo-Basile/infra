@@ -10,7 +10,17 @@ BUCKET="raw-pdfs"
 ARN="arn:minio:sqs:us-east-1:${TARGET}:webhook"
 
 : "${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}"
+# Password root: Docker secret via *_FILE (S2-P1-01) o, como fallback, la
+# variable directa. El compose la monta como MINIO_ROOT_PASSWORD_FILE.
+if [ -n "${MINIO_ROOT_PASSWORD_FILE:-}" ]; then
+  MINIO_ROOT_PASSWORD="$(cat "${MINIO_ROOT_PASSWORD_FILE}")"
+fi
 : "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}"
+# Token del webhook: Docker secret via *_FILE (S2-P1-01) o, como fallback,
+# variable de entorno directa. El compose NO interpola el valor.
+if [ -n "${MINIO_WEBHOOK_SECRET_FILE:-}" ]; then
+  MINIO_WEBHOOK_SECRET="$(cat "${MINIO_WEBHOOK_SECRET_FILE}")"
+fi
 : "${MINIO_WEBHOOK_SECRET:?MINIO_WEBHOOK_SECRET requerido}"
 : "${DOC_SERVICE_WEBHOOK_URL:?DOC_SERVICE_WEBHOOK_URL requerido}"
 

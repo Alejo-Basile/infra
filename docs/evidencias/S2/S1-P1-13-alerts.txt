@@ -1,15 +1,18 @@
-# S1-P1-13 — Alertas accionables — evidencia sintaxis + firing (2026-11-06, re-verificado 2026-11-07)
+# S1-P1-13 — Alertas accionables — evidencia sintaxis + firing (2026-11-06, re-verificado 2026-11-08)
 
 ## Resumen ejecutivo
 - 12 reglas activas en `alert.rules.yml` (retirada `DocsNonTerminal` obsoleta, T-01).
-- **4 alertas firing real** a 2026-11-07 (`QueueDepthHigh`, `MinioDiskHigh`,
-  `MinioDiskCritical`, `DLQNotEmpty`).
+- `QueueDepthHigh` corregida para medir documentos no terminales; firing real y recuperación
+  comprobados el 2026-11-08 (§8).
+- `DocsStuck` y `DocsAccumulating` también tuvieron firing real y recuperación (§8).
+- 2026-11-09: `RedisMemHigh`, `PELBacklog`, `QueueNotAdvancing`, `HighErrorRate` y
+  `LatencyP95High` se provocaron y resolvieron; `DLQNotEmpty` se recuperó. La recuperación de
+  `MinioDiskHigh/Critical` quedó **bloqueada** por presión del disco del host (§9).
 - **3 defectos** descubiertos al provocar:
   1. drift de métrica `docservice_business_*` vs `docservice_documents_*`
      (DocsStuck/DocsAccumulating en NoData) — **fix verificado en vivo** (§6.3);
-  2. `redis_stream_group_lag` que reportaba 0 aunque exista backlog real
-     (QueueDepthHigh no mide backlog) — el grupo volvió a medir, pero la alerta ahora
-     quema un **contador fantasma** sin backlog real (§7.2);
+  2. `redis_stream_group_lag` que reportaba 0 aunque exista backlog real — `QueueDepthHigh`
+     se corrigió para medir el backlog de negocio; el lag heredado sigue siendo fantasma (§8);
   3. el worker en modo directo queda **muerto** (`READONLY`) cuando el maestro original
      vuelve como réplica tras un failover, sin que ninguna alerta lo detecte (§7.1).
 - El resto de alertas requiere provocaciones riesgosas o con ventana de 5-17 min.
@@ -107,6 +110,10 @@ promtool check config /etc/prometheus/prometheus.yml  → SUCCESS (1 rule file)
 ---
 
 ## 5. Pendiente para cerrar DoD (S1-P1-13) — estado 2026-11-07
+
+> **Actualización 2026-11-09:** los puntos 1 y 5 quedaron cerrados en §8; los puntos 3 y 4
+> (salvo `MinioDiskHigh/Critical`) quedaron cerrados en §9. La recuperación de
+> `MinioDiskHigh/Critical` sigue bloqueada por presión del disco del host (§9.6).
 
 1. **Defecto 2.1 — FIX VERIFICADO en vivo, falta la prueba de firing.**
    Causa raíz refinada: la imagen que corría era `ghcr.io/alejo-basile/doc-service:latest`
@@ -234,6 +241,71 @@ descarta). **Pendiente de sign-off**: implica una ráfaga de reprocesamiento.
 - Alertas activas: `QueueDepthHigh` (fantasma, §7.2), `MinioDiskHigh`,
   `MinioDiskCritical`, `DLQNotEmpty` (13 mensajes).
 
+## 8. Cierre T-02 (2026-11-08): regla corregida y firing real de negocio
+
+### Regla corregida y verificación
+
+`QueueDepthHigh` dejó de derivar la cola de contadores acumulados. Antes:
+
+```promql
+(redis_stream_entries_added_total{stream="stream:pdf-processing"} - ignoring(group) redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"} + ignoring(group) redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
+```
+
+Ahora usa `docservice_documents_non_terminal > 500` (`for: 5m`, `severity: warning`). La resta
+acumulada era un contador fantasma: con pipeline sano, `entries_added_total=2020`,
+`entries_read=1297`, `pending=0`, `last-delivered-id=1794085958420` ==
+`last-generated-id=1794085958420`, `lag=723`, `docservice_documents_non_terminal=0` y Mongo
+1425/1425 `COMPLETED`. La diferencia acumulada no vuelve a cero y `lag` queda estancado tras
+recortes/failover.
+
+Después de recargar Prometheus, `QueueDepthHigh` pasó de active (`startsAt`
+`2026-11-08T20:53:41.869Z`) a inactive con `non_terminal=0`, aunque `lag` siguió en 723:
+el fantasma dejó de disparar sin reparar el grupo.
+
+```text
+promtool check rules: SUCCESS: 12 rules found
+promtool test rules /etc/prometheus/tests/s4-p1-02.rules.test.yml: SUCCESS
+```
+
+Los tests cubren 450 (no dispara), 501 (dispara) y la regresión fantasma (Redis 2020/1297/0,
+IDs iguales y `non_terminal=0`, sin alerta). `infra/runbooks/escalado-worker.md` y
+`infra/runbooks/failover-redis.md` §4 quedaron alineados: la alerta se mide con
+`docservice_documents_non_terminal`; `XGROUP SETID ... ENTRIESREAD 0` es mantenimiento opcional,
+no un requisito para resolverla.
+
+### Ensayo live: firing y recuperación (2026-11-08 UTC)
+
+El worker `infra-extraction-worker-1` se detuvo a las 23:10:30. Entre 23:10:30 y 23:10:36 se
+crearon 520 documentos por `POST /api/v2/documents` y se subió un PDF válido de 609 bytes
+(`platform-services/tests/fixtures/pdf/baseline-0001.pdf`). IDs `s5p102-t17-0001`..
+`s5p102-t17-0520`; `XLEN stream:pdf-processing` pasó de 1502 a 2022 (delta 520); los documentos
+quedaron `UPLOADED`. A las 23:10:53 se pasaron a `QUEUED` (update directo en Mongo) para que el
+worker los reclamara al reiniciar; `docservice_documents_non_terminal=520`.
+
+| Alerta | Estado / `startsAt` en Alertmanager | Condición observada | Runbook |
+|---|---|---|---|
+| `QueueDepthHigh` | active — `2026-11-08T23:15:56.869Z` | >500 documentos no terminales (520) | `infra/runbooks/escalado-worker.md` |
+| `WorkerDown` | active — `2026-11-08T23:20:43.273Z` | `up{job="extraction-worker"}=0` | `infra/runbooks/escalado-worker.md` |
+| `DocsAccumulating` | active — `2026-11-08T23:25:51.532Z` | >10 documentos no terminales | `infra/runbooks/failover-redis.md` |
+| `DocsStuck` | active — `2026-11-08T23:28:21.532Z` | `status="QUEUED"`; `oldest_intermediate_age_seconds=1053.6` >900 | `infra/runbooks/failover-redis.md` |
+
+A las 23:28:47 se reinició el worker. A las 23:29:27 `docservice_documents_non_terminal=0`;
+las cuatro alertas estaban inactive y resueltas en Alertmanager. Resultado: 520/520 documentos
+`COMPLETED`, 520 logs `documento completado y ACK-eado`, 0 errores/READONLY/DLQ nuevos;
+`XLEN stream:pdf-processing-dlq=13` (sin cambios). Mongo final: `COMPLETED=1948`,
+`PENDING_UPLOAD=1` (sonda previa, ajena al ensayo). Consumer group final: `pending=0`,
+`last-delivered-id=1794179440070-0`, `entries-read=1822`, `lag=723` (el lag sigue fantasma,
+pero la alerta se resolvió).
+
+### Deuda operativa fuera de T-02
+
+El relay de doc-service solo hace `XADD`; no transiciona `UPLOADED→QUEUED`. El worker reclama
+solo `QUEUED|RETRYING`, por lo que un documento recién subido queda `UPLOADED` y su mensaje se
+ACK-ea como duplicado hasta que el reconciliador lo pasa a `QUEUED` a los 30 min (`stuckAfter`).
+En este ensayo los 520 se pasaron a `QUEUED` por Mongo para hacer posible el reclamo al reiniciar.
+Los tres documentos de humo previos (`s5p102-smoke*`) también se recuperaron y terminaron
+`COMPLETED`. Registrar este hallazgo como deuda; no se corrige en T-02.
+
 ---
 
 ## 6. Re-verificación live (2026-11-07)
@@ -301,3 +373,195 @@ Coinciden con `alert.rules.yml`:
 - El release a GHCR de HEAD sigue pendiente de decisión humana (merge de PR o tag `v*`),
   igual que en `plan-S3-P1.md` §4 (`S3-P1-01`, "Pendiente (humano)").
 
+## 9. Cierre de provocaciones pendientes S1-P1-13 (2026-11-09 UTC)
+
+Alcance: provocar el firing real de `RedisMemHigh`, `PELBacklog`, `QueueNotAdvancing`,
+`HighErrorRate` y `LatencyP95High`; recuperar `DLQNotEmpty`, `MinioDiskHigh` y
+`MinioDiskCritical`. Stack `infra` completo sobre Docker Compose local. Prometheus y
+Alertmanager no publican puerto: se consultaron por la red `infra_internal`
+(`http://prometheus:9090`, `http://alertmanager:9093`). **Ninguna regla de
+`alert.rules.yml` fue modificada.** Sin secretos en esta evidencia.
+
+### Resumen
+
+| Alerta | Condición provocada | Valor observado | `startsAt` (Alertmanager) | Recuperación | Resolución |
+|---|---|---|---|---|---|
+| `RedisMemHigh` | memoria de Streams sobre 80% de 192mb | ratio **0.8238** | `2026-11-09T00:18:26.869Z` | `DEL` de la carga sintética + `CONFIG SET` restaurado | inactive, verificada `2026-11-09T00:20:15Z` |
+| `PELBacklog` | 120 pending sostenidos por 10m | **120** pending | `2026-11-09T00:05:41.869Z` | `XACK` + `XDEL` de los 120 ids sintéticos | inactive, verificada `2026-11-09T00:07:21Z` |
+| `QueueNotAdvancing` | PEL constante por 5m | **120** pending, `changes()=0` | `2026-11-09T00:00:43.273Z` | igual que `PELBacklog` | inactive, verificada `2026-11-09T00:07:21Z` |
+| `HighErrorRate` | 5xx sobre 1% por 5m vía Traefik | ratio **1.0** (100% 5xx) | `2026-11-09T00:25:46.771Z` | backend 500 temporal eliminado y tráfico detenido | inactive, verificada `2026-11-09T00:36:23Z` |
+| `LatencyP95High` | p95 sobre 500ms por 5m vía Traefik | p95 **1.155 s** | `2026-11-09T00:34:01.771Z` | backend lento temporal eliminado y tráfico detenido | inactive, verificada `2026-11-09T00:40:25Z` |
+| `DLQNotEmpty` | DLQ con 13 entradas | **13** → **0** | `2026-11-08T23:07:13.273Z` | diagnóstico + `XDEL` de las 13 entradas sintéticas | inactive, verificada `2026-11-09T00:38:37Z` |
+| `MinioDiskHigh` | uso de disco MinIO sobre 70% | **0.8832–0.8853** (bajó desde 0.9044) | `2026-11-08T23:07:11.665Z` | limpieza segura parcial | **sigue firing — bloqueada** |
+| `MinioDiskCritical` | uso de disco MinIO sobre 85% | **0.8832–0.8853** (bajó desde 0.9044) | `2026-11-08T23:07:11.665Z` | limpieza segura parcial | **sigue firing — bloqueada** |
+
+### 9.1 `RedisMemHigh`
+
+Expresión: `redis_memory_used_bytes / redis_memory_max_bytes > 0.8` (`for: 5m`), con
+`maxmemory 192mb` y `maxmemory-policy noeviction`.
+
+- Baseline: `used_memory=3.05M`, ratio **0.0158**; `XLEN stream:pdf-processing=2022`.
+- Para evitar un rewrite de AOF durante la prueba se fijó temporalmente
+  `auto-aof-rewrite-percentage=0` y `auto-aof-rewrite-min-size=1073741824`; los valores
+  originales eran `100` y `67108864` y se restauraron al final.
+- Se escribieron 40 claves de 4 MiB (`chaos:memfill:NN`) sobre el maestro. El primer llenado
+  llevó el ratio a **0.9537**, demasiado cerca de `maxmemory`; se redujo a 31 claves para
+  operar con margen: `used_memory=165,825,672` bytes → ratio **0.8237**.
+  Nota: 4 MiB de payload ocupan ~5.24 MB de `MEMORY USAGE` por overhead del allocator.
+- Prometheus marcó la condición en `2026-11-09T00:13:26.869Z`; tras 5m, Alertmanager puso
+  `RedisMemHigh` en `active` con `startsAt=2026-11-09T00:18:26.869Z` y valor **0.8238**.
+- Recuperación: `DEL` de las 31 claves `chaos:memfill:*`, restauración de los dos valores de
+  AOF. Verificado: `used_memory=3.29M`, `SET`/`DEL` de sonda OK, `XLEN` sigue en **2022**,
+  alerta inactive a las `2026-11-09T00:20:15Z`.
+
+### 9.2 `PELBacklog` y `QueueNotAdvancing`
+
+Expresiones: `redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"} > 100`
+(`for: 10m`) y la misma serie `> 0` con `changes(...[5m]) == 0` (`for: 0m`).
+
+- Se detuvo `extraction-worker` y se verificó `pending=0` con
+  `last-delivered-id == last-generated-id`. Se agregaron **120** entradas sintéticas
+  (`document_id=chaos-pel-0001..0120`) y se reclamaron en una sola llamada con el consumidor
+  temporal `chaos-pel-consumer` (`XREADGROUP ... COUNT 120 ... >`). PEL constante en **120**.
+- `QueueNotAdvancing` disparó con `startsAt=2026-11-09T00:00:43.273Z`.
+  `PELBacklog` disparó con `startsAt=2026-11-09T00:05:41.869Z`.
+  Durante la parada, `WorkerDown` también disparó a los 10m (efecto esperado y documentado).
+- Recuperación: `XACK` + `XDEL` de los **120** ids exactos; `pending=0`,
+  `XLEN stream:pdf-processing=2022` (sin cambios) y worker reiniciado con el override
+  `compose/docker-compose.sentinel-worker.yml` (modo Sentinel), sin `READONLY` en logs.
+  Ambas alertas inactive a las `2026-11-09T00:07:21Z`, junto con `WorkerDown`.
+
+### 9.3 `HighErrorRate`
+
+Expresión: `sum(rate(traefik_service_requests_total{code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total[5m])) > 0.01` (`for: 5m`).
+
+- Backend temporal `chaos-500` (nginx `return 500;`) en `infra_internal`, expuesto con un
+  archivo temporal del file provider de Traefik (`infra/traefik/dynamic/chaos-alerts.yml`,
+  router `Host(\`api.localhost\`) && PathPrefix(\`/chaos-err\`)`, priority 1000).
+  Se verificó `HTTP 500` en `https://127.0.0.1:8543/chaos-err`.
+- Tráfico sostenido 5 req/s entre `00:20:40Z` y `00:27:40Z`. Ratio observado **1.0** (todas
+  las requests del servicio fueron 5xx). Prometheus activó la condición en
+  `00:20:46.771Z`; Alertmanager, `startsAt=2026-11-09T00:25:46.771Z`.
+- Recuperación: contenedor y archivo temporal eliminados, tráfico detenido. La ventana de 5m
+  expiró ~`00:32:40Z`; alerta inactive verificada a las `2026-11-09T00:36:23Z`.
+
+### 9.4 `LatencyP95High`
+
+Expresión: `histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)) > 0.5` (`for: 5m`).
+
+- Backend temporal `chaos-slow` (nginx `limit_rate 20k` sirviendo 40 KB → ~1.02 s por
+  respuesta), router temporal `PathPrefix(\`/chaos-slow\`)` priority 1000.
+- Tráfico sostenido ~2 req/s entre `00:28:07Z` y `00:34:47Z`. p95 observado **1.155 s**.
+  Prometheus activó la condición en `00:29:01.771Z`; Alertmanager,
+  `startsAt=2026-11-09T00:34:01.771Z`.
+- Recuperación: contenedor y archivo temporal eliminados, tráfico detenido. Alerta inactive
+  verificada a las `2026-11-09T00:40:25Z`.
+
+### 9.5 `DLQNotEmpty` — recuperación
+
+`redis_stream_length{stream="stream:pdf-processing-dlq"} > 0` (`for: 0m`). Inventario real de
+las 13 entradas observadas el 2026-11-09:
+
+- 4 `INVALID_CONTRACT` (`loadtest-l1`..`loadtest-l4`, `contrato invalido: falta el campo enqueued_at`).
+- 8 `PDF_NO_TEXT` (`loadtest-big1`..`loadtest-big4`, repetidos en dos corridas de carga; sin texto extraíble).
+- 1 `INVALID_CONTRACT` (`probe`, `contrato invalido: campo desconocido: probe`).
+
+Diagnóstico: `--inspect-dlq` reportó depth 13 y una entrada más antigua de ~612.413 s.
+`--replay-dlq --all --dry-run` reportó 12 `would_replay` y la entrada `probe` `skipped` por
+schema no soportado. Ninguna de las 13 entradas corresponde a un documento real:
+`db.documents.find({_id: {$in: ["loadtest-l1"..."loadtest-big4"]}})` devolvió `[]` en Mongo.
+Como las entradas no son reenviables correctamente (contrato inválido / schema no soportado) y
+no existe documento asociado, se archivó el dump completo y se eliminaron las 13 entradas con
+`XDEL` a las `2026-11-09T00:35:17Z`. Verificado: `XLEN stream:pdf-processing-dlq=0` y
+`DLQNotEmpty` inactive a las `2026-11-09T00:38:37Z`.
+
+Hallazgo operativo: `docker exec` **no** hereda el `REDIS_URL` que exporta el entrypoint de la
+imagen para PID 1, por lo que `extraction-worker --inspect-dlq` / `--replay-dlq` fallan con
+`NOAUTH` si se ejecutan con un `docker exec` simple. Funciona pasando `REDIS_URL` dentro del
+contenedor: `sh -c 'REDIS_URL="redis://:$(cat /run/secrets/redis_streams_password)@redis-streams:6379/0" /usr/local/bin/extraction-worker --inspect-dlq'`.
+
+### 9.6 `MinioDiskHigh` y `MinioDiskCritical` — recuperación parcial (2026-11-09)
+
+Expresiones: `(1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.70`
+(`for: 5m`) y `> 0.85` (`for: 5m`). `usable_total` es el filesystem del host que respalda
+`minio-data` (~98.7 GB), no una cuota propia de MinIO: la presión es del host (`df -h /` = 89%
+al cierre).
+
+- Baseline: ratio **0.9044**; ambas alertas firing desde `2026-11-08T23:07:11.665Z`.
+- Limpieza segura ejecutada: `docker builder prune -f` (**3.676 GB**) y eliminación de las
+  imágenes no usadas del proyecto `extraction-worker:s5-p4-01`, `-hol`, `-hol2`, `-hol3`,
+  `-test` y `doc-service:s6-reconciler-fix` (≈0.94 GB). Las imágenes
+  `prom/prometheus:2.48.0/2.53.0/2.55.1` ya no existían en el daemon.
+- Resultado: ratio **0.8832–0.8853**; `df -h /` pasó a 82G usados de 100G (11G libres).
+  `MinioDiskCritical` necesita <0.85 y `MinioDiskHigh` <0.70: **ninguna se resolvió**.
+- No se tocaron volúmenes (`docker volume prune` prohibido), imágenes de otros proyectos ni
+  datos del host. El margen restante seguro no alcanza: faltan ≈3.5 GB para cruzar el 85% y
+  ≈18.3 GB para cruzar el 70%.
+- **Decisión necesaria**: liberar datos del host, ampliar el filesystem/volumen, o autorizar
+  explícitamente la eliminación de volúmenes no usados de otros proyectos (11.45 GB
+  reclamables) para intentar bajar del 85%. Aun así, el umbral del 70% probablemente exige
+  acción sobre el host.
+
+### 9.7 Estado final y limpieza
+
+- Alertas al cierre (`2026-11-09T00:40:25Z`): `MinioDiskHigh` y `MinioDiskCritical` firing;
+  `RedisMemHigh`, `PELBacklog`, `QueueNotAdvancing`, `HighErrorRate`, `LatencyP95High` y
+  `DLQNotEmpty` inactive.
+- Cola: `XLEN stream:pdf-processing=2022`, `XLEN stream:pdf-processing-dlq=0`,
+  `pending=0`, `lag=0`, worker en modo Sentinel consumiendo.
+- Sin cambios en reglas de alerta ni en `alert.rules.yml`. Sin archivos temporales en
+  `infra/traefik/dynamic/` ni contenedores `chaos-*`. Scratch fuera del repo en
+  `/tmp/opencode/chaos/` (el padre lo elimina).
+
+### 9.8 Segunda pasada de recuperación de MinIO (2026-11-09)
+
+Antes de esta pasada, `MinioDiskCritical` ya estaba resuelto y solo seguía firing
+`MinioDiskHigh` con ratio **0.8301** (`usable_free` 16.64 GB de `usable_total` 98.02 GB,
+`df -h /` = 76G usados de 100G).
+
+Limpieza segura ejecutada (artefactos y cachés regenerables, ninguno es dato de negocio):
+
+| Paso | Qué se liberó | Tamaño |
+|---|---|---|
+| `rm -rf extraction-worker/target` | artefactos de build Rust del repo (se regeneran con `cargo build`) | ~10 GB nominales |
+| `npm cache clean --force` | caché de descargas de npm | 3.0 GB |
+| `go clean -cache` | caché de compilación de Go | 561 MB |
+| `go clean -modcache` | caché de módulos de Go | 1.6 GB |
+| `uv cache clean` | caché de uv | 663 MB |
+
+Resultado medido:
+
+- `df -h /`: **70G usados de 100G, 22G libres** (antes 76G/16G).
+- `minio_cluster_capacity_usable_free_bytes`: **23.43 GB** (antes 16.64 GB).
+- Ratio MinIO: **0.7603** (antes 0.8301).
+- `MinioDiskCritical` (>0.85): **resuelto** (inactive).
+- `MinioDiskHigh` (>0.70): **sigue firing** con `startsAt=2026-11-08T23:12:11.665Z`.
+
+Brecha restante: para cruzar el 70% hacen falta `usable_free ≥ 0.30 × 98.02 GB = 29.4 GB`,
+es decir **≈6 GB más**. La limpieza segura disponible se agotó: el `docker builder prune`
+está en 0, las imágenes no tienen espacio reclamable y el resto de los candidatos no son
+artefactos del proyecto:
+
+- `~/.local/share/Trash` = 9.4 GB (papelera del usuario; borrarla es irreversible).
+- Volúmenes Docker no usados de otros proyectos: `oracle-data` 4.5 GB, `minikube` 3.0 GB
+  (8.4 GB en total) — no autorizados.
+- Datos del host fuera de Docker.
+
+Decisión necesaria: vaciar la papelera, autorizar la eliminación de volúmenes de otros
+proyectos, o ampliar el filesystem. No se tocó ninguno de esos recursos.
+
+### 9.9 Cierre de MinIO tras liberar espacio del host (2026-11-09)
+
+Verificación UTC: **2026-11-09T18:25:45Z**. Antes de liberar espacio, el ratio observado tras
+§9.8 era **0.7603**: `MinioDiskHigh` seguía firing y `MinioDiskCritical` ya estaba inactive.
+Después de liberar espacio del host, `df -h /` muestra **58G usados de 100G (64%)**;
+`minio_cluster_capacity_usable_free_bytes=35,522,482,176` (~35.5 GB) y
+`minio_cluster_capacity_usable_total_bytes=96,806,322,176` (~96.8 GB). El ratio consultado en
+Prometheus, `1 - usable_free / usable_total`, es **0.6331** (aprox. **0.6328** según los
+valores redondeados del estado verificado previamente), por debajo del umbral de 0.70.
+
+En la verificación de **2026-11-09T18:25:45Z**, `MinioDiskHigh` y `MinioDiskCritical` están
+ausentes tanto de `/api/v1/alerts` de Prometheus como de `/api/v2/alerts` de Alertmanager;
+ambas están inactivas/resueltas. Esta condición ya no requiere la decisión bloqueada en §9.8.
+Las cachés y artefactos regenerables liberados en §9.8 permanecen regenerables; esta verificación
+no ejecutó cambios ni limpieza.

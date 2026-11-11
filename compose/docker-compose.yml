@@ -21,7 +21,7 @@ x-hardening: &hardening
 
 # Los entrypoints oficiales de mongo/redis/minio arrancan como root y bajan a
 # usuario no-root (setuid/chown): necesitan estas capabilities para arrancar.
-# El hardening completo (read_only, etc.) se audita en S2 (S1-P1-15).
+# La postura aplicada de T5 y sus excepciones quedan registradas en el runbook y evidencia S5-P1-10.
 x-hardening-data: &hardening-data
   cap_drop: ["ALL"]
   cap_add: ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE"]
@@ -76,9 +76,12 @@ services:
 
   # --- MongoDB Replica Set (SPEC 3.6): transacciones y Change Streams -------
   mongo:
-    image: mongo:7.0
+    image: mongo:7.0.45@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4 # mongo:7.0.45
+    user: "999"
     profiles: ["core", "full"]
     <<: *hardening-data
+    read_only: true
+    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev"]
     command: ["--replSet", "rs0", "--bind_ip", "localhost,mongo", "--keyFile", "/etc/mongo/keyfile"]
     secrets: [mongo_initdb_root_password]
     environment:
@@ -86,9 +89,10 @@ services:
       MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_initdb_root_password
     volumes:
       - mongo-data:/data/db
-      # keyFile requerido por auth+replSet. Se genera con scripts/bootstrap.sh
-      # (openssl rand -base64 756) con dueño 999 y modo 400. NUNCA commitear.
-      - ./mongo/keyfile:/etc/mongo/keyfile:ro
+      # keyFile requerido por auth+replSet. Vive en el secret store del host
+      # (secrets/, git-ignored), NUNCA en el arbol del compose. Se genera con
+      # `openssl rand -base64 756` con dueño 999:999 y modo 400 (S2-P1-01).
+      - ../secrets/mongo_keyfile:/etc/mongo/keyfile:ro
     networks: [data]
     mem_limit: 1g
     cpus: 1.0
@@ -103,21 +107,33 @@ services:
   #  - app:    readWrite sobre MONGO_DATABASE (doc-service)
   #  - worker: SOLO update sobre la coleccion documents (ADR-0006)
   mongo-init:
-    image: mongo:7.0
+    image: mongo:7.0.45@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4 # mongo:7.0.45
+    user: "999"
     profiles: ["core", "full"]
     <<: *hardening-data
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     depends_on:
       mongo:
         condition: service_started
+    # Los passwords llegan como Docker secrets y se leen con el patron *_FILE
+    # (S2-P1-01). init.js resuelve `${VAR}_FILE` antes de crear usuarios, para
+    # que `docker compose config` no muestre valores en claro.
+    secrets:
+      - mongo_initdb_root_password
+      - mongo_app_password
+      - mongo_worker_password
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_initdb_root_password
       MONGO_APP_USER: ${MONGO_APP_USER:?definir en .env}
-      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?definir en .env}
+      MONGO_APP_PASSWORD_FILE: /run/secrets/mongo_app_password
       MONGO_WORKER_USER: ${MONGO_WORKER_USER:?definir en .env}
-      MONGO_WORKER_PASSWORD: ${MONGO_WORKER_PASSWORD:?definir en .env}
+      MONGO_WORKER_PASSWORD_FILE: /run/secrets/mongo_worker_password
       MONGO_DATABASE: ${MONGO_DATABASE:-documents}
-      # Usuario legacy del monolito: su DSN fija authSource=admin.
+      # Usuario legacy del monolito: su DSN fija authSource=admin. El monolito
+      # consume MONGO_USER/MONGO_PASS como env directo (sin wrapper de imagen);
+      # ver nota de traspaso en SECURITY.md.
       MONOLITO_MONGO_USER: ${MONOLITO_MONGO_USER:?definir en .env}
       MONOLITO_MONGO_PASSWORD: ${MONOLITO_MONGO_PASSWORD:?definir en .env}
       MONOLITO_MONGO_DB: ${MONOLITO_MONGO_DB:-pdf-extractext}
@@ -140,9 +156,12 @@ services:
 
   # --- Redis STREAMS (SPEC 3.5): AOF + noeviction — los trabajos NO se pierden
   redis-streams:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["core", "full"]
     <<: *hardening-data
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     # `--masterauth` y `--replica-announce-ip` son inertes mientras sea primario,
     # pero necesarios si Sentinel lo degrada a replica tras un failover: sin
     # masterauth el enlace de replicacion queda en `down` (NOAUTH) y sin
@@ -168,9 +187,12 @@ services:
   # puede promoverlas ante la caida del primario. Perfil `sentinel`: no altera
   # el perfil `full` (el endpoint del cliente sigue siendo redis-streams:6379).
   redis-streams-replica-1:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["sentinel"]
     <<: *hardening-data
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     # `--replica-announce-ip` con el NOMBRE del contenedor: sin esto el primario
     # reporta la IP efimera de la replica en INFO, Sentinel la aprende como IP y
     # al promover una replica anuncia 172.x a los clientes (el permiso de
@@ -197,9 +219,12 @@ services:
       retries: 6
 
   redis-streams-replica-2:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["sentinel"]
     <<: *hardening-data
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     # Igual que replica-1: anuncia su hostname para que Sentinel no propague IPs.
     secrets: [redis_streams_password, redis_streams_password_json]
     entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --replicaof redis-streams 6379 --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams-replica-2"]
@@ -223,7 +248,8 @@ services:
   # El password NO vive en ningun archivo commiteado: sentinel-entrypoint.sh
   # sustituye ${REDIS_STREAMS_PASSWORD} en /tmp/sentinel.conf al arrancar.
   sentinel-1:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["sentinel"]
     <<: *hardening-data
     read_only: true
@@ -238,6 +264,7 @@ services:
       - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
     networks: [data]
     mem_limit: 128m
+    cpus: 0.25
     pids_limit: 50
     healthcheck:
       test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
@@ -246,7 +273,8 @@ services:
       retries: 6
 
   sentinel-2:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["sentinel"]
     <<: *hardening-data
     read_only: true
@@ -261,6 +289,7 @@ services:
       - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
     networks: [data]
     mem_limit: 128m
+    cpus: 0.25
     pids_limit: 50
     healthcheck:
       test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
@@ -269,7 +298,8 @@ services:
       retries: 6
 
   sentinel-3:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["sentinel"]
     <<: *hardening-data
     read_only: true
@@ -284,6 +314,7 @@ services:
       - ./redis/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh:ro
     networks: [data]
     mem_limit: 128m
+    cpus: 0.25
     pids_limit: 50
     healthcheck:
       test: ["CMD-SHELL", "/usr/local/bin/redis-cli -p 26379 ping"]
@@ -293,10 +324,12 @@ services:
 
   # --- Redis RATE-LIMIT (SPEC 3.5): efimero, allkeys-lru, sin AOF ------------
   redis-ratelimit:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
     profiles: ["core", "full"]
     <<: *hardening-data
     read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     secrets: [redis_ratelimit_password]
     entrypoint: ["/bin/sh", "-c", "export REDIS_RATELIMIT_PASSWORD=$$(cat /run/secrets/redis_ratelimit_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_RATELIMIT_PASSWORD"]
     volumes:
@@ -312,15 +345,59 @@ services:
       timeout: 3s
       retries: 6
 
+  # Internal only; rate-limit state uses the existing ephemeral Redis instance.
+  # Redis credentials are read from a Docker secret file, never inline.
+  # Identity and tuning are deferred to S7 (ADR-0005).
+  ratelimitd:
+    build:
+      context: ../../platform-services/rate-limiter
+      dockerfile: Dockerfile
+    image: ratelimitd:p4-04
+    profiles: ["full"]
+    <<: *hardening
+    user: "10001:10001"
+    read_only: true
+    secrets: [redis_ratelimit_password]
+    environment:
+      LISTEN_ADDR: ":8090"
+      REDIS_ADDR: redis-ratelimit:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_ratelimit_password
+    networks: [internal, data]
+    depends_on:
+      redis-ratelimit:
+        condition: service_healthy
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
   # --- MinIO (SPEC 3.4): API S3 interna; exposicion publica SOLO via Traefik -
   # NOTA: la imagen oficial minio/minio no esta accesible desde este entorno
   # (Docker Hub deniega el pull). Se usa la imagen legacy de Bitnami con tag
   # INMUTABLE, funcionalmente equivalente para desarrollo local.
   minio:
-    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20 # bitnamilegacy/minio:2025.7.23-debian-12-r5
+    user: "1001"
     profiles: ["core", "full"]
     <<: *hardening-data
-    secrets: [minio_root_password]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev"]
+    secrets: [minio_root_password, minio_webhook_secret]
+    # El token del webhook NO se interpola en el compose: el wrapper lo lee de
+    # /run/secrets/minio_webhook_secret y lo exporta antes de ceder al entrypoint
+    # oficial de Bitnami. (El loop *_FILE de Bitnami solo cubre una lista fija
+    # de variables y no incluye MINIO_NOTIFY_*, por eso el wrapper.)
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - >
+        export MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE="$$(cat /run/secrets/minio_webhook_secret)";
+        exec /opt/bitnami/scripts/minio/entrypoint.sh /opt/bitnami/scripts/minio/run.sh
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
@@ -332,7 +409,6 @@ services:
       # depender de `mc admin service restart` (que sin TTY no aplica la config).
       MINIO_NOTIFY_WEBHOOK_ENABLE_DOCSERVICE: "on"
       MINIO_NOTIFY_WEBHOOK_ENDPOINT_DOCSERVICE: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
-      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE: ${MINIO_WEBHOOK_SECRET:?definir en .env}
     volumes:
       - minio-data:/bitnami/minio/data
     networks: [data]
@@ -348,8 +424,12 @@ services:
   # Buckets + identidades por servicio (minimo privilegio, S0-P1-05/S1-P1-05).
   # Idempotente: el job se puede reejecutar sin efectos colaterales.
   minio-init:
-    image: bitnamilegacy/minio-client:2025.7.21
+    image: bitnamilegacy/minio-client:2025.7.21@sha256:1a2f12802dc75668aded6de1b7b53d67518ac2a7df823760d9f935235fb3d948 # bitnamilegacy/minio-client:2025.7.21
+    user: "1001"
     profiles: ["core", "full"]
+    <<: *hardening
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     depends_on:
       minio:
         condition: service_healthy
@@ -362,6 +442,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      HOME: /tmp
       SVC_DOCSERVICE_ACCESS_KEY_FILE: /run/secrets/svc_docservice_access_key
       SVC_DOCSERVICE_SECRET_KEY_FILE: /run/secrets/svc_docservice_secret_key
       SVC_WORKER_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
@@ -386,8 +467,12 @@ services:
   # (token de una sola fuente, aplicado en cada arranque); este job solo
   # verifica el target y suscribe el evento (S3-P1-03).
   minio-notify-init:
-    image: bitnamilegacy/minio-client:2025.7.21
+    image: bitnamilegacy/minio-client:2025.7.21@sha256:1a2f12802dc75668aded6de1b7b53d67518ac2a7df823760d9f935235fb3d948 # bitnamilegacy/minio-client:2025.7.21
+    user: "1001"
     profiles: ["full"]
+    <<: *hardening
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     depends_on:
       minio:
         condition: service_healthy
@@ -395,9 +480,13 @@ services:
         condition: service_started
     secrets:
       - minio_root_password
+      - minio_webhook_secret
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      HOME: /tmp
+      # Token del webhook por archivo, nunca interpolado (S2-P1-01).
+      MINIO_WEBHOOK_SECRET_FILE: /run/secrets/minio_webhook_secret
       DOC_SERVICE_WEBHOOK_URL: ${DOC_SERVICE_WEBHOOK_URL:-http://doc-service:8080/internal/storage/events}
     volumes:
       - ./minio/init-notifications.sh:/init-notifications.sh:ro
@@ -415,9 +504,12 @@ services:
   # --- Traefik v3: entrypoint UNICO. Hoy enruta el 100% al monolito y el S3.
   # Cuando exista doc-service se activa el router /api/v2/documents (labels).
   traefik:
-    image: traefik:v3.7
+    image: traefik:v3.7@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0 # traefik:v3.7
+    user: "65532"
     profiles: ["full"]
     <<: *hardening
+    cap_add: [NET_BIND_SERVICE]
+    group_add: ["${DOCKER_SOCKET_GID:-969}"]
     read_only: true
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
@@ -447,7 +539,9 @@ services:
   # Sin puerto publicado al host: todo el trafico entra por Traefik.
   # La imagen se construye desde su propio repo: MONOLITO_IMAGE en .env.
   monolito:
-    image: ${MONOLITO_IMAGE:-monolito:latest}
+    # Local build: immutable local image ID is recorded in the T5 evidence.
+    image: ${MONOLITO_IMAGE:-monolito:latest} # local build; immutable image ID in T5 evidence
+    user: "10001:10001"
     # Si la imagen no existe, se construye desde el repo del monolito
     # (por defecto ../../../pdf-extractext; sobreescribir en .env)
     build:
@@ -494,7 +588,8 @@ services:
   # el webhook entra por la red `data` (MinIO -> doc-service:8080).
   # La imagen se construye desde su propio repo (DOC_SERVICE_BUILD_CONTEXT).
   doc-service:
-    image: ${DOC_SERVICE_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_TAG:-latest}
+    image: ${DOC_SERVICE_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_TAG:-latest}@${DOC_SERVICE_DIGEST:-sha256:e2528610dbc930b048da08ebd19cda1e3ef3ec17f19c5a7cbc1d56918c00e065} # ghcr.io/alejo-basile/doc-service:latest
+    user: "10001"
     profiles: ["full"]
     <<: *hardening
     read_only: true
@@ -522,7 +617,8 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
-      MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
+      # MINIO_WEBHOOK_SECRET: lo exporta el entrypoint desde
+      # /run/secrets/minio_webhook_secret; no se interpola en el compose.
       # Redis Streams (con password): publica los trabajos de extraccion.
       # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
       # clavado al nodo que era primario al arrancar: tras un failover escribe
@@ -533,8 +629,8 @@ services:
       REDIS_MASTER_NAME: myprimary
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
       REDIS_STREAM_KEY: ${REDIS_STREAM_KEY:-stream:pdf-processing}
-      # Proteccion de los endpoints /internal/*.
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?definir en .env}
+      # Proteccion de los endpoints /internal/*: el entrypoint exporta
+      # INTERNAL_TOKEN desde /run/secrets/internal_token (no interpolado).
       # Reglas de negocio (deben respetar grace >= 2 x intervalo y minSafetyAge).
       MAX_PDF_BYTES: "26214400"
       RECONCILE_INTERVAL_MIN: "10"
@@ -552,7 +648,7 @@ services:
     cpus: 1.0
     pids_limit: 300
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -567,7 +663,7 @@ services:
       - "traefik.http.routers.docv2.tls=true"
       # Buffering de 1 MB SOLO para el JSON del contrato v2; el PDF sube directo
       # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
-      - "traefik.http.routers.docv2.middlewares=body-limit-1mb@file"
+      - "traefik.http.routers.docv2.middlewares=rate-limit@file,body-limit-1mb@file"
       - "traefik.http.services.docv2.loadbalancer.server.port=8080"
       # Healthcheck expuesto al edge (preflight de E2E-01): solo /healthz.
       - "traefik.http.routers.docv2health.rule=Host(`api.localhost`) && Path(`/healthz`)"
@@ -597,7 +693,8 @@ services:
   # Nada de este servicio se publica al host: escucha /healthz, /readyz y
   # /metrics en la red interna para Prometheus (SPEC 10).
   extraction-worker:
-    image: ${EXTRACTION_WORKER_IMAGE:-ghcr.io/alejo-basile/extraction-worker}:${EXTRACTION_WORKER_TAG:-latest}
+    image: ${EXTRACTION_WORKER_IMAGE:-ghcr.io/alejo-basile/extraction-worker}:${EXTRACTION_WORKER_TAG:-latest}@${EXTRACTION_WORKER_DIGEST:-sha256:433889e1e158397e79f6f84862f80ab0780e0eeb96a9bd2a7562a2c1a8fef4de} # ghcr.io/alejo-basile/extraction-worker:latest
+    user: "10001:10001"
     profiles: ["full"]
     <<: *hardening
     # El unico destino de escritura es /tmp (PDF descargado), cubierto por el
@@ -679,7 +776,7 @@ services:
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -687,7 +784,8 @@ services:
 
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
-    image: prom/prometheus:v2.53.4
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 # prom/prometheus:v3.16.0
+    user: "65534"
     profiles: ["full"]
     <<: *hardening
     ports:
@@ -703,12 +801,18 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   # --- Alertmanager (S1-P1-13, plan-S2-P1.md §4) -------------------------------
   # Receiver local (log/store); en staging/prod se agrega webhook/email aqui.
   # Solo red `internal`: no necesita egress (internal:true) ni llegar a `data`.
   alertmanager:
-    image: prom/alertmanager:v0.34.1
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a # prom/alertmanager:v0.34.1
+    user: "65534"
     profiles: ["full"]
     <<: *hardening
     command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
@@ -742,7 +846,8 @@ services:
   # OJO: la clave es la URI completa del REDIS_ADDR, no "password".
   # No se usa `command:` con shell: la imagen no trae /bin/sh.
   redis-exporter:
-    image: oliver006/redis_exporter:v1.93.0
+    image: oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820 # oliver006/redis_exporter:v1.93.0
+    user: "59000:59000"
     profiles: ["full"]
     <<: *hardening
     secrets: [redis_streams_password_json]
@@ -759,10 +864,15 @@ services:
       redis-streams:
         condition: service_healthy
     # Sin healthcheck: la imagen Alpine del exporter no tiene shell ni
-    # utilerias (sh/ps/pgrep/nc). Proteccion real: restart + Prometheus job down.
+    # cliente HTTP (wget/curl). Excepción documentada: Prometheus monitorea
+    # /metrics y alerta si el target queda down; no se finge un probe de proceso.
 
   loki:
-    image: grafana/loki:3.4.2
+    image: loki:3.6.20-healthcheck # Local derivative; image ID in T5 evidence.
+    build:
+      context: ./loki
+      dockerfile: Dockerfile
+    user: "10001"
     profiles: ["full"]
     <<: *hardening
     command: -config.file=/etc/loki/local-config.yaml
@@ -776,9 +886,16 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/loki-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   grafana:
-    image: grafana/grafana:11.6.0
+    image: grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7 # grafana/grafana:12.4.14
+    user: "472"
     profiles: ["full"]
     <<: *hardening
     ports:
@@ -798,6 +915,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=128m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     depends_on:
       - prometheus
       - loki
@@ -806,8 +929,12 @@ services:
   # PERFIL CHAOS — utilidades para pruebas de fallo (game day S9)
   # ===========================================================================
   pumba:
-    image: gaiaadm/pumba:0.11.0
+    image: gaiaadm/pumba:0.11.10@sha256:80e277b150641d86519628ba64a5cc7eba9cb10ae24cb08a8daa2b4afabcc4f2 # gaiaadm/pumba:0.11.10
+    user: "65532"
     profiles: ["chaos"]
+    <<: *hardening
+    read_only: true
+    tmpfs: ["/tmp:size=8m,noexec,nosuid,nodev"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --help

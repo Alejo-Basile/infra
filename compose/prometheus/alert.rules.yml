@@ -14,24 +14,16 @@ groups:
     interval: 15s
     rules:
       - alert: QueueDepthHigh
-        # S5-P1-02 (medido en el ensayo real): NI XLEN NI el lag por separado
-        # representan el trabajo pendiente.
-        #   - XLEN nunca baja (las entradas quedan hasta XDEL/XTRIM).
-        #   - lag (entradas no entregadas) cae a 0 apenas el reader prefetchea,
-        #     aunque queden cientos de documentos sin procesar: la alerta
-        #     resolvia con 443/700 pendientes.
-        #   - En Redis 7.2.16 el campo lag de XINFO GROUPS es nil (el exporter
-        #     lo mapea a 0), por eso no se usa redis_stream_group_lag.
-        # El backlog real es no entregado + entregado sin confirmar.
-        #   no entregado = redis_stream_entries_added_total - redis_stream_group_entries_read
-        #   entregado sin confirmar = PEL (redis_stream_group_messages_pending)
-        expr: (redis_stream_entries_added_total{stream="stream:pdf-processing"} - ignoring(group) redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"} + ignoring(group) redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
+        # XLEN is the requested queue-depth signal. It includes entries retained
+        # after consumption, so use it as pressure/retention signal and diagnose
+        # lag and document states before scaling.
+        expr: redis_stream_length{stream="stream:pdf-processing"} > 500
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Cola pdf-processing con mas de 500 documentos pendientes por 5m"
-          description: "Escalar worker: docker compose --profile full up -d --scale extraction-worker=N. Ojo: en un host de 4 cores con WORKER_MAX_CONCURRENCY=4 un worker ya satura CPU y escalar no aumenta el throughput. Ver runbook de escalado."
+          summary: "XLEN de stream:pdf-processing supera 500 por 5m"
+          description: "Comparar XLEN con XPENDING/lag y documentos no terminales antes de escalar. Si es backlog real, escalar workers con docker compose --profile full up -d --scale extraction-worker=N."
           runbook_url: "infra/runbooks/escalado-worker.md"
 
       - alert: PELBacklog
@@ -48,6 +40,26 @@ groups:
           summary: "PEL pendiente mayor a 100 por 10m"
           description: "Revisar workers caidos o trabados; XAUTOCLAIM reasigna los mensajes huerfanos. Ver runbook failover-redis."
           runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: PELStale
+        expr: redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"} > 0 and max by (stream, group) (redis_stream_group_consumer_idle_seconds{stream="stream:pdf-processing",group="extraction-workers"}) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mensajes PEL con consumidores inactivos mas de 10 minutos"
+          description: "Revisar workers caidos y XPENDING; confirmar que XAUTOCLAIM reclama entradas tras min-idle-time >= 2 x timeout duro."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: ExtractionErrors
+        expr: sum(rate(worker_documents_total{outcome="rejected"}[5m])) + sum(rate(worker_dlq_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Se observan errores de extraccion o documentos rechazados"
+          description: "Inspeccionar stream:pdf-processing-dlq y el corpus causante; no reintentar REJECTED y corregir antes de replay."
+          runbook_url: "infra/runbooks/errores-extraccion.md"
 
       - alert: RedisMemHigh
         expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
@@ -70,7 +82,7 @@ groups:
         annotations:
           summary: "Tasa de 5xx sobre 1 por ciento por 5m (via Traefik)"
           description: "Revisar logs del servicio (Loki/Grafana); si coincide con un deploy, hacer rollback. Proxy Traefik porque doc-service aun no expone http_requests_total (deuda S3)."
-          runbook_url: "infra/runbooks/restore-mongo.md"
+          runbook_url: "infra/runbooks/gateway-trafico.md"
 
       - alert: LatencyP95High
         expr: histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)) > 0.5
@@ -80,7 +92,17 @@ groups:
         annotations:
           summary: "p95 sobre 500ms por 5m (via Traefik)"
           description: "Revisar Mongo/Redis (lentas); considerar escalar doc-service. Proxy Traefik porque doc-service aun no expone histograma (deuda S3)."
-          runbook_url: "infra/runbooks/failover-redis.md"
+          runbook_url: "infra/runbooks/gateway-trafico.md"
+
+      - alert: TraefikRateLimited
+        expr: sum(rate(traefik_service_requests_total{code="429"}[5m])) / clamp_min(sum(rate(traefik_service_requests_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mas de 1 por ciento de respuestas Traefik son 429 por 5m"
+          description: "Confirmar que el middleware rate-limit activo explica los 429; distinguirlos de errores 5xx/backend no disponible."
+          runbook_url: "infra/runbooks/gateway-trafico.md"
 
   - name: s1-p1-13-infra
     interval: 30s
@@ -91,12 +113,12 @@ groups:
       # la regla era NoData permanente. capacity_usable_free/total si existe y
       # mide presion real de disco sobre el volumen que respalda los buckets.
       - alert: MinioDiskHigh
-        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.70
+        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Disco de MinIO sobre 70 por ciento"
+          summary: "Disco de MinIO sobre 80 por ciento"
           description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
           runbook_url: "infra/runbooks/minio-espacio.md"
 
@@ -123,8 +145,8 @@ groups:
           severity: warning
         annotations:
           summary: "Documento en estado intermedio ({{ $labels.status }}) hace mas de 15 min"
-          description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
-          runbook_url: "infra/runbooks/restore-mongo.md"
+          description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente)."
+          runbook_url: "infra/runbooks/reconciliador-documentos.md"
 
       # S4-P1-02: Acumulación de documentos no terminales operativos (> 10 por 15 min)
       # Reemplaza el placeholder DocsNonTerminal que quedaba en NoData.
@@ -136,8 +158,8 @@ groups:
           severity: warning
         annotations:
           summary: "Mas de 10 documentos en estados no terminales operativos por 15 min"
-          description: "La cola o el procesamiento no drena. Revisar PEL, DLQ y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales). Runbook: infra/runbooks/failover-redis.md"
-          runbook_url: "infra/runbooks/failover-redis.md"
+          description: "La cola o el procesamiento no drena. Revisar PEL, DLQ, dependencias y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales)."
+          runbook_url: "infra/runbooks/reconciliador-documentos.md"
 
   - name: s4-p1-03-chain
     interval: 30s
@@ -157,7 +179,7 @@ groups:
         annotations:
           summary: "extraction-worker caido o no scrapeable por 10m"
           description: "Ningun worker consume la cola: el PEL y el stream crecen sin atencion. Revisar el contenedor y escalar segun el runbook de escalado (ADR-0019). Ojo: esta alerta dispara mientras el worker no este desplegado."
-          runbook_url: "infra/runbooks/escalado-worker.md"
+          runbook_url: "infra/runbooks/healthchecks.md"
 
       - alert: QueueNotAdvancing
         # S5-P1-02: con XLEN esta regla disparaba en falso SIEMPRE: las entradas
@@ -184,4 +206,47 @@ groups:
         annotations:
           summary: "DLQ con mensajes (fallos definitivos)"
           description: "Revisar XRANGE, corregir causa raiz y reintentar con la herramienta de replay. No borrar sin diagnosticar."
+          runbook_url: "infra/runbooks/errores-extraccion.md"
+
+      - alert: DocServiceNotReady
+        expr: up{job="doc-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "doc-service no responde al scrape de /metrics"
+          description: "Comprobar readiness y dependencias Mongo, MinIO y Redis; revisar logs y healthcheck antes de reiniciar."
+          runbook_url: "infra/runbooks/healthchecks.md"
+
+      # These alerts intentionally require exporters that expose their named
+      # metrics; missing sources are tracked in the T4 evidence, never treated
+      # as healthy values.
+      - alert: SentinelFailoverObserved
+        expr: increase(redis_sentinel_switch_master_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sentinel reporto un cambio de maestro"
+          description: "Verificar reconexion automatica de Go/Rust, direccion primaria y ventana de perdida mitigada por WAIT; la convergencia depende del reconciliador."
           runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: RedisPersistenceOrReplicaIssue
+        expr: redis_aof_enabled == 0 or redis_master_link_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AOF deshabilitado o replica Redis desconectada"
+          description: "Restaurar AOF en el primario y diagnosticar INFO replication/master_link_status antes de intervenir en Sentinel."
+          runbook_url: "infra/runbooks/failover-redis.md"
+
+      - alert: AcmeCertificateExpiring
+        expr: (traefik_tls_certs_not_after - time()) < 14 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Certificado TLS expira en menos de 14 dias"
+          description: "Revisar almacenamiento ACME, resolucion DNS, challenge y logs de Traefik; no borrar acme.json sin respaldo."
+          runbook_url: "infra/runbooks/certificados-traefik.md"

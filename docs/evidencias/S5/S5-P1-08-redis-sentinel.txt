@@ -1,0 +1,86 @@
+# S5-P1-08 — Verificación de topología Redis Sentinel (2026-11-10)
+
+## Alcance y resultado
+
+Ensayo acotado en staging. No se modificó configuración: los valores observados ya
+cumplían AOF y `noeviction`. La topología/quórum, persistencia, réplica y `WAIT` se
+verificaron. La promoción se observó; la reconexión automática del cliente Go no pudo
+demostrarse con sus logs, y la recuperación del worker Rust no quedó validada de extremo
+a extremo. Por ello, la aceptación 3 sigue abierta. No se exponen secretos.
+
+## Gap 1 — AOF y fsync
+
+Preflight: `docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel ps` → redis-streams y ambas réplicas en `Up (healthy)`; no se aplicaron cambios de configuración.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli INFO persistence'` → `aof_enabled:1`, `aof_last_write_status:ok`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli CONFIG GET appendfsync'` → `appendfsync`, `everysec`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams-replica-1 sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli INFO persistence'` → `aof_enabled:1`, `aof_last_write_status:ok`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams-replica-1 sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli CONFIG GET appendfsync'` → `appendfsync`, `everysec`.
+
+## Gap 2 — Política de memoria
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli CONFIG GET maxmemory-policy'` → `maxmemory-policy`, `noeviction`.
+
+## Aceptación 1 — Maestro, quórum y Sentinels
+
+Hora UTC: 2026-11-10T00:22:45Z.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T sentinel-1 redis-cli -p 26379 SENTINEL masters` → un maestro monitoreado, `myprimary`; `quorum=2`, `num-other-sentinels=2`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T sentinel-1 redis-cli -p 26379 SENTINEL ckquorum myprimary` → `OK 3 usable Sentinels. Quorum and failover authorization can be reached`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T sentinel-1 redis-cli -p 26379 SENTINEL replicas myprimary` → dos réplicas, `redis-streams-replica-1` y `redis-streams-replica-2`.
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T sentinel-1 redis-cli -p 26379 SENTINEL sentinels myprimary` → dos Sentinels compañeros; contando `sentinel-1`, tres en total.
+
+## Aceptación 2 — Persistencia y política Streams
+
+Resultados del gap 1: `aof_enabled:1` y `appendfsync everysec` en el maestro previo y réplica `redis-streams-replica-1`. Resultado del gap 2: Streams `noeviction`.
+
+## Gap 3 / Aceptación 3 — Ensayo de failover y clientes
+
+Antes del ensayo, `XLEN stream:pdf-processing` → `2022`; `XPENDING stream:pdf-processing extraction-workers` → `0`.
+
+Se añadieron cinco mensajes con los campos `document_id`, `object_key`, `correlation_id` y `schema_version=1`, sin `attempts`. IDs devueltos: `1794270162262-0`, `1794270162282-0`, `1794270162286-0`, `1794270162292-0`, `1794270162301-0`.
+
+El worker los movió a DLQ porque su validador requiere además `enqueued_at`: log observado `contrato invalido: falta el campo enqueued_at`. No se modificó código, por estar fuera de alcance. Esto demuestra una diferencia entre el contrato exigido por SPEC §5.4 y el contrato que acepta el worker desplegado; los mensajes de prueba no se cuentan como pérdida de failover.
+
+`docker kill infra-redis-streams-1` → `infra-redis-streams-1`.
+
+T0 UTC: `2026-11-10T00:22:45.872026569Z` (inmediatamente antes del kill).
+
+Logs de Sentinel: `+sdown` / `+odown` 00:22:53.944Z; promoción 00:22:54.671Z; `+switch-master myprimary redis-streams 6379 redis-streams-replica-2 6379` 00:22:55.749Z. T1: 00:22:55.749Z. Conmutación observada: **9.877 s**.
+
+`SENTINEL get-master-addr-by-name myprimary` → `redis-streams-replica-2`, `6379`.
+
+El worker seguía ejecutándose sin reinicio manual; logs durante la interrupción registraron `conexion con el master inservible; re-resolviendo`, errores de transporte y lecturas fallidas por `circuit breaker abierto`. No quedó observada una lectura/consumo exitoso posterior a la promoción dentro de la ventana capturada; reconexión funcional completa de Rust: no demostrada.
+
+`docker logs --since 5m infra-doc-service-1 2>&1 | rg -i 'redis|sentinel|reconnect|failover|readonly'` → sin coincidencias (salida vacía). Por lo tanto, reconexión automática del cliente Go: **no observable**; no hubo evidencia de resolución Sentinel ni de una escritura posterior al failover.
+
+Restauración: `docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel start redis-streams` → contenedor iniciado; `docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel exec -T redis-streams sh -c 'REDISCLI_AUTH=$(cat /run/secrets/redis_streams_password) redis-cli INFO replication'` posterior → `role:slave`, `master_host:redis-streams-replica-2`, `master_link_status:up`. Sentinel continúa informando `redis-streams-replica-2` como maestro. La replicación del nodo anterior quedó restablecida.
+
+La diferencia observada en mensajes de prueba es **5 entradas derivadas a DLQ por contrato inválido**, no pérdida atribuible al failover. No se atribuye una cifra de pérdida de failover: las entradas se consumieron antes del kill, y no se capturó el conteo de stream posterior en el nuevo maestro antes de continuar.
+
+## Gap 4 / Aceptación 4 — `WAIT`
+
+Con `redis-streams-replica-2` como maestro y en una misma conexión Redis:
+
+`XADD stream:pdf-processing * document_id wait-probe-20261110T002300Z object_key raw-pdfs/wait-probe-20261110T002300Z.pdf correlation_id wait-probe-20261110T002300Z schema_version 1` → `1794270188063-0`.
+
+`WAIT 1 5000` → `1` (una réplica confirmó la escritura dentro del timeout). `WAIT` reduce la ventana de pérdida, no la elimina; la convergencia la garantiza el reconciliador (SPEC §6.5).
+
+## Gap 5 — `min-idle-time`
+
+Runbook actualizado con `min-idle-time >= 2 x job_timeout`; para timeout duro de 60 s, mínimo 120 s. Motivo: impedir que otra instancia reclame el mensaje en vuelo de un worker lento.
+
+## Estado final del stack
+
+`docker compose -f compose/docker-compose.yml -f compose/docker-compose.sentinel-worker.yml --env-file .env --profile full --profile sentinel ps` → `redis-streams`, ambas réplicas y tres Sentinels `Up (healthy)`; doc-service y extraction-worker `Up (healthy)`. El antiguo maestro está como réplica sincronizada (`master_link_status:up`).
+
+## Handover
+
+- Aceptación 3 permanece abierta hasta instrumentar una operación real del cliente Go y verificar consumo/escritura posterior al failover en ambos clientes sin reinicios.
+- El equipo del worker debe resolver la incompatibilidad observada: el ensayo cumplió los campos de SPEC §5.4, pero el worker exigió `enqueued_at` adicional.

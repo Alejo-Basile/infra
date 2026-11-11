@@ -3,6 +3,98 @@
 # This file is mounted in the test Prometheus instead of alert.rules.yml
 
 groups:
+  - name: s5-p1-09-family-fixtures
+    interval: 5s
+    rules:
+      - alert: QueueDepthHigh
+        expr: test_queue_depth > 500
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: XLEN sobre umbral"
+          description: "Fixture aislado para comprobar escalado del worker."
+          runbook_url: "infra/runbooks/escalado-worker.md"
+      - alert: PELBacklog
+        expr: test_pel_pending > 100
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: PEL sobre umbral"
+          description: "Fixture aislado para comprobar diagnóstico de PEL/XAUTOCLAIM."
+          runbook_url: "infra/runbooks/failover-redis.md"
+      - alert: ExtractionErrors
+        expr: test_extraction_errors > 0
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: errores de extracción"
+          description: "Fixture aislado para comprobar diagnóstico de DLQ/corpus."
+          runbook_url: "infra/runbooks/errores-extraccion.md"
+      - alert: SentinelFailoverObserved
+        expr: test_sentinel_failover_event > 0
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: evento de failover Sentinel"
+          description: "Fixture aislado para comprobar diagnóstico y reconexión."
+          runbook_url: "infra/runbooks/failover-redis.md"
+      - alert: RedisPersistenceOrReplicaIssue
+        expr: test_redis_aof_enabled == 0 or test_redis_replica_link_up == 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Test: persistencia o replica Redis"
+          description: "Fixture aislado para comprobar AOF y enlace de réplica."
+          runbook_url: "infra/runbooks/failover-redis.md"
+      - alert: HighErrorRate
+        expr: test_gateway_5xx_ratio > 0.01
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Test: tasa 5xx Traefik"
+          description: "Fixture aislado para comprobar triage gateway/backend."
+          runbook_url: "infra/runbooks/gateway-trafico.md"
+      - alert: TraefikRateLimited
+        expr: test_gateway_429_ratio > 0.01
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: tasa 429 Traefik"
+          description: "Fixture aislado para comprobar triage de rate limiting."
+          runbook_url: "infra/runbooks/gateway-trafico.md"
+      - alert: AcmeCertificateExpiring
+        expr: test_certificate_seconds_to_expiry < 14 * 24 * 3600
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: certificado ACME próximo a expirar"
+          description: "Fixture aislado para comprobar diagnóstico ACME."
+          runbook_url: "infra/runbooks/certificados-traefik.md"
+      - alert: MinioDiskHigh
+        expr: test_minio_disk_used_ratio > 0.80
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: presión de disco MinIO"
+          description: "Fixture aislado para comprobar lifecycle y huérfanos."
+          runbook_url: "infra/runbooks/minio-espacio.md"
+      - alert: DocsStuck
+        expr: test_docs_oldest_intermediate_age_seconds > 900
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Test: documentos estancados"
+          description: "Fixture aislado para comprobar diagnóstico del reconciliador."
+          runbook_url: "infra/runbooks/reconciliador-documentos.md"
+      - alert: DocServiceNotReady
+        expr: test_readyz_up == 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Test: readiness no disponible"
+          description: "Fixture aislado para comprobar diagnóstico readiness/dependencias."
+          runbook_url: "infra/runbooks/healthchecks.md"
+
   - name: s4-p1-03-chain-test
     interval: 30s
     rules:
@@ -29,4 +121,4 @@ groups:
         annotations:
           summary: "DLQ con mensajes (fallos definitivos) - test stream"
           description: "Revisar XRANGE, corregir causa raiz y reintentar con la herramienta de replay. No borrar sin diagnosticar."
-          runbook_url: "infra/runbooks/failover-redis.md"
+          runbook_url: "infra/runbooks/errores-extraccion.md"

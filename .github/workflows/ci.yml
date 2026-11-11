@@ -20,3 +20,24 @@ jobs:
         # Se activa solo cuando exista docker-compose.yml (S0-P1-03)
         if: hashFiles('docker-compose.yml') != ''
         run: docker compose -f docker-compose.yml config --quiet
+
+  loki-image-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build Loki image with readiness probe
+        uses: docker/build-push-action@v6
+        with:
+          context: ./compose/loki
+          load: true
+          tags: loki:ci
+      - name: scan Loki image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: loki:ci
+          format: table
+          severity: CRITICAL
+          exit-code: '1'

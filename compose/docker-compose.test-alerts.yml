@@ -3,22 +3,33 @@
 
 name: s4p103-test
 
+x-hardening: &hardening
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+
 services:
   # Redis para tests aislados
   redis-test:
-    image: redis:7.2
+    image: redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a # redis:7.2-alpine3.22
+    user: "999"
+    <<: *hardening
     # Credencial efimera generada por scripts/test-chain-alerts.sh.
     # :? aborta si no esta definida, en vez de levantar sin password.
     command: ["--requirepass", "${REDIS_TEST_PASSWORD:?REDIS_TEST_PASSWORD requerido}"]
     networks: [test-data]
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     volumes:
       - redis-test-data:/data
     mem_limit: 128m
     cpus: 0.25
+    pids_limit: 100
 
   # Redis exporter para el test
   redis-exporter-test:
-    image: oliver006/redis_exporter:v1.93.0
+    image: oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820 # oliver006/redis_exporter:v1.93.0
+    user: "59000:59000"
+    <<: *hardening
     # Password por entorno, no por argv: no queda expuesto en /proc/<pid>/cmdline.
     environment:
       REDIS_ADDR: redis://redis-test:6379
@@ -27,12 +38,35 @@ services:
     networks: [test-data]
     mem_limit: 128m
     cpus: 0.25
+    pids_limit: 50
+    read_only: true
+    tmpfs: ["/tmp:size=8m,noexec,nosuid,nodev"]
     depends_on:
       - redis-test
 
+  # Synthetic metrics fixture for integrated alert delivery tests. It avoids
+  # perturbing the live Redis/Sentinel, disk, certificates, gateway, or services.
+  alert-fixture-test:
+    image: nginx:alpine@sha256:697b0b156c70b91130853fd0675c6be36665939d5f93dce2686be04b4c3f98a8 # nginx:alpine
+    user: "101"
+    <<: *hardening
+    cap_add: [NET_BIND_SERVICE]
+    volumes:
+      - ./prometheus/tests/s5-p1-09.fixture.txt:/usr/share/nginx/html/metrics.txt:ro
+    networks: [test-data]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=8m,noexec,nosuid,nodev
+      - /var/run:size=1m,noexec,nosuid,nodev
+    mem_limit: 64m
+    cpus: 0.1
+    pids_limit: 25
+
   # Prometheus para tests
   prometheus-test:
-    image: prom/prometheus:v2.53.4
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 # prom/prometheus:v3.16.0
+    user: "65534"
+    <<: *hardening
     command:
       - "--config.file=/etc/prometheus/prometheus.test.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -43,13 +77,21 @@ services:
     networks: [test-data, test-internal]
     mem_limit: 512m
     cpus: 0.5
+    pids_limit: 100
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   # Alertmanager para tests
   alertmanager-test:
-    image: prom/alertmanager:v0.34.1
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a # prom/alertmanager:v0.34.1
+    user: "65534"
+    <<: *hardening
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
@@ -59,6 +101,7 @@ services:
     networks: [test-internal]
     mem_limit: 128m
     cpus: 0.25
+    pids_limit: 50
     read_only: true
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev

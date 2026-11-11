@@ -1,0 +1,147 @@
+S5-P1-10 — Hardening de contenedores (T5)
+Fecha: 2026-11-10
+
+Alcance: cierre parcial. Se aplicaron y desplegaron hardening de filesystem/usuarios/límites/digests en el perfil full + sentinel. Persisten CRITICAL corregibles en varias imágenes upstream. No se modificaron Dockerfiles ni servicios de negocio. Las salidas de Compose se validaron con `config -q` para no mostrar variables interpoladas.
+
+## Baseline RED seguro
+
+Comando:
+docker compose --env-file infra/.env -f infra/compose/docker-compose.yml config -q
+Resultado observado: exit 0; configuración válida antes de los cambios de T5.
+
+Comando:
+docker compose --env-file infra/.env -f infra/compose/docker-compose.yml config --images
+Resultado baseline: se observaron refs por tag, entre ellas mongo:7.0, redis:7.2, traefik:v3.7, prom/prometheus:v2.53.4 y grafana/grafana:11.6.0.
+
+Comando:
+docker compose --env-file infra/.env -f infra/compose/docker-compose.yml ps
+Resultado observado: servicios visibles `doc-service`, `extraction-worker`, `minio`, `mongo`, `monolito`, Prometheus, Alertmanager y Redis figuraban healthy salvo Prometheus sin healthcheck. MinIO mostraba `9000-9001/tcp` sin puerto publicado en host. No se observó el stack completo del plan en esta salida.
+
+RED baseline filtrado (antes del cambio): mongo y Redis Streams tenían `user=` y `ReadonlyRootfs=false`; MinIO ya usaba UID 1001 pero `ReadonlyRootfs=false`. Servicios de aplicación presentaban `user=10001`/`10001:10001` y rootfs de solo lectura. El compose todavía tenía tags, y los dos healthchecks de aplicación consultaban `/healthz`.
+
+## Cambios T5 observados
+
+- El diff estructural final incluye `image` (digest o excepción local identificada), `user`, `read_only`, `tmpfs`, `pids_limit`, `mem_limit`, `cpus`, capacidades/seguridad, `HOME=/tmp` en init MinIO, y `/readyz` para doc-service/extraction-worker. No se interpolaron variables en la inspección de configuración.
+- Se agregó a CI de ambos repos un job que construye la imagen y ejecuta Trivy para `CRITICAL` con código de salida 1.
+- `doc-service/Dockerfile` y `extraction-worker/Dockerfile` conservan `USER 10001` y `USER 10001:10001` sin cambios.
+
+## Validación
+
+`docker compose ... config -q` del compose principal y de los overlays build y Sentinel terminó con exit 0. El fixture también pasó con `REDIS_TEST_PASSWORD=hardening-fixture`; sin esa variable, falló con el mensaje de variable requerida.
+
+Comandos:
+`docker exec infra-doc-service-1 wget -qO- http://localhost:8080/readyz`
+`docker exec infra-extraction-worker-1 curl -fsS http://localhost:8081/readyz`
+
+Salidas iniciales: doc-service `{"status":"ready","timestamp":"2026-11-10T04:36:30Z","service":"doc-service"}`; worker `{"status":"ok","checks":{"redis":"ok","minio":"ok","mongo":"ok"}}`. Tras el redeploy final, ambos comandos volvieron a responder con readiness satisfactoria; ver GREEN final.
+
+## Trivy local
+
+Se intentó primero escanear sin montar el socket Docker; Trivy no pudo acceder al daemon. Repetido con el socket montado, DB de vulnerabilidades descargada:
+
+`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.3 image --scanners vuln --severity CRITICAL --exit-code 1 --skip-version-check doc-service:local`
+
+Resultado: 0 CRITICAL; Alpine 3.20.10 (19 paquetes) y binario Go sin hallazgos detectados. Trivy advirtió que Alpine 3.20 ya no recibe soporte.
+
+`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.3 image --scanners vuln --severity CRITICAL --exit-code 1 --skip-version-check extraction-worker:t10-sentinel`
+
+Resultado histórico RED: 1 CRITICAL; `zlib1g`, CVE-2023-45853, versión `1:1.2.13.dfsg-1`, estado upstream `will_not_fix`, sin versión corregida indicada en Debian 12. La corrección y el escaneo final de imagen reconstruida se registran abajo.
+
+La primera etapa no tuvo inventario completo de digests ni servicios upstream hardenizados; su cierre/resultado final queda registrado abajo tras las pruebas de staging.
+
+## MinIO
+
+La salida de `docker compose ps` mostró `9000-9001/tcp` sin mapeo host. `docker port infra-minio-1` no devolvió mapeos. Esto demuestra que no hay publicación de puerto al host en el contenedor inspeccionado; no prueba por sí solo ausencia de exposición por red pública.
+
+## GREEN final — hardening desplegado
+
+Comando de despliegue (se pasaron los digests de los artefactos locales conocidos por variables de comando, sin mostrar ni modificar `infra/.env`):
+`DOC_SERVICE_DIGEST=sha256:aeb1cdcff2374e4a0a7c37006fef22476b17527b61eb2d5a3d2b13a79dee1e48 EXTRACTION_WORKER_DIGEST=sha256:006775524bd4cc8eca24e95cb7136485d5d79e0b8f230a60fd5a662fa119fb7b MONOLITO_DIGEST=sha256:0439e6a932d8ff40e5401bd574baa7d392f8ba35cd623e4ee34aec1f067442ef docker compose --env-file infra/.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.sentinel-worker.yml --profile full --profile sentinel up -d --no-build`
+
+Resultado: exit 0. El primer intento falló porque la sintaxis YAML inline dividió opciones `tmpfs` en mounts separados (`invalid mount path: 'nosuid'`); se corrigió citando cada valor. El siguiente intento detectó AOF Redis preexistente root-owned: Redis UID 999 no podía abrir `appendonly.aof.9.incr.aof`. Se verificó solo metadata de propietario y se cambió el owner de `/data/appendonlydir` a 999:999 en los tres volúmenes Streams; datos y archivos no se borraron. MinIO client falló inicialmente con rootfs RO porque `mc` intentaba escribir en `/.mc`; `HOME=/tmp` corrigió la ruta. Una reejecución de `minio-notify-init` tuvo un fallo DNS transitorio, registrado en su log filtrado; `up --force-recreate minio-notify-init` reintentó sin cambiar datos y terminó exit 0.
+
+`docker ps --format '{{.Names}} {{.Status}}` final: Sentinel-1/2/3, monolito, doc-service, extraction-worker, Redis Streams + réplicas, Traefik, Mongo, Redis rate-limit, Alertmanager y MinIO aparecen `healthy`. Redis exporter, Grafana, Prometheus y Loki están `Up` y no tienen healthcheck declarado. `mongo-init`, `minio-init`, `minio-notify-init` terminaron exit 0 (jobs one-shot esperados). No se levantó el perfil chaos de Pumba.
+
+Inspección filtrada final: todos los contenedores creados del perfil full/sentinel usan UID numérico != 0 y `ReadonlyRootfs=true`; todos tienen `cap_drop=[ALL]` y `no-new-privileges:true`. Traefik añade solo `NET_BIND_SERVICE` para :80/:443 y grupo de socket 969 para leer Docker socket. Servicios de datos añaden SETUID/SETGID/CHOWN/DAC_OVERRIDE por el entrypoint oficial; Redis Streams necesitó corregir owner del AOF antes de poder correr no-root. Los one-shot MinIO corren UID 1001, rootfs RO y `/tmp` writable.
+
+Límites observados vía inspect:
+
+| Servicio/grupo | Memoria | CPU | PID |
+|---|---:|---:|---:|
+| Mongo, MinIO | 1 GiB | 1.0 | 200 |
+| Mongo-init | 256 MiB | 0.5 | 100 |
+| Redis Streams/réplicas | 256 MiB | 0.5 | 100 |
+| Redis rate-limit | 128 MiB | 0.25 | 100 |
+| Sentinels | 128 MiB | 0.25 | 50 |
+| MinIO init jobs | 128 MiB | 0.25 | 100 |
+| Worker | 768 MiB | 1.5 | 200 |
+| Doc-service | 512 MiB | 1.0 | 300 |
+| Monolito | 512 MiB | 1.0 | 200 |
+| Prometheus, Loki, Grafana | 512 MiB | 0.5 | 100 |
+| Alertmanager, redis-exporter | 128 MiB | 0.25 | 50 |
+| Traefik | 256 MiB | 0.5 | 100 |
+| Pumba (perfil chaos) | 64 MiB | 0.1 | 50 |
+| Fixture alertas: Redis/exporter | 128 MiB | 0.25 | 100/50 |
+| Fixture alertas: nginx | 64 MiB | 0.1 | 25 |
+| Fixture alertas: Prometheus/Alertmanager | 512/128 MiB | 0.5/0.25 | 100/50 |
+
+Bulkhead del worker es 4 y la proyección medida es ~436 MiB frente al límite de 768 MiB.
+
+| Imagen/servicio | Digest/identificador fijado | Trivy CRITICAL (imagen) |
+|---|---|---:|
+| mongo:7.0 | `sha256:1f995ad6fdb93244a1addab1b58f934a0bc2f5643c38e02f5e9d7f0c7d227a7b` | 1 (gosu; fix disponible) |
+| redis:7.2 | `sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c` | 3 (fix disponible) |
+| bitnamilegacy/minio | `sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20` | 17 OS + 5 binario |
+| bitnamilegacy/minio-client | `sha256:1a2f12802dc75668aded6de1b7b53d67518ac2a7df823760d9f935235fb3d948` | 16 OS + 2 binario |
+| traefik:v3.7 | `sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0` | 0 |
+| monolito local (`monolito:latest`, tag exception) | image ID `sha256:0439e6a932d8ff40e5401bd574baa7d392f8ba35cd623e4ee34aec1f067442ef` | 0 |
+| doc-service staging | repo digest `sha256:aeb1cdcff2374e4a0a7c37006fef22476b17527b61eb2d5a3d2b13a79dee1e48` | 0 |
+| doc-service local (`doc-service:local`, tag exception) | image ID `sha256:a6709491bee5577fe612d8c5237a75aec4b635f569de587602f7187128b09147` | 0 en el escaneo local previo |
+| extraction-worker staging final | image ID `sha256:c07d2e9ed2b21076c6eada2b842ed6c72502a11b4034709c53b413c0dfd66acd` | 0 sin ignorar |
+| prom/prometheus:v2.53.4 | `sha256:502ad90314c7485892ce696cb14a99fceab9fc27af29f4b427f41bd39701a199` | 3 por binario (3 CVE) |
+| prom/alertmanager:v0.34.1 | `sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a` | 0 |
+| oliver006/redis_exporter:v1.93.0 | `sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820` | 0 |
+| grafana/loki:3.4.2 | `sha256:776847cc648cf21d309560fb9fde98dc0454156be0ababf252bbfca07dadf8af` | 2 (fix disponible) |
+| grafana/grafana:11.6.0 | `sha256:b739cda4b61ba3b90707578b643a22cd851fecf4498e6c6ec2d8f9d622a5d0b2` | 3 OS + 5 binario + CLI/server |
+| gaiaadm/pumba:0.11.0 | `sha256:0b156286862c20894831c70cfc461da88efb958c05684dafe78bbe144b480633` | 2 (fix disponible) |
+| nginx:alpine (fixture) | `sha256:697b0b156c70b91130853fd0675c6be36665939d5f93dce2686be04b4c3f98a8` | 0 |
+
+El informe de scan incluye hallazgos repetidos por binarios/SPDX; ver tabla completa en la salida del comando. No se consideran mitigados los CRITICAL corregibles de Mongo, Redis, MinIO/MinIO-client, Prometheus, Loki, Grafana y Pumba. Monolito y los artefactos locales `monolito:latest`/`doc-service:local` permanecen como tag exceptions: sus IDs inmutables se anotan aquí porque no se comprobó que Compose pueda crear un build tag con `name@sha256:<image-id>`.
+
+Worklist de hallazgos corregibles (no aceptados como excepciones): Mongo/gosu `CVE-2025-68121`; Redis `CVE-2026-13221`, `CVE-2026-42496`, `CVE-2026-8376`; MinIO/MinIO-client `CVE-2026-111497`, `CVE-2026-33845`, `CVE-2026-42010`, `CVE-2026-13221`, `CVE-2026-42496`, `CVE-2026-8376`, `CVE-2026-31789`, `CVE-2026-77405`, `CVE-2026-77408`, `CVE-2026-77411`, `CVE-2026-33186`, `CVE-2025-68121`; Prometheus `CVE-2024-41110`, `CVE-2026-33186`, `CVE-2025-68121`; Loki `CVE-2026-33186`, `CVE-2025-68121`; Grafana `CVE-2026-111497`, `CVE-2026-31789`, `GHSA-r277-6w6q-xmqw`, `CVE-2026-33815`, `CVE-2026-33816`, `CVE-2026-33186`, `CVE-2025-68121`; Pumba `CVE-2024-41110`, `CVE-2025-68121`. Mitigación pendiente: actualizar cada image/tag a una versión con fix, resolver digest nuevo, desplegar y repetir Trivy; los CRITICAL corregibles quedan como bloqueo, no se ignoran.
+
+## Intento de corrección de CVE-2023-45853 en worker
+
+Comando:
+`docker manifest inspect --verbose debian:trixie-slim | jq -r '.[0].Descriptor.digest'`
+
+Resultado: `sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392`.
+
+Comando:
+`docker run --rm --entrypoint /bin/sh aquasec/trivy:0.69.3 -c 'trivy image --image-src remote --scanners vuln --severity CRITICAL --format table --report summary debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392'`
+
+Resultado: Debian 13.7 base con 0 CRITICAL. Se aplicó el cambio a `extraction-worker/Dockerfile`, manteniendo `USER 10001:10001` y fijando el digest de runtime.
+
+Comando:
+`docker build --pull --tag extraction-worker:t5-hardening --file Dockerfile .` (workdir `extraction-worker`)
+
+Resultado: build completado; ID `sha256:c07d2e9ed2b21076c6eada2b842ed6c72502a11b4034709c53b413c0dfd66acd`, usuario de imagen `10001:10001`.
+
+Comando:
+`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --entrypoint /bin/sh aquasec/trivy:0.69.3 -c 'trivy image --scanners vuln --severity CRITICAL --exit-code 1 --format table --report summary extraction-worker:t5-hardening'`
+
+Resultado: Debian 13.7; 0 CRITICAL; exit 0. No se requiere allowlist ni `ignore-unfixed` para el worker actualizado. Los gates CI quedaron sin excepciones y con `exit-code: 1` para CRITICAL.
+
+Comando de redeploy final:
+`DOC_SERVICE_DIGEST=sha256:aeb1cdcff2374e4a0a7c37006fef22476b17527b61eb2d5a3d2b13a79dee1e48 EXTRACTION_WORKER_TAG=t5-hardening EXTRACTION_WORKER_DIGEST=sha256:c07d2e9ed2b21076c6eada2b842ed6c72502a11b4034709c53b413c0dfd66acd docker compose --env-file infra/.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.sentinel-worker.yml --profile full --profile sentinel up -d --no-build`
+
+Resultado: exit 0; `infra-extraction-worker-1` quedó `healthy` usando `extraction-worker:t5-hardening@sha256:c07d2e9ed2b21076c6eada2b842ed6c72502a11b4034709c53b413c0dfd66acd`. El resultado histórico Debian 12/CVE-2023-45853 permanece como RED, no como hallazgo actual del worker.
+
+## Consola MinIO — red
+
+Comandos:
+`docker network inspect --format '{{.Name}}: {{range .Containers}}{{.Name}} {{end}}' infra_edge infra_internal infra_data`
+`docker port infra-minio-1`
+`rg -n '9001|9000' infra/traefik`
+
+Salida observada: `infra_edge` contiene solo Traefik; MinIO está solo en `infra_data`; `infra_internal` no contiene MinIO. `docker port` vacío. Única ruta de Traefik hallada apunta `http://minio:9000`; comentario explícito dice consola 9001 nunca se enruta. Sin publicación host ni ruta pública observada.

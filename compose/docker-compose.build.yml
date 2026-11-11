@@ -2,6 +2,8 @@
 # desde el checkout local sin pisar el tag publicado en GHCR.
 services:
   doc-service:
+    # Local build uses a tag; Compose build tagging by local image ID is not established.
+    # The observed immutable image ID is recorded in the T5 evidence.
     image: doc-service:local
     build:
       context: ${DOC_SERVICE_BUILD_CONTEXT:-../../doc-service}

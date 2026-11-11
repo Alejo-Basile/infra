@@ -1,0 +1,25 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "short"}}, "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "redis_stream_length{stream=\"stream:pdf-processing\"}", "refId": "A"}], "title": "Cola: XLEN stream:pdf-processing", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "short"}}, "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}, "id": 2, "targets": [{"expr": "redis_stream_group_messages_pending{stream=\"stream:pdf-processing\",group=\"extraction-workers\"}", "refId": "A"}], "title": "Redis Streams: XPENDING", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "s"}}, "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}, "id": 3, "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(worker_extraction_duration_seconds_bucket[5m])))", "refId": "A"}], "title": "Extracción: latencia p95 (métrica pendiente)", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "ops"}}, "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8}, "id": 4, "targets": [{"expr": "sum(rate(worker_documents_total{outcome=\"rejected\"}[5m])) + sum(rate(worker_dlq_total[5m]))", "refId": "A"}], "title": "Errores de extracción / REJECTED", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "short"}}, "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8}, "id": 5, "targets": [{"expr": "redis_instance_info{role=\"master\"}", "refId": "A"}], "title": "Redis: rol actual (proxy; no informa quorum)", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "percentunit"}}, "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8}, "id": 6, "targets": [{"expr": "1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes", "refId": "A"}], "title": "MinIO: uso de disco", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "ops"}}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}, "id": 7, "targets": [{"expr": "sum by (code) (rate(traefik_service_requests_total{code=~\"4..|5..\"}[5m]))", "legendFormat": "{{code}}", "refId": "A"}], "title": "Traefik: tasa 4xx/5xx", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "ops"}}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}, "id": 8, "targets": [{"expr": "sum(rate(traefik_service_requests_total{code=\"429\"}[5m]))", "refId": "A"}], "title": "Traefik: tasa 429", "type": "timeseries"}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["s5", "p1", "alertas"],
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "S5-P1: Alertas accionables",
+  "uid": "s5-p1-alertas",
+  "version": 1
+}

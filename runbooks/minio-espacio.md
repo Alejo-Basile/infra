@@ -4,7 +4,7 @@ Aplica a las alertas del grupo `s1-p1-13-infra`:
 
 | Alerta | Severidad | Condicion | Tiempo |
 | --- | --- | --- | --- |
-| `MinioDiskHigh` | warning | uso > 70 por ciento | 5m |
+| `MinioDiskHigh` | warning | uso > 80 por ciento | 5m |
 | `MinioDiskCritical` | critical | uso > 85 por ciento | 5m |
 
 Origen de la tarea: S5-P1-04 (`docs/plan-P1.md` §3.6). La regla original usaba
@@ -103,6 +103,6 @@ aparece un requisito de retencion legal o de auditoria mayor a 30 dias.
 
 | Situacion | Accion |
 | --- | --- |
-| warning > 70 por ciento | purgar huerfanos y confirmar lifecycle en la proxima ventana |
+| warning > 80 por ciento | purgar huerfanos y confirmar lifecycle en la proxima ventana |
 | critical > 85 por ciento | actuar en el momento: limpiar host o ampliar volumen |
 | escrituras rechazadas / `UPLOAD_FAILED` en masa | incidente: ampliar volumen y reprocesar los documentos fallidos |

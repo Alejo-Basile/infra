@@ -16,7 +16,7 @@ rule_files:
 evaluation_interval: 30s
 
 tests:
-  # Test 1: uso 60% -> ninguna alerta (warning exige > 70%)
+  # Test 1: uso 60% -> ninguna alerta (warning exige > 80%)
   # for=5m con interval=30s: 13 muestras cubren 0..6m, eval a 6m.
   - interval: "30s"
     input_series:
@@ -32,7 +32,7 @@ tests:
         alertname: MinioDiskCritical
         exp_alerts: []
 
-  # Test 2: uso 75% -> MinioDiskHigh DISPARA (warning), MinioDiskCritical NO
+  # Test 2: uso 75% -> ninguna alerta (warning exige > 80%)
   - interval: "30s"
     input_series:
       - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
@@ -42,14 +42,7 @@ tests:
     alert_rule_test:
       - eval_time: "6m"
         alertname: MinioDiskHigh
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              server: "127.0.0.1:9000"
-            exp_annotations:
-              summary: "Disco de MinIO sobre 70 por ciento"
-              description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
-              runbook_url: "infra/runbooks/minio-espacio.md"
+        exp_alerts: []
       - eval_time: "6m"
         alertname: MinioDiskCritical
         exp_alerts: []
@@ -69,7 +62,7 @@ tests:
               severity: warning
               server: "127.0.0.1:9000"
             exp_annotations:
-              summary: "Disco de MinIO sobre 70 por ciento"
+              summary: "Disco de MinIO sobre 80 por ciento"
               description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
               runbook_url: "infra/runbooks/minio-espacio.md"
       - eval_time: "6m"

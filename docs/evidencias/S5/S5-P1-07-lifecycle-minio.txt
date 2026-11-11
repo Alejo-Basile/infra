@@ -1,0 +1,306 @@
+# S5-P1-07 — S1-P1-06: Lifecycle MinIO — evidencia (2026-11-09)
+
+Tarea: T2 de `docs/plan-cierre-S5-P1.md` §3. Evidencia obtenida en staging con
+`infra-minio-1`, red `infra_data`, y `bitnamilegacy/minio-client:2025.7.21`.
+Las credenciales se resolvieron desde `infra/.env`; sus valores no se imprimen
+ni se archivan.
+
+## Reglas e idempotencia
+
+Desde `infra/`, para cada ejecución se exportaron las variables del entorno sin
+imprimir sus valores y se ejecutó el comando del runbook:
+
+```sh
+set -a; . ./.env; set +a
+docker compose -f compose/docker-compose.yml --profile full --env-file .env run --rm minio-init
+```
+
+Corrida 1: exit 0; termina con `MinIO bootstrap completo: buckets + identidades + lifecycle.`
+El bootstrap informó las dos reglas ya presentes y verificadas. La inspección:
+
+```sh
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/raw-pdfs
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/extracted-txt
+```
+
+Salida observada (una regla habilitada por bucket):
+
+```text
+raw-pdfs       ID=db7pnsbf61i004epe9ig  STATUS=Enabled  DAYS TO EXPIRE=7
+extracted-txt  ID=db7pnsbf61i00958n5ng  STATUS=Enabled  DAYS TO EXPIRE=30
+```
+
+Corrida 2: mismo comando de bootstrap, exit 0. Salidas relevantes:
+
+```text
+Lifecycle ya presente: local/raw-pdfs expira a los 7 dias (sin cambios).
+Lifecycle ya presente: local/extracted-txt expira a los 30 dias (sin cambios).
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-txt=30d.
+MinIO bootstrap completo: buckets + identidades + lifecycle.
+```
+
+Los `ilm rule ls` de la corrida 1 y los listados post-corrida 2 muestran los
+mismos IDs y días; no hubo duplicados.
+
+## Abort multipart: mecanismo nativo y límite de lifecycle
+
+Consulta de solo lectura:
+
+```sh
+mc admin config get local api
+```
+
+Campos relevantes observados:
+
+```text
+stale_uploads_cleanup_interval=6h stale_uploads_expiry=24h
+```
+
+La política activa es el recolector nativo del servidor: antigüedad 24h,
+revisión cada 6h. Es global a la instancia (no configurable por bucket en esta
+operación) y aplica a `raw-pdfs` y `extracted-txt`. No se cambió la configuración
+del servidor.
+
+Se creó exclusivamente el bucket scratch `s5-lifecycle-exp-test`. La
+importación se hizo allí porque `mc ilm rule import` reemplaza la configuración
+completa del bucket; nunca se importó en buckets de datos. El JSON de entrada
+incluyó una expiración normal de un día y el abort solicitado:
+
+```sh
+mc ilm rule import local/s5-lifecycle-exp-test
+```
+
+Entrada suministrada por stdin:
+
+```json
+{"Rules":[{"ID":"expiry-test","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":1},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}
+```
+
+Salida: `Lifecycle configuration imported successfully to
+local/s5-lifecycle-exp-test.` Exportación:
+
+```sh
+mc ilm rule export local/s5-lifecycle-exp-test
+```
+
+```json
+{"Rules":[{"Expiration":{"Days":1},"ID":"expiry-test","Status":"Enabled"}]}
+```
+
+El campo `AbortIncompleteMultipartUpload` no se conservó. Esto es consistente
+con minio/minio#19115 (“we do not support it… we automatically handle the
+expiration of multipart uploads”). El `mc ilm rule add --help` y
+`mc ilm rule edit --help` de la imagen fijada no tienen opción de abort. Por
+tanto, la aceptación de abort se cumple mediante el recolector nativo, no una
+regla lifecycle ficticia.
+
+## Prueba de expiración forzada — NOT MET
+
+Todas las pruebas se limitaron al bucket scratch `s5-lifecycle-exp-test`; no se
+forzaron fechas en `raw-pdfs` ni en `extracted-txt`.
+
+1. `mc ilm rule add --expire-days 0 --prefix "" local/s5-lifecycle-exp-test`
+   → `expiration days cannot be set to zero.`
+2. `mc ilm rule add --expire-date 2026-11-08T00:00:00Z --prefix "" local/s5-lifecycle-exp-test`
+   → `flag provided but not defined: -expire-date`; el listado de flags no
+   contiene `--expire-date`.
+3. Importación scratch con `"Expiration":{"Days":0}` →
+   `Unable to set new lifecycle rules. The XML you provided was not well-formed
+   or did not validate against our published schema.`
+4. `mc admin scanner --help` solo ofrece `status` y `trace`; no se encontró una
+   opción documentada para acelerar el scanner. No se realizó espera de hasta
+   10 minutos ni se observó borrado: la aceptación de expiración queda NOT MET.
+
+No se afirma ningún tiempo de borrado observado. Se requiere repetir una prueba
+con un método de fecha/scanner compatible antes de marcarla como satisfecha.
+
+## Objeto de comprobación de ventana PENDING_UPLOAD
+
+Se creó el objeto de prueba en `raw-pdfs` con `mc pipe` (25 bytes), y luego se
+consultó `mc stat local/raw-pdfs/s5-p1-lifecycle-test.pdf`:
+
+```text
+Name      : s5-p1-lifecycle-test.pdf
+Date      : 2026-11-09 20:28:59 UTC
+Size      : 25 B
+Expiration: 2026-11-17 00:00:00 UTC (lifecycle-rule-id: db7pnsbf61i004epe9ig)
+Content-Type: application/pdf
+```
+
+El vencimiento mostrado corresponde a aproximadamente siete días. Durante la
+prueba no se observó eliminación (la ventana de decisión del reconciliador es
+de minutos frente a esos siete días). La notificación MinIO `ObjectCreated`
+puede emitirse para esta clave; el handler no procesa IDs de documento
+desconocidos (no se usó una carga de documento real). Se limpió el objeto:
+
+```sh
+mc rm local/raw-pdfs/s5-p1-lifecycle-test.pdf
+```
+
+Salida: `Removed local/raw-pdfs/s5-p1-lifecycle-test.pdf.`
+
+## Limpieza
+
+El bucket scratch `s5-lifecycle-exp-test` se eliminó con
+`mc rb --force local/s5-lifecycle-exp-test`; salida:
+`Removed local/s5-lifecycle-exp-test successfully.` El listado final mostró solo
+`raw-pdfs` y `extracted-txt`. El objeto temporal de `raw-pdfs` también fue
+eliminado. No se alteraron objetos de datos reales ni se modificó configuración
+del servidor.
+
+## Sondeo adicional de expiración con `Expiration.Date` — rechazado
+
+Sondeo único en el bucket scratch `s5-lifecycle-exp-test`; no se importó ninguna
+regla ni se escribió objeto en `raw-pdfs` o `extracted-txt`. Desde `infra/` se
+recreó el bucket:
+
+```sh
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 mb local/s5-lifecycle-exp-test
+```
+
+Salida: `Bucket created successfully `local/s5-lifecycle-exp-test`.`
+
+Se calculó la fecha UTC tres minutos adelante y se pasó el JSON por stdin a
+`mc ilm rule import` (la sintaxis admite stdin; no se creó archivo local):
+
+```sh
+set -a; . ./.env; set +a
+DATE=$(date -u -d '+3 minutes' +%Y-%m-%dT%H:%M:%SZ)
+printf '{"Rules":[{"ID":"exp-date-probe","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Date":"%s"}}]}\n' "$DATE" |
+  docker run --rm -i --network infra_data --entrypoint mc \
+    -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    bitnamilegacy/minio-client:2025.7.21 ilm rule import local/s5-lifecycle-exp-test
+```
+
+Valor observado: `DATE=2026-11-09T20:34:38Z`. Salida exacta del cliente:
+
+```text
+mc: <ERROR> Unable to set new lifecycle rules: 'Date' must be at midnight GMT.
+```
+
+La regla fue rechazada porque la fecha debe ser medianoche GMT. Como no se
+instaló una regla, no se creó objeto ni se inició polling; no hay resultado de
+borrado que reportar. Esta vía tampoco permite una fecha de expiración tres
+minutos adelante.
+
+Limpieza ejecutada:
+
+```sh
+set -a; . ./.env; set +a
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 rb --force local/s5-lifecycle-exp-test
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 ls local/
+```
+
+Salida: `Removed `local/s5-lifecycle-exp-test` successfully.` El listado mostró
+solo `extracted-txt/` y `raw-pdfs/`; no quedó bucket scratch.
+
+## Purga de expiración bajo demanda con batch — borrado observado
+
+El cliente fijado incluye batch. Ayudas consultadas (sin requerir credenciales):
+
+```sh
+docker run --rm --entrypoint mc bitnamilegacy/minio-client:2025.7.21 batch --help
+docker run --rm --entrypoint mc bitnamilegacy/minio-client:2025.7.21 batch generate --help
+docker run --rm --entrypoint mc bitnamilegacy/minio-client:2025.7.21 batch start --help
+```
+
+Las ayudas muestran `generate`, `start`, `list` y `describe`; `generate` acepta
+`expire` y `start` recibe `TARGET JOBFILE`. Se creó el bucket scratch y un objeto
+de 26 bytes:
+
+```sh
+mc mb local/s5-lifecycle-exp-test
+printf 'batch expiry probe object\n' | mc pipe local/s5-lifecycle-exp-test/batch-expiry-test.txt
+mc ls --recursive local/s5-lifecycle-exp-test
+mc stat local/s5-lifecycle-exp-test/batch-expiry-test.txt
+```
+
+En staging, `mc` se ejecutó mediante el contenedor de cliente en la red
+`infra_data`, con el alias `local` autenticado mediante variables de `.env` no
+impresas. Salida antes de la purga:
+
+```text
+Objeto: batch-expiry-test.txt
+mc ls: [2026-11-09 20:34:35 UTC] 26B STANDARD batch-expiry-test.txt
+mc stat Date: 2026-11-09 20:34:35 UTC; Size: 26 B; Content-Type: text/plain
+```
+
+Se esperó hasta `2026-11-09T20:35:49Z` (más de un minuto desde la creación).
+Plantilla obtenida con el comando de staging siguiente; se ajustó por stdin,
+sin escribir archivos fuera de las superficies autorizadas:
+
+```sh
+set -a; . ./.env; set +a
+docker run --rm --network infra_data --entrypoint mc \
+  -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  bitnamilegacy/minio-client:2025.7.21 batch generate local expire
+```
+
+El YAML exacto enviado a `mc batch start local /dev/stdin` fue:
+
+```yaml
+expire:
+  apiVersion: v1
+  bucket: s5-lifecycle-exp-test
+  rules:
+    - type: object
+      olderThan: 1m
+      purge:
+        retainVersions: 0
+```
+
+Comando de inicio y salida observada:
+
+```sh
+set -a; . ./.env; set +a
+printf 'expire:\n  apiVersion: v1\n  bucket: s5-lifecycle-exp-test\n  rules:\n    - type: object\n      olderThan: 1m\n      purge:\n        retainVersions: 0\n' |
+  docker run --rm -i --network infra_data --entrypoint mc \
+    -e "MC_HOST_local=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    bitnamilegacy/minio-client:2025.7.21 batch start local /dev/stdin
+```
+
+```text
+Successfully started 'expire' job `expire-6cZdUwtry3GuVDbmVSHtAP:-1` on '2026-11-09 20:35:53.065623546 +0000 UTC'
+```
+
+En staging se usó el wrapper `docker run --rm -i --network infra_data
+--entrypoint mc` con `MC_HOST_local` configurado desde `.env` sin revelar
+credenciales. El job inició a las 20:35:53.065 UTC. `mc batch list local` lo
+mostró como `completed` (“6 seconds ago” al consultar), y
+`mc batch describe local expire-6cZdUwtry3GuVDbmVSHtAP:-1` confirmó el job
+`expire`, bucket scratch, regla `olderThan: 1m`, tipo `object` y
+`retainVersions: 0`.
+
+Después del inicio, `mc ls --recursive local/s5-lifecycle-exp-test` no listó
+objetos y `mc stat local/s5-lifecycle-exp-test/batch-expiry-test.txt` respondió:
+
+```text
+mc: <ERROR> Unable to stat `local/s5-lifecycle-exp-test/batch-expiry-test.txt`. Object does not exist.
+```
+
+El borrado quedó observado para un objeto elegible en un ciclo batch bajo
+demanda: el job estaba `completed` en la primera consulta de estado, a los 6 s
+desde inicio. El objeto fue creado a las 20:34:35 UTC; por tanto, el borrado se
+observó ≤6 s desde inicio del job y ≤84 s desde su creación. Es una prueba
+controlada de purga inmediata del batch, no una medición del tiempo del scanner
+pasivo de las reglas regulares.
+
+Se limpió el bucket scratch:
+
+```sh
+mc rb --force local/s5-lifecycle-exp-test
+mc ls local/
+```
+
+Salida: bucket eliminado; el listado final mostró solamente `extracted-txt/` y
+`raw-pdfs/`. Ningún objeto de esos buckets fue modificado.

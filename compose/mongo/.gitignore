@@ -1,2 +1,6 @@
 # KeyFile del Replica Set (secreto compartido, generado localmente). NUNCA commitear.
+# Desde S2-P1-01 el archivo real vive en el secret store del host:
+#   ../secrets/mongo_keyfile  (git-ignored, dueño 999:999, modo 400)
+# y el compose lo monta desde ahi. Esta regla queda como defensa en profundidad
+# para que un `keyfile` generado por error en este directorio tampoco se commitee.
 keyfile

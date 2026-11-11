@@ -1,0 +1,12 @@
+test_queue_depth 501
+test_pel_pending 101
+test_extraction_errors 1
+test_sentinel_failover_event 1
+test_redis_aof_enabled 0
+test_redis_replica_link_up 0
+test_gateway_5xx_ratio 0.02
+test_gateway_429_ratio 0.02
+test_certificate_seconds_to_expiry 100
+test_minio_disk_used_ratio 0.81
+test_docs_oldest_intermediate_age_seconds 901
+test_readyz_up 0
