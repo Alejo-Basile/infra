@@ -506,6 +506,10 @@ services:
   traefik:
     image: traefik:v3.7@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0 # traefik:v3.7
     user: "65532"
+    # Provider Docker: el usuario 65532 debe pertenecer al grupo del socket del
+    # host (varia por maquina: getent group docker). Sin esto Traefik no puede
+    # leer labels, los routers de los servicios no se crean y todo responde 404.
+    group_add: ["${DOCKER_GID:?definir en .env}"]
     profiles: ["full"]
     <<: *hardening
     read_only: true
