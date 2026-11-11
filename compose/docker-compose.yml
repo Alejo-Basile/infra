@@ -329,7 +329,6 @@ services:
     profiles: ["core", "full"]
     <<: *hardening-data
     read_only: true
-    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
     secrets: [redis_ratelimit_password]
     entrypoint: ["/bin/sh", "-c", "export REDIS_RATELIMIT_PASSWORD=$$(cat /run/secrets/redis_ratelimit_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_RATELIMIT_PASSWORD"]
     volumes:
@@ -345,9 +344,10 @@ services:
       timeout: 3s
       retries: 6
 
-  # Internal only; rate-limit state uses the existing ephemeral Redis instance.
-  # Redis credentials are read from a Docker secret file, never inline.
-  # Identity and tuning are deferred to S7 (ADR-0005).
+  # --- rate-limiter (P1-04): servicio ForwardAuth sobre el Redis efimero -----
+  # Solo red interna: no se publica al host. Lee la password desde el secret,
+  # nunca inline. Identidad por cliente y tuning distribuido quedan para S7
+  # (ADR-0005); esta version minima da 429 en el gateway.
   ratelimitd:
     build:
       context: ../../platform-services/rate-limiter
@@ -508,8 +508,6 @@ services:
     user: "65532"
     profiles: ["full"]
     <<: *hardening
-    cap_add: [NET_BIND_SERVICE]
-    group_add: ["${DOCKER_SOCKET_GID:-969}"]
     read_only: true
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev

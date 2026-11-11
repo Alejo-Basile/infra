@@ -27,7 +27,7 @@ S2 cerró con la Fase 1 completa. Lo que S3 **no rehace** y lo que hereda:
 | `S1-P1-07` Redis AOF | ✅ HECHO | Ninguno |
 | `S1-P1-09/10` Mongo RS + usuarios | ✅ HECHO | Ninguno |
 | `S1-P1-12` Observabilidad | ✅ PARCIAL aceptado | `S3-P1-03` (trazabilidad) |
-| `S1-P1-13` Alertas accionables | ⏳ PARCIAL (2026-11-08): `QueueDepthHigh` corregida a métrica de negocio `docservice_documents_non_terminal > 500` (`for: 5m`, warning); reglas válidas y **firing real + recuperación** de `QueueDepthHigh`, `DocsStuck` y `DocsAccumulating` en ensayo de 520 documentos (§8). El contador fantasma resolvió con `non_terminal=0` aunque `lag=723`. `WorkerDown` también tuvo firing y recuperación. | Siguen pendientes las provocaciones `RedisMemHigh`, `PELBacklog`, `QueueNotAdvancing`, `HighErrorRate`, `LatencyP95High`; también recuperar `MinioDiskHigh/Critical` y `DLQNotEmpty`. Ver `evidencias/S2/S1-P1-13-alerts.txt` §8. |
+| `S1-P1-13` Alertas accionables | ⏳ PARCIAL (2026-11-07): reglas válidas + **4 firing real** (`QueueDepthHigh`, `MinioDiskHigh`, `MinioDiskCritical`, `DLQNotEmpty`); defecto de `redis_stream_group_lag` **resuelto** (`entries-read=1297`, `lag=723`); defecto de métrica de documentos **fix verificado en vivo** (build de HEAD expone `docservice_documents_*`) | Provocar firing de `DocsStuck`/`DocsAccumulating`, las 5 alertas restantes con sign-off y capturar las recuperaciones (ver `evidencias/S2/S1-P1-13-alerts.txt` §5, §6) |
 | `S1-P1-15` Hardening contenedores | ✅ CERRADO | Ninguno |
 | `S1-P1-14` Backups restaurando | ✅ CERRADO | Ninguno |
 | `S2-P1-01` Secretos + rotación | ✅ CERRADO | Ninguno |

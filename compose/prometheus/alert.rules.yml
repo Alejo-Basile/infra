@@ -14,10 +14,18 @@ groups:
     interval: 15s
     rules:
       - alert: QueueDepthHigh
-        # XLEN is the requested queue-depth signal. It includes entries retained
-        # after consumption, so use it as pressure/retention signal and diagnose
-        # lag and document states before scaling.
-        expr: redis_stream_length{stream="stream:pdf-processing"} > 500
+        # S5-P1-02 (medido en el ensayo real): NI XLEN NI el lag por separado
+        # representan el trabajo pendiente.
+        #   - XLEN nunca baja (las entradas quedan hasta XDEL/XTRIM).
+        #   - lag (entradas no entregadas) cae a 0 apenas el reader prefetchea,
+        #     aunque queden cientos de documentos sin procesar: la alerta
+        #     resolvia con 443/700 pendientes.
+        #   - En Redis 7.2.16 el campo lag de XINFO GROUPS es nil (el exporter
+        #     lo mapea a 0), por eso no se usa redis_stream_group_lag.
+        # El backlog real es no entregado + entregado sin confirmar.
+        #   no entregado = redis_stream_entries_added_total - redis_stream_group_entries_read
+        #   entregado sin confirmar = PEL (redis_stream_group_messages_pending)
+        expr: (redis_stream_entries_added_total{stream="stream:pdf-processing"} - ignoring(group) redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"} + ignoring(group) redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}) > 500
         for: 5m
         labels:
           severity: warning
