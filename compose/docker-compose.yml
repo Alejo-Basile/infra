@@ -52,6 +52,7 @@ volumes:
   alertmanager-data:
   grafana-data:
   loki-data:
+  promtail-positions:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -808,6 +809,37 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
+
+  promtail:
+    image: grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d # grafana/promtail:3.6.5
+    profiles: ["full"]
+    <<: *hardening
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/positions
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    healthcheck:
+      # La imagen de promtail no trae curl ni wget; el chequeo HTTP se hace con
+      # bash + /dev/tcp, que si estan disponibles en la base Debian de la imagen.
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/9080 && printf 'GET /ready HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   grafana:
     image: grafana/grafana:11.6.0
