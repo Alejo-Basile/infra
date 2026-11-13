@@ -28,3 +28,8 @@ schema_config:
 
 limits_config:
   retention_period: 168h # 7 dias en dev
+  # El shipper (promtail) arranca leyendo el backlog de Docker, que incluye
+  # entradas de hasta 7 dias atras. Con el rechazo por antiguedad activo Loki
+  # devuelve 400 por cada lote y ensucia el log de promtail sin aportar nada:
+  # las entradas fuera de `retention_period` igual se descartan por retencion.
+  reject_old_samples: false
