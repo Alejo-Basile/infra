@@ -27,12 +27,12 @@ Traefik", "desplegar buckets"...). La verificación en runtime del 05/10 demuest
 |---|---|---|
 | `S1-P1-01` Traefik entrypoint único + TLS | **Hecho en S0** (variante local mkcert, ADR-0016). `https://s3.localhost:8543/minio/health/live` → 200; `http` → 301; router `s3-api` solo al 9000. | Solo la evidencia formal y el DoD completo (certs por host + redirect). |
 | `S1-P1-04/05` Buckets + identidades MinIO | **Hecho** (`minio/init-buckets.sh` idempotente; policies `docservice-rw` / `worker-extract`; sin listado anónimo). | Test negativo `AccessDenied` + matriz `servicio×bucket×permiso` versionada. |
-| `S1-P1-07` Redis AOF / ACL / `noeviction` | **Hecho** (instancias separadas `redis-streams` AOF+noeviction y `redis-ratelimit` LRU; `appendonlydir` confirmado en disco). | **Test formal**: `XADD` sobrevive a `docker restart`. |
-| `S1-P1-09/10` Mongo RS `rs0` + usuarios | **Hecho** (`rs.status()` → PRIMARY; rol a medida `documentsUpdater` del ADR-0006: solo `update`+`find` sobre `documents`). | Verificación del `watch()` con evento < 1 s. |
+| `S1-P1-07` Redis AOF / ACL / `noeviction` | **Hecho y verificado** (instancias separadas `redis-streams` AOF+noeviction y `redis-ratelimit` LRU; `appendonly yes`/`appendfsync everysec`; `XADD` a stream dedicado sobrevive `docker restart` con el mismo ID, sin failover de Sentinel y con réplicas `master_link_status:up`; evidencia `S1-P1-07-aof-restart.txt`). | Nada. |
+| `S1-P1-09/10` Mongo RS `rs0` + usuarios | **Hecho y verificado** (`rs.status()` → PRIMARY; `db.hello().setName = rs0`; rol a medida `documentsUpdater` del ADR-0006: solo `update`+`find` sobre `documents`). Change Stream `update` → `UPLOADED` en 1 ms, y el relay real encoló en `stream:pdf-processing` (evidencia `S1-P1-09-changestream.txt`). | Nada. Desbloquea P2. |
 | `S1-P1-11` Índices + TTL con gracia | **Hecho por P2** (migraciones versionadas, issue #10). | P1 **verifica**, no crea: inspección de índices + cálculo documentado de la gracia. |
 | `S1-P1-02` Buffering 1 MB | Config hecha (`body-limit-1mb`). Plan decía: queda `EN CURSO` hasta S3 (parte b). | **Cierre completo posible en S1**: P2 ya emite la policy `POST` con `content-length-range` → se puede correr el test `EntityTooLarge` de 30 MB. |
 | `S1-P1-16` Exposición S3 por host dedicado | **Hecho** (router declarado, 9001 sin exposición, `mc anonymous get` denegado). | **Prueba de fuego SigV4** con flujo real (DoD de ADR-0016). |
-| `S1-P1-12` Observabilidad | Parcial: Prometheus/Loki/Grafana corriendo y provisionados. | Scrape del doc-service real (ya existe) + dashboard "recorrido de un `document_id`". |
+| `S1-P1-12` Observabilidad | **Hecho y verificado**: Prometheus/Loki/Grafana provisionados; target `doc-service` `up` por `dns_sd_configs`; se agregó el shipper `promtail` (antes Loki no recibía nada) y el dashboard `s1-dashboard-v1` tiene variable `document_id` con datos reales en los 5 paneles (evidencias `S1-P1-12a-prometheus.txt` y `S1-P1-12b-dashboard.txt`). | Nada para S1. |
 | `S1-P1-03` mTLS interno | Opcional (P2), no bloquea puertas. | Decisión y registro como deuda si aplica (S2). |
 | `S1-P1-06/08/13/14`, `S2-P1-01` (lifecycle, Sentinel, alertas, backups-restaurando, secretos) | Son **S2** con sus ensayos. | **NO adelantarlos a medias** (ver §8). |
 
@@ -190,17 +190,21 @@ docker exec infra-mongo-1 mongosh --quiet \
 Con el doc-service levantado (pair del miércoles) o con un `mongosh` manual:
 
 ```bash
-# Terminal A: watch con filtro del relay
+# Terminal A: watch con filtro del relay. OJO: `fullDocument: "updateLookup"` es
+# obligatorio; sin el, un evento `update` no trae `fullDocument` y el filtro nunca
+# matchea (el `hasNext()` bloquea y parece que el Change Stream no funciona).
 docker exec infra-mongo-1 mongosh --quiet -u "$MONGO_APP_USER" -p "$MONGO_APP_PASSWORD" \
   --authenticationDatabase documents documents --eval '
-    const cs = db.documents.watch([{$match:{operationType:"update","fullDocument.status":"UPLOADED"}}]);
-    const t0 = Date.now();
-    if (cs.hasNext()) print("latencia_ms:", Date.now()-t0);'
+    const cs = db.documents.watch(
+      [{$match:{operationType:"update","fullDocument.status":"UPLOADED"}}],
+      {fullDocument:"updateLookup", maxAwaitTimeMS:500});
+    print("WATCH_READY", Date.now());
+    for (let i=0;i<20;i++){ const e=cs.tryNext(); if(e){ print("EVENT_AT", Date.now(), String(e.documentKey._id)); break; } }'
 # Terminal B: provocar el update de un doc de prueba
 ```
 
 - **DoD**: evento recibido en < 1 s desde el `update` (requiere RS + `readConcern majority`).
-- **Evidencia**: `S1-P1-09-changestream.txt`.
+- **Evidencia**: `S1-P1-09-changestream.txt` (PASS 2026-11-13: latencia 1 ms).
 
 ### Pair P1+P2 (Mié) — sobre código real
 
@@ -406,12 +410,12 @@ Dashboard en Grafana (provisionado o exportado a `compose/grafana/dashboards/`):
 
 - [ ] DoD `S1-P1-01` cerrado (V-01) — Traefik + TLS + redirect, evidencia publicada.
 - [ ] DoD `S1-P1-04/05` cerrado — matriz de permisos commiteada + test `AccessDenied`.
-- [ ] DoD `S1-P1-07` cerrado — `XADD` sobrevive a `docker restart` (AOF).
-- [ ] DoD `S1-P1-09/10` cerrado — `watch()` < 1 s; rol del worker limitado verificado.
+- [x] DoD `S1-P1-07` cerrado — `XADD` sobrevive a `docker restart` (AOF).
+- [x] DoD `S1-P1-09/10` cerrado — `watch()` < 1 s; rol del worker limitado verificado.
 - [ ] DoD `S1-P1-11` verificado — índices + gracia TTL documentadas (owner de creación: P2).
 - [ ] DoD `S1-P1-02` **cerrado completo** (partes a y b) — adelantado de S3.
 - [ ] DoD `S1-P1-16` cerrado + ADR-0016 verificado con demo SigV4 (positivo y negativo).
-- [ ] DoD `S1-P1-12` parcial aceptado — scrape del doc-service + dashboard v1 con recorrido por `document_id`.
+- [x] DoD `S1-P1-12` cumplido — scrape del doc-service `up` + dashboard v1 con recorrido por `document_id` (shipper `promtail` agregado).
 - [ ] E2E-01 documentado: `PENDING_UPLOAD → UPLOADED` + mensaje deduplicado en el stream.
 - [ ] Pair P1+P2 ejecutado con commit compartido.
 - [ ] Evidencias en `infra/docs/evidencias/S1/` (12+ archivos).
