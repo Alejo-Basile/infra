@@ -1,0 +1,94 @@
+# S5-P1-04 — Stack aislado para probar umbrales de disco de MinIO.
+#
+# Objetivo: ejercitar MinioDiskHigh (70 %) y MinioDiskCritical (85 %) con las
+# reglas REALES de Prometheus, sin tocar el volumen infra_minio-data ni el disco
+# del host. El data dir de MinIO vive en un tmpfs de 512 MiB.
+#
+# Proyecto Compose propio (`s5p104-minio`) y puertos distintos para no chocar
+# con el stack `infra` en ejecucion:
+#   MinIO API        -> 19000
+#   Prometheus       -> 19090
+#   Alertmanager     -> 19093
+#
+# Uso (desde infra/):
+#   docker compose -f compose/docker-compose.test-minio-disk.yml -p s5p104-minio up -d
+#   docker compose -f compose/docker-compose.test-minio-disk.yml -p s5p104-minio down -v
+#
+# Para la orquestacion reproducible usar scripts/test-minio-disk-fill.sh.
+name: s5p104-minio
+
+services:
+  minio-test:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+    user: "1001"
+    read_only: true
+    # El data dir es tmpfs: 512 MiB de RAM, nunca el volumen infra_minio-data.
+    tmpfs:
+      - /bitnami/minio/data:size=512m
+      - /opt/bitnami/minio/tmp:size=16m,noexec,nosuid,nodev
+      - /tmp:size=64m,noexec,nosuid,nodev
+    environment:
+      HOME: /tmp
+      # mc escribe su config en $MINIO_CLIENT_CONF_DIR; sin esto intenta /.mc
+      # sobre el rootfs read-only y el entrypoint de Bitnami termina el server.
+      MINIO_CLIENT_CONF_DIR: /tmp/.mc
+      MINIO_ROOT_USER: "minioadmin"
+      MINIO_ROOT_PASSWORD: "minioadmin"
+      MINIO_REGION: "us-east-1"
+      # Sin token para el scrape local del stack de prueba.
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    ports:
+      - "19000:9000"
+    networks: [test-net]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  prometheus-test:
+    image: prom/prometheus:v2.53.4
+    user: "65534"
+    read_only: true
+    command:
+      - "--config.file=/etc/prometheus/minio-disk.test.yml"
+      - "--storage.tsdb.path=/tmp/prometheus"
+    volumes:
+      - ./prometheus/minio-disk.test.yml:/etc/prometheus/minio-disk.test.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    ports:
+      - "19090:9090"
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    networks: [test-net]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    depends_on:
+      - minio-test
+
+  alertmanager-test:
+    image: prom/alertmanager:v0.34.1
+    user: "65534"
+    read_only: true
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/tmp/alertmanager"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "19093:9093"
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    networks: [test-net]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 50
+
+networks:
+  test-net:
+    driver: bridge

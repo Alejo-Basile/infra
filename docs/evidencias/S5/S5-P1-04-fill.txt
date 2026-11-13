@@ -1,0 +1,100 @@
+# S5-P1-04 — Llenado aislado de MinIO 70/85 (stack s5p104-minio)
+# Fecha UTC de la corrida: 2026-11-13 (inicio 19:24:34Z, fin 19:37:13Z)
+# Entorno: host local del stack infra; MinIO sobre tmpfs de 512 MiB.
+# NO se toco el volumen infra_minio-data ni el disco del host.
+
+## Comando ejecutado (desde la raiz de infra/)
+
+$ S5P104_WAIT_CRITICAL=420 bash scripts/test-minio-disk-fill.sh
+
+## Salida cruda del script (stdout)
+
+[2026-11-13T19:24:34Z] Limpiando restos previos del proyecto s5p104-minio (idempotencia)
+[2026-11-13T19:24:34Z] Levantando stack aislado (s5p104-minio)
+[2026-11-13T19:24:35Z] Esperando a MinIO, Prometheus y Alertmanager
+[2026-11-13T19:24:35Z] Esperando el primer scrape de MinIO en Prometheus
+  tmpfs ok: /bitnami/minio/data size=512m project=s5p104-minio
+[2026-11-13T19:24:44Z] Llenando tmpfs a ~70%
+[2026-11-13T19:24:44Z] fill-70 inicio=2026-11-13T19:24:44Z fin=2026-11-13T19:24:44Z uso_tmpfs=0.7012
+[2026-11-13T19:31:12Z] MinioDiskHigh firing en Prometheus a las 2026-11-13T19:31:12Z
+[2026-11-13T19:31:12Z] MinioDiskHigh recibida en Alertmanager a las 2026-11-13T19:31:12Z
+[2026-11-13T19:31:12Z] Llenando tmpfs a ~85%
+[2026-11-13T19:31:12Z] fill-85 inicio=2026-11-13T19:31:12Z fin=2026-11-13T19:31:12Z uso_tmpfs=0.8517
+[2026-11-13T19:37:12Z] MinioDiskCritical firing en Prometheus a las 2026-11-13T19:37:12Z
+[2026-11-13T19:37:12Z] MinioDiskCritical recibida en Alertmanager a las 2026-11-13T19:37:12Z
+[2026-11-13T19:37:12Z] RESULTADO: MinioDiskHigh y MinioDiskCritical dispararon y Alertmanager las recibio
+[2026-11-13T19:37:12Z] Bajando el stack aislado y eliminando recursos del proyecto s5p104-minio
+
+## Comandos de llenado (internos del script)
+
+Forma exacta ejecutada por el script, con el count calculado para cada etapa:
+  docker compose -f compose/docker-compose.test-minio-disk.yml -p s5p104-minio exec -T minio-test \
+    sh -c "dd if=/dev/zero of=/bitnami/minio/data/fill-high.bin bs=1M count=<N> status=none"
+  docker compose -f compose/docker-compose.test-minio-disk.yml -p s5p104-minio exec -T minio-test \
+    sh -c "dd if=/dev/zero of=/bitnami/minio/data/fill-critical.bin bs=1M count=<N> status=none"
+
+El count se calcula sobre la capacidad observable de MinIO:
+  need = (usable_total * pct/100) - (usable_total - usable_free), redondeado hacia arriba a MiB.
+Etapa 70 %: uso_tmpfs resultante 0.7012 (sobre 512 MiB).
+Etapa 85 %: uso_tmpfs resultante 0.8517.
+
+## Valores de capacidad y consultas Prometheus/Alertmanager (capturados en vivo)
+
+[2026-11-13T19:31:12Z] Disparo de MinioDiskHigh
+  prometheus /api/v1/alerts (MinioDiskHigh):
+    state=firing value=7.012863159179688e-01
+  alertmanager /api/v2/alerts (MinioDiskHigh):
+    status.state=active startsAt=2026-11-13T19:31:11.665Z
+  minio /minio/v2/metrics/cluster:
+    minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"} 1.60370688e+08
+    minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"} 5.36870912e+08
+  prometheus expr usage:
+    0.7012863159179688
+
+[2026-11-13T19:31:12Z] Justo despues del llenado a 85 %
+  minio /minio/v2/metrics/cluster:
+    minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"} 1.60370688e+08
+    minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"} 5.36870912e+08
+  prometheus expr usage:
+    0.7012863159179688
+  (La metrica de capacidad de MinIO refresca con retardo; el valor 0.8517 se
+   confirma en el disparo de critical, abajo.)
+
+[2026-11-13T19:37:12Z] Disparo de MinioDiskCritical
+  prometheus /api/v1/alerts (MinioDiskCritical):
+    state=firing value=8.516921997070312e-01
+  alertmanager /api/v2/alerts (MinioDiskCritical):
+    status.state=active startsAt=2026-11-13T19:37:11.665Z
+  minio /minio/v2/metrics/cluster:
+    minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"} 7.9622144e+07
+    minio_cluster_capacity_usable_total_bytes{server="127.0.0.1:9000"} 5.36870912e+08
+  prometheus expr usage:
+    0.8516921997070312
+
+## Tiempos de accion medidos (UTC)
+
+Cruce 70 %:                    2026-11-13T19:24:44Z (uso_tmpfs=0.7012)
+MinioDiskHigh firing:          2026-11-13T19:31:12Z
+MinioDiskHigh en Alertmanager: 2026-11-13T19:31:12Z (startsAt 19:31:11.665Z)
+Retardo cruce->firing (70 %):  6m28s (incluye el refresco de metricas de MinIO y for: 5m)
+Cruce 85 %:                    2026-11-13T19:31:12Z (uso_tmpfs=0.8517)
+MinioDiskCritical firing:      2026-11-13T19:37:12Z
+MinioDiskCritical en Alertmanager: 2026-11-13T19:37:12Z (startsAt 19:37:11.665Z)
+Retardo cruce->firing (85 %):  6m00s (for: 5m)
+Mitigacion simulada inicio:    2026-11-13T19:37:12Z (liberar espacio)
+Mitigacion simulada fin:       2026-11-13T19:37:12Z
+Comando de mitigacion:         rm -f /bitnami/minio/data/fill-critical.bin (ejecutado, "rm ok")
+
+## Teardown confirmado (2026-11-13)
+
+$ docker compose -f compose/docker-compose.test-minio-disk.yml -p s5p104-minio ps
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
+
+$ docker ps -a --filter name=s5p104      -> sin contenedores
+$ docker volume ls | grep s5p104         -> sin resultados (exit 1)
+$ docker network ls | grep s5p104        -> sin resultados (exit 1)
+
+Stack principal intacto:
+  infra-minio-1        Up 50 minutes (healthy)
+  infra-prometheus-1   Up 4 hours (healthy)
+  infra-alertmanager-1 Up 4 hours (healthy)

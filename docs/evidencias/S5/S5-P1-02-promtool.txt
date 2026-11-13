@@ -1,0 +1,44 @@
+# S5-P1-02 — promtool: check rules + cuatro suites de tests
+# Fecha UTC de la corrida: 2026-11-13T19:38:16Z
+# Host: entorno local del stack infra
+# Comandos ejecutados desde la raiz de infra/ (salida sin editar):
+
+## 1. Validacion de reglas
+
+$ docker run --rm -v "$PWD/compose/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.53.4 check rules /etc/prometheus/alert.rules.yml
+
+Checking /etc/prometheus/alert.rules.yml
+  SUCCESS: 19 rules found
+
+exit=0
+
+## 2. Suites de tests de reglas
+
+$ for f in s4-p1-02 s4-p1-03 s5-p1-04 s5-p1-09; do echo "--- $f"; docker run --rm -v "$PWD/compose/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.53.4 test rules /etc/prometheus/tests/$f.rules.test.yml; echo "exit=$?"; done
+
+--- s4-p1-02
+Unit Testing:  /etc/prometheus/tests/s4-p1-02.rules.test.yml
+  SUCCESS
+
+exit=0
+--- s4-p1-03
+Unit Testing:  /etc/prometheus/tests/s4-p1-03.rules.test.yml
+  SUCCESS
+
+exit=0
+--- s5-p1-04
+Unit Testing:  /etc/prometheus/tests/s5-p1-04.rules.test.yml
+  SUCCESS
+
+exit=0
+--- s5-p1-09
+Unit Testing:  /etc/prometheus/tests/s5-p1-09.rules.test.yml
+  SUCCESS
+
+exit=0
+
+# Resultado: las cinco invocaciones terminaron con exit code 0 y promtool
+# imprimio SUCCESS en cada una. Los fixtures de QueueDepthHigh alimentan
+# redis_stream_entries_added_total, redis_stream_group_entries_read y
+# redis_stream_group_messages_pending, y las anotaciones esperadas coinciden
+# con la regla vigente (backlog = lag + PEL).

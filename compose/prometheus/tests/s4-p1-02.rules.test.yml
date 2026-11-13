@@ -10,6 +10,64 @@ rule_files:
 evaluation_interval: 30s
 
 tests:
+  # QueueDepthHigh stays inactive below the backlog threshold.
+  # backlog = (entries_added_total - entries_read) + PEL = 450 - 0 + 0.
+  - interval: "30s"
+    input_series:
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
+        values: '450 450 450 450 450 450 450 450 450 450 450 450 450'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: QueueDepthHigh
+        exp_alerts: []
+
+  # QueueDepthHigh fires after 5m with backlog above 500.
+  # backlog = 600 - 0 + 0 = 600.
+  - interval: "30s"
+    input_series:
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600 600'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: QueueDepthHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stream: stream:pdf-processing
+            exp_annotations:
+              summary: "Backlog de stream:pdf-processing (lag + PEL) supera 500 por 5m"
+              description: "Backlog = (redis_stream_entries_added_total - redis_stream_group_entries_read) + redis_stream_group_messages_pending. XLEN no mide profundidad (es monotónico) y el lag solo no alcanza (el prefetch lo lleva a 0). Confirmar con docservice_documents_non_terminal como corroboración. Si es backlog real, escalar workers con docker compose --profile full up -d --scale extraction-worker=N."
+              runbook_url: "infra/runbooks/escalado-worker.md"
+
+  # Accumulated Redis counters must not keep QueueDepthHigh firing after drain:
+  # backlog = (entries_added_total - entries_read) + PEL = 100 + 100 = 200.
+  - interval: "30s"
+    input_series:
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
+        values: '60000 60200 60400 60600 60800 61000 61200 61400 61600 61800 62000 62200 62400'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '60000 60100 60300 60500 60700 60900 61100 61300 61500 61700 61900 62100 62300'
+      - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 100 100 100 100 100 100 100 100 100 100 100 100'
+      - series: 'redis_stream_group_last_delivered_id{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420'
+      - series: 'redis_stream_last_generated_id{stream="stream:pdf-processing"}'
+        values: '1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420 1794085958420'
+      - series: 'docservice_documents_non_terminal'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: QueueDepthHigh
+        exp_alerts: []
+
   # Test 1: DocsStuck NO dispara si la antigüedad es 800s (< 900s)
   # Need data from at least 2m before eval_time for for=2m to evaluate.
   # eval_time=3m (180000ms), need data from 1m (60000ms). Using ms timestamps.
@@ -39,8 +97,8 @@ tests:
               severity: warning
               status: UPLOADED
             exp_annotations:
-              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
-              runbook_url: "infra/runbooks/restore-mongo.md"
+              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente)."
+              runbook_url: "infra/runbooks/reconciliador-documentos.md"
               summary: "Documento en estado intermedio (UPLOADED) hace mas de 15 min"
 
   # Test 3: DocsStuck DISPARA para PROCESSING (es estado intermedio operativo)
@@ -57,8 +115,8 @@ tests:
               severity: warning
               status: PROCESSING
             exp_annotations:
-              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente). Runbook: infra/runbooks/restore-mongo.md"
-              runbook_url: "infra/runbooks/restore-mongo.md"
+              description: "Revisar reconciliador (intervalo 5-10 min) y consumidores. Estados intermedios operativos: UPLOADED, QUEUED, PROCESSING, RETRYING, EXTRACTION_FAILED, COMPENSATING. PENDING_UPLOAD excluido (ventana de subida del cliente)."
+              runbook_url: "infra/runbooks/reconciliador-documentos.md"
               summary: "Documento en estado intermedio (PROCESSING) hace mas de 15 min"
 
   # Test 4: DocsAccumulating NO dispara si non_terminal = 5 (< 10)
@@ -85,6 +143,6 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              description: "La cola o el procesamiento no drena. Revisar PEL, DLQ y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales). Runbook: infra/runbooks/failover-redis.md"
-              runbook_url: "infra/runbooks/failover-redis.md"
+              description: "La cola o el procesamiento no drena. Revisar PEL, DLQ, dependencias y workers. Metrica: docservice_documents_non_terminal (excluye PENDING_UPLOAD y terminales)."
+              runbook_url: "infra/runbooks/reconciliador-documentos.md"
               summary: "Mas de 10 documentos en estados no terminales operativos por 15 min"

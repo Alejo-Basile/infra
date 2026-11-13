@@ -99,6 +99,29 @@ transitorios (retencion 7 y 30 dias) y regenerables; la fuente de verdad es
 MongoDB, cubierta por `runbooks/restore-mongo.md`. Revisar esta decision si
 aparece un requisito de retencion legal o de auditoria mayor a 30 dias.
 
+## Tiempo de accion
+
+La alerta sirve solo si el operador alcanza a actuar antes de que MinIO rechace escrituras. Para
+cada cruce de umbral se registran cuatro marcas de tiempo, todas en UTC:
+
+1. **Cruce del umbral:** instante en que
+   `1 - usable_free / usable_total` supera 0.70 (warning) o 0.85 (critical), segun la metrica
+   cruda del filesystem de MinIO.
+2. **`firing` en Prometheus:** instante en que la regla pasa de `pending` a `firing` (incluye el
+   `for: 5m`). Se lee de `GET /api/v1/alerts` en Prometheus.
+3. **Recepcion en Alertmanager:** instante en que la alerta aparece en
+   `GET /api/v2/alerts` de Alertmanager.
+4. **Mitigacion del runbook:** hora de inicio y hora de fin de los pasos de este documento que
+   liberan espacio o amplian el volumen.
+
+La diferencia entre (1) y (3) es el retardo de deteccion; la diferencia entre (3) y (4) es el
+tiempo humano de reaccion. **Criterio de aceptacion:** el margen entre el umbral de warning (70 %)
+y el punto en que MinIO empieza a rechazar escrituras debe alcanzar para completar (4) antes de
+que el disco se llene. No se registran numeros inventados: cada ensayo anota las marcas reales.
+
+El stack aislado de `scripts/test-minio-disk-fill.sh` (tmpfs de 512 MiB, proyecto
+`s5p104-minio`) mide (1)-(3) sin tocar `infra_minio-data` ni el disco del host.
+
 ## Escalamiento
 
 | Situacion | Accion |
