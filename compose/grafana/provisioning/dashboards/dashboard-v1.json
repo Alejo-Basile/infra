@@ -36,7 +36,7 @@
       "targets": [
         {
           "datasource": "Loki",
-          "expr": "{service=\"doc-service\"} |= \"01M4WA35JFVFAZV1M2246354VW\"",
+          "expr": "{service=~\"doc-service|extraction-worker\"} |= \"$document_id\"",
           "refId": "A"
         }
       ],
@@ -178,11 +178,11 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "mongo_documents_total",
+          "expr": "docservice_documents_by_status",
           "refId": "A"
         }
       ],
-      "title": "Mongo: Total documents",
+      "title": "Doc-service: Documents by status",
       "type": "stat"
     },
     {
@@ -256,6 +256,19 @@
         "skipUrlSync": false,
         "sort": 0,
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "label": "document_id",
+        "name": "document_id",
+        "options": [],
+        "query": "",
+        "type": "textbox"
       }
     ]
   },
