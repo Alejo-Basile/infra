@@ -11,15 +11,22 @@ ARN="arn:minio:sqs:us-east-1:${TARGET}:webhook"
 
 : "${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}"
 # Password root: Docker secret via *_FILE (S2-P1-01) o, como fallback, la
-# variable directa. El compose la monta como MINIO_ROOT_PASSWORD_FILE.
+# variable directa. Si ninguna de las dos esta definida, se lee el secret
+# montado en su ruta canonica. El compose la monta como
+# MINIO_ROOT_PASSWORD_FILE.
 if [ -n "${MINIO_ROOT_PASSWORD_FILE:-}" ]; then
   MINIO_ROOT_PASSWORD="$(cat "${MINIO_ROOT_PASSWORD_FILE}")"
+elif [ -z "${MINIO_ROOT_PASSWORD:-}" ] && [ -r /run/secrets/minio_root_password ]; then
+  MINIO_ROOT_PASSWORD="$(cat /run/secrets/minio_root_password)"
 fi
 : "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}"
 # Token del webhook: Docker secret via *_FILE (S2-P1-01) o, como fallback,
-# variable de entorno directa. El compose NO interpola el valor.
+# variable de entorno directa. Si ninguna de las dos esta definida, se lee el
+# secret montado en su ruta canonica. El compose NO interpola el valor.
 if [ -n "${MINIO_WEBHOOK_SECRET_FILE:-}" ]; then
   MINIO_WEBHOOK_SECRET="$(cat "${MINIO_WEBHOOK_SECRET_FILE}")"
+elif [ -z "${MINIO_WEBHOOK_SECRET:-}" ] && [ -r /run/secrets/minio_webhook_secret ]; then
+  MINIO_WEBHOOK_SECRET="$(cat /run/secrets/minio_webhook_secret)"
 fi
 : "${MINIO_WEBHOOK_SECRET:?MINIO_WEBHOOK_SECRET requerido}"
 : "${DOC_SERVICE_WEBHOOK_URL:?DOC_SERVICE_WEBHOOK_URL requerido}"
