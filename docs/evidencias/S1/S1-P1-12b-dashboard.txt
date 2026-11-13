@@ -1,25 +1,98 @@
-=== S1-P1-12b Dashboard v1 Grafana ===
-Timestamp: 2026-10-14T12:48:00-03:00
+=== S1-P1-12b Dashboard v1: recorrido de un document_id ===
+Fecha: 2026-11-13T04:07:00Z
+Resultado: PASS. Hay shipper de logs, Loki recibe los 4 servicios del recorrido, y el
+dashboard `s1-dashboard-v1` tiene variable `document_id` y devuelve datos en los 5 paneles.
 
---- Dashboard JSON exportado ---
-Panel 1: Loki: Logs doc-service por document_id
-  Query: {service="doc-service"} |= "01M4WA35JFVFAZV1M2246354VW"
+--- Hallazgo que bloqueaba el DoD -------------------------------------------
+El dashboard existía, pero Loki NO recibía nada: `GET /loki/api/v1/labels` devolvía
+vacío porque no había ningún shipper en el stack (ni promtail ni alloy). El panel
+"Loki: Logs doc-service por document_id" consultaba un ULID hardcodeado
+(`01M4WA35JFVFAZV1M2246354VW`, del E2E-01 del 14/10) que además está fuera de la
+ventana de logs de los contenedores: aunque hubiera shipper, ese panel nunca iba a
+mostrar nada. Segundo panel muerto: `mongo_documents_total` (no existe mongo exporter
+en el stack, la query devolvía serie vacía).
 
-Panel 2: Traefik: Requests totales docv2
-  Query: traefik_service_requests_total{service=~"docv2.*"}
+--- Cambios aplicados -------------------------------------------------------
+1. `compose/promtail/promtail.yml` (nuevo): shipper con `docker_sd_configs` contra
+   `/var/run/docker.sock`, `service` desde el label `com.docker.compose.service`,
+   `container` desde el nombre, y `keep` solo para `doc-service|extraction-worker|traefik|ratelimitd`.
+   No se envían logs de mongo/redis/minio.
+2. `compose/docker-compose.yml`: servicio `promtail` (perfil `full`), imagen pineada
+   por digest (`grafana/promtail@sha256:6140a315... # grafana/promtail:3.6.5`),
+   `read_only`, límites 256m/0.25 cpu/100 pids, volumen de positions, healthcheck
+   HTTP contra `http://127.0.0.1:9080/ready`.
+   El healthcheck original usaba `wget`, que esta imagen no trae: se reemplazó por
+   bash + `/dev/tcp` (verificado `HTTP/1.0 200 OK`).
+3. `compose/loki/local-config.yaml`: `limits_config.reject_old_samples: false`.
+   Al arrancar, el shipper lee el backlog de Docker (hasta 7 dias) y Loki lo rechazaba
+   con 400 por antigüedad, llenando el log de promtail de errores. Las entradas fuera
+   de `retention_period: 168h` se descartan igual por retención.
+4. `compose/grafana/provisioning/dashboards/dashboard-v1.json` (y copia idéntica en
+   `compose/grafana/dashboards/dashboard-v1.json`): variable `document_id` (textbox),
+   panel Loki parametrizado, y el panel muerto de Mongo reemplazado por
+   `docservice_documents_by_status`.
 
-Panel 3: Redis: XLEN stream:pdf-processing
-  Query: redis_stream_length{stream="stream:pdf-processing"}
+--- Levantar y verificar el shipper ----------------------------------------
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile full up -d promtail
+$ docker ps --filter name=promtail
+infra-promtail-1 | Up 2 minutes (healthy)
+$ docker logs infra-promtail-1 | grep -c "status=400"
+0
+$ docker exec infra-grafana-1 curl -s http://loki:3100/loki/api/v1/label/service/values
+{"status":"success","data":["doc-service","extraction-worker","ratelimitd","traefik"]}
 
-Panel 4: Mongo: Total documents
-  Query: mongo_documents_total
+--- Recorrido real de un document_id --------------------------------------
+document_id de prueba: `load-s5-p1-01-k6fix-1794532768-1-4` (documento real procesado
+por el pipeline, no un artefacto artificial).
 
-Panel 5: Traefik: Request rate docv2 (5m)
-  Query: rate(traefik_service_requests_total{service=~"docv2.*"}[5m])
+$ curl -G http://loki:3100/loki/api/v1/query_range \
+    --data-urlencode 'query={service=~"doc-service|extraction-worker"} |= "load-s5-p1-01-k6fix-1794532768-1-4"'
+resultado: 2 streams, 25 lineas (doc-service 22, extraction-worker 3)
 
---- Dashboard JSON exportado a compose/grafana/dashboards/dashboard-v1.json ---
-UID: s1-dashboard-v1
+[doc-service] 22 lineas, entre ellas:
+  {"time":"2026-11-13T01:58:37.188888839Z","msg":"mensaje encolado",
+   "document_id":"load-s5-p1-01-k6fix-1794532768-1-4","stream_id":"1794535117182-0",
+   "stream":"stream:pdf-processing"}
+  {"time":"2026-11-13T01:58:37.188915903Z","msg":"reconciler: documento reencolado (UPLOADED estancado)",
+   "document_id":"load-s5-p1-01-k6fix-1794532768-1-4","object_key":"raw-pdfs/load-s5-..."}
+[extraction-worker] 3 lineas:
+  {"timestamp":"2026-11-13T01:58:37.207476Z","msg":"extraccion iniciada","document_id":"load-s5-p1-..."}
+  {"timestamp":"2026-11-13T01:58:37.227492Z","msg":"extraccion completada","document_id":"load-s5-p1-..."}
+  {"timestamp":"2026-11-13T01:58:37.230853Z","msg":"documento completado y ACK-eado","document_id":"load-s5-p1-..."}
 
---- Verificación visual (manual) ---
-Abrir http://localhost:3000/d/s1-dashboard-v1
-Verificar 5 paneles con datos del E2E-01 (document_id: 01M4WA35JFVFAZV1M2246354VW)
+Ese es el recorrido que pide el DoD: doc-service (entrada + encolado en Redis) y
+worker (extraccion + cierre). Gateway se cubre con los paneles de Traefik del mismo
+dashboard, que ya funcionaban.
+
+--- Paneles del dashboard (todos devuelven datos) --------------------------
+$ /api/v1/query?query=traefik_service_requests_total{service=~"docv2.*"}
+series con code=201/200/400..., service="docv2@docker"             OK
+$ /api/v1/query?query=redis_stream_length{stream="stream:pdf-processing"}
+redis_stream_length{stream="stream:pdf-processing"} = 2112          OK
+$ /api/v1/query?query=docservice_documents_by_status
+11 series, p.ej. status="COMPLETED" = 1425                          OK
+$ /api/v1/query?query=rate(traefik_service_requests_total{service=~"docv2.*"}[5m])
+series para code=200/201...                                         OK
+$ panel Loki con variable $document_id
+resultado del punto anterior (25 lineas, 2 servicios)               OK
+
+--- Dashboard provisionado por Grafana ------------------------------------
+$ docker logs infra-grafana-1 | grep provisioning.dashboard
+logger=provisioning.dashboard t=2026-11-13T04:04:26.234294619Z level=info msg="starting to provision dashboards"
+logger=provisioning.dashboard t=2026-11-13T04:04:26.237983059Z level=info msg="finished to provision dashboards"
+
+Archivo: `compose/grafana/provisioning/dashboards/dashboard-v1.json`
+uid: `s1-dashboard-v1`  title: `S1 Dashboard v1: Recorrido document_id`
+variables: service (query), document_id (textbox)
+URL: http://localhost:3000/d/s1-dashboard-v1
+
+Nota: la API de administracion de Grafana devuelve 401 al autenticar con el secreto
+`grafana_admin_password` (condicion preexistente, ajena a este cambio: el login
+tampoco funciona con `admin`/`admin`). La provisión se verifico por el log de
+`provisioning.dashboard`, que no reporta errores, y por el JSON valido del archivo
+(`python3 -m json.tool`). Pendiente aparte: revisar el wiring de
+`GF_SECURITY_ADMIN_PASSWORD_FILE`.
+
+--- Validacion de sintaxis ------------------------------------------------
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile full config -q
+(sin salida, rc=0)

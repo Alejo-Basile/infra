@@ -1,11 +1,75 @@
+=== S1-P1-09v / S1-P1-09 — MongoDB Replica Set rs0 y Change Stream (< 1 s) ===
+Fecha: 2026-11-13T03:49Z
+Entorno: docker compose local (infra/), mongo:7.0.45, RS de un nodo (SPEC 3.6)
+Resultado: PASS. RS `rs0` en PRIMARY y el Change Stream entrega el evento `update`
+-> `UPLOADED` en 1 ms. Verificado tambien el camino real: el relay del doc-service
+recibio el evento y encolo en `stream:pdf-processing`.
+
+NOTA: la corrida previa registrada mas abajo (2026-10-14) quedo INCONCLUSA. El script
+del DoD filtraba por `fullDocument.status` sin pedir `fullDocument: "updateLookup"`.
+En un evento `update`, `fullDocument` no viene por defecto, asi que el filtro nunca
+matchea y el `hasNext()` bloquea para siempre. No era un fallo del Replica Set.
+
+--- 1) Replica Set operativo -------------------------------------------------
+$ docker exec infra-mongo-1 sh -lc 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" \
+    -p "$(cat /run/secrets/mongo_initdb_root_password)" --authenticationDatabase admin \
+    --eval "const s=rs.status(); print(\"set=\"+s.set+\" members=\"+s.members.length); \
+    s.members.forEach(m=>print(m.name+\" | \"+m.stateStr+\" | health=\"+m.health))"'
+set=rs0 members=1
+mongo:27017 | PRIMARY | health=1
+
+$ db.hello()
+{"setName":"rs0","isWritablePrimary":true,"hosts":["mongo:27017"]}
+
+--- 2) Change Stream: evento < 1 s (con updateLookup) ------------------------
+Terminal A (watch, filtro del relay, corregido):
+  const cs = db.documents.watch(
+    [{ $match: { operationType: "update", "fullDocument.status": "UPLOADED" } }],
+    { fullDocument: "updateLookup", maxAwaitTimeMS: 500 }
+  );
+  print("WATCH_READY " + Date.now());
+  cs.tryNext()  // en loop acotado
+
+Terminal B (update condicional, usuario docservice / authSource documents):
+  insertOne({_id:"__p1_rs_probe__", status:"PENDING_UPLOAD"})
+  updateOne({_id:"__p1_rs_probe__", status:"PENDING_UPLOAD"}, {$set:{status:"UPLOADED"}})
+
+Salida:
+  WATCH_READY 1794541788043
+  UPDATE_AT   1794541789580  matched=1 modified=1
+  EVENT_AT    1794541789581  {"id":"__p1_rs_probe__","status":"UPLOADED"}
+
+Latencia update -> evento: 1 ms (DoD: < 1000 ms). PASS.
+
+--- 3) Camino real Mongo -> Change Stream -> Redis (relay del doc-service) ---
+$ docker logs infra-doc-service-1 | grep "relay: evento encolado"
+{"time":"2026-11-13T03:47:32.014812668Z","level":"INFO","msg":"relay: evento encolado",
+ "document_id":"__p1_rs_probe__","object_key":"raw-pdfs/__p1_rs_probe__.pdf","correlation_id":""}
+{"time":"2026-11-13T03:49:49.58607092Z","level":"INFO","msg":"relay: evento encolado",
+ "document_id":"__p1_rs_probe__","object_key":"raw-pdfs/__p1_rs_probe__.pdf","correlation_id":""}
+
+El mensaje llego al stream y el worker lo consumio (XREADGROUP), confirmando el
+contrato completo Mongo -> Change Stream -> XADD -> worker.
+
+--- 4) Clientes contra el RS ------------------------------------------------
+$ curl doc-service /readyz
+{"status":"ready","timestamp":"2026-11-13T03:50:35Z","service":"doc-service"}
+
+$ curl worker /readyz (127.0.0.1:8081 dentro del contenedor)
+{"status":"ok","checks":{"redis":"ok","minio":"ok","mongo":"ok"}}
+
+URI del doc-service: mongodb://<app>:<pass>@mongo:27017/documents?replicaSet=rs0
+
+--- Limpieza del artefacto de prueba ----------------------------------------
+- `documents._id = "__p1_rs_probe__"` eliminado (deletedCount=1).
+- Entrada `1794541652008-0` del stream: XACK + XDEL. Verificado: 0 coincidencias
+  de `__p1_rs_probe__` y `XPENDING ... extraction-workers` vacio.
+- Sin registros residuales del probe en Mongo, Redis ni DLQ.
+
+--- Corrida previa (inconclusa, se conserva como historia) -------------------
 === S1-P1-09v Change Stream Test (Manual Update) ===
 Timestamp: 2026-10-14T01:15:14-03:00
-
---- Terminal A: Watch con timeout 10s ---
-
---- Terminal B: Manual update PENDING_UPLOAD -> UPLOADED ---
-matched: 1 modified: 1
-
---- Esperando watch ---
-Warning: If there are no documents in the batch, hasNext will block. Use tryNext if you want to check if there are any documents without waiting, or cursor.disableBlockWarnings() if you want to disable this warning.
-
+Terminal B: matched: 1 modified: 1
+Terminal A: sin salida. El watch bloqueo en `hasNext()` porque al filtro le faltaba
+`fullDocument: "updateLookup"`. Repetir el script del plan tal cual da siempre
+"sin evento" aunque el Replica Set este sano.

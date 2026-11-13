@@ -1,16 +1,86 @@
-=== S1-P1-07a Test Formal Persistencia AOF Redis ===
-Timestamp: 2026-10-13T18:07:54-03:00
+=== S1-P1-07 AOF: `XADD` sobrevive `docker restart` ===
+Fecha: 2026-11-13T04:04:00Z
+Entorno: docker compose local, `infra-redis-streams-1` (primario), `redis-streams-replica-1/2`,
+Sentinel `myprimary` (sentinel-1/2/3). Prueba sobre stream dedicado `stream:s1p107-aof-probe`
+para no contaminar `stream:pdf-processing` (lo consume el worker).
+Resultado: PASS.
 
---- 1. XADD mensaje de prueba ---
-Mensaje insertado con ID: 1791925675085-0
+--- 1) Config efectiva de persistencia y memoria -----------------------------
+$ for k in appendonly appendfsync maxmemory-policy; do CONFIG GET $k; done
+appendonly=yes
+appendfsync=everysec
+maxmemory-policy=noeviction
 
---- 2. Reiniciar contenedor redis-streams ---
+$ ls -l /data/appendonlydir/
+-rw-r--r-- 76645 Nov 10 00:23 appendonly.aof.9.base.rdb
+-rw-r--r-- 97845 Nov 13 04:03 appendonly.aof.9.incr.aof
+-rw-r--r--    88 Nov 10 00:23 appendonly.aof.manifest
+
+--- 2) Mensaje de prueba (antes del restart) ---------------------------------
+$ redis-cli XADD stream:s1p107-aof-probe "*" probe aof-restart origin s1-p1-07
+1794542691395-0
+
+--- 3) Primario y down-after ANTES (guardado para restaurar) -----------------
+sentinel-1 master=redis-streams:6379 down-after=5000
+sentinel-2 master=redis-streams:6379 down-after=5000
+sentinel-3 master=redis-streams:6379 down-after=5000
+
+Los 3 sentinels suben transitoriamente down-after a 60000 ms para que un restart
+de ~1-3 s no dispare un failover que no se esta probando:
+$ redis-cli -p 26379 SENTINEL SET myprimary down-after-milliseconds 60000
+OK (x3)
+(Nota: sentinel corre con config read-only; el SET aplica en runtime y se restaura abajo.)
+
+--- 4) Restart del primario -------------------------------------------------
+$ docker restart infra-redis-streams-1
 infra-redis-streams-1
-Esperando 10 segundos para que el contenedor esté healthy...
+$ redis-cli PING   (sondeo acotado a 20 s)
+ping_ok_after=1s
+$ docker ps --filter name=infra-redis-streams-1
+status=Up 3 seconds (health: starting)
 
---- 3. Verificar persistencia con XRANGE ---
-test-s1-aof
+--- 5) Verificacion de persistencia (despues del restart) --------------------
+$ redis-cli XRANGE stream:s1p107-aof-probe - +
+1794542691395-0
+probe
+aof-restart
+origin
+s1-p1-07
+(mismo ID y mismos campos: el mensaje se relee desde el AOF)
 
---- 4. Limpiar mensaje de prueba (XDEL) ---
+$ redis-cli DBSIZE
+23
+$ ls -l /data/appendonlydir/
+-rw-r--r-- 76645 Nov 10 00:23 appendonly.aof.9.base.rdb
+-rw-r--r-- 97866 Nov 13 04:04 appendonly.aof.9.incr.aof
+-rw-r--r--    88 Nov 10 00:23 appendonly.aof.manifest
+(incr.aof creció 97845 -> 97966 bytes: la entrada del probe quedó en el AOF)
+
+--- 6) Sin failover: Sentinel sigue apuntando al mismo primario --------------
+sentinel-1 master=redis-streams:6379 down-after=60000
+sentinel-2 master=redis-streams:6379 down-after=60000
+sentinel-3 master=redis-streams:6379 down-after=60000
+
+--- 7) Replicas sanas tras el restart ---------------------------------------
+$ redis-cli INFO replication   (en redis-streams-replica-1 y -2)
+role:slave
+master_host:redis-streams
+master_link_status:up
+slave_repl_offset:3476
+
+--- 8) Clientes sanos tras el restart ---------------------------------------
+$ curl doc-service /readyz
+{"status":"ready","timestamp":"2026-11-13T04:05:08Z","service":"doc-service"}
+$ curl worker /readyz
+{"status":"ok","checks":{"redis":"ok","minio":"ok","mongo":"ok"}}
+
+--- 9) Restauracion de down-after y limpieza --------------------------------
+$ SENTINEL SET myprimary down-after-milliseconds 5000   (x3)
+OK / 5000 / 5000 / 5000
+$ redis-cli XDEL stream:s1p107-aof-probe 1794542691395-0
 1
-Limpieza completada
+$ redis-cli XLEN stream:s1p107-aof-probe
+0
+
+Sin artefactos residuales: el stream de prueba quedó vacío y el primario volvió a
+su configuración original (down-after 5000).
