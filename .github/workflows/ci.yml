@@ -35,8 +35,10 @@ jobs:
           load: true
           tags: loki:ci
       - name: scan Loki image for critical vulnerabilities
-        uses: aquasecurity/trivy-action@v0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
+          # Pin explícito: el default de la acción apuntaba a un release inexistente (v0.65.0)
+          version: 'v0.76.2'
           image-ref: loki:ci
           format: table
           severity: CRITICAL
