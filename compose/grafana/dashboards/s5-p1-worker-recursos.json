@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 200}]}, "unit": "short"}}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "worker_pids_limit", "refId": "A"}], "title": "PIDs: limite (worker_pids_limit), umbral 200", "type": "timeseries"},
+    {"datasource": "Prometheus", "fieldConfig": {"defaults": {"unit": "short"}}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "worker_pids_current", "refId": "A"}], "title": "PIDs: en uso (worker_pids_current)", "type": "timeseries"}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["s5", "p1", "worker"],
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "S5-P1: Recursos del worker",
+  "uid": "s5-p1-worker-recursos",
+  "version": 1
+}

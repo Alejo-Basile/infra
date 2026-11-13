@@ -39,6 +39,10 @@ scrape_configs:
   # levantado figura `down`, que es el estado esperado.
   - job_name: extraction-worker
     metrics_path: /metrics
+    # El endpoint /metrics del worker no envia Content-Type; Prometheus v3.16
+    # rechaza el scrape por defecto. Fallback temporal hasta que P3 corrija el
+    # header (extraction-worker/crates/worker/src/http.rs:304-306).
+    fallback_scrape_protocol: PrometheusText0.0.4
     static_configs:
       - targets: ["extraction-worker:8081"]
 
