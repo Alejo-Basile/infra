@@ -110,3 +110,227 @@ No es plomeria: los fakes de S3 existen (`tests/resilience_it.rs` implementa
 (`crates/worker/src/document_store.rs:37`) y el job `integration` de CI solo
 levanta Redis y MinIO, **sin Mongo**. Para escribirlo hace falta un seam (trait)
 para el store o Mongo en ese job. Es un cambio de diseño, con su propia tarea.
+
+---
+
+# S5-P1-01 — Ejecucion operativa 2026-11-12 (UTC) — estado PARCIAL
+
+| Campo | Valor |
+|---|---|
+| Fecha UTC | 2026-11-12 23:55 |
+| Owner / repo | P1 / `infra` (rama `feat/s5-p1-cierre`) |
+| Stack | `full` levantado; worker recreado a las 2026-11-12T23:43:41Z |
+| Worker image | `sha256:433889e1e158397e79f6f84862f80ab0780e0eeb96a9bd2a7562a2c1a8fef4de` (revision `f4b7e75d`, sin `redis_group`; **no** es la imagen final `a9bd8a2`) |
+| Estado | **PARCIAL** (no CERRADA): pasos 1 y 2 verdes; pasos 3, 4 y 5 con dependencias externas no satisfechas |
+
+## Resultado en una linea
+
+El scrape del worker quedo reparado (`up{job="extraction-worker"} == 1`, `WorkerDown`
+inactiva) y el dashboard de pids fue creado con consultas reales. La corrida de 4
+concurrentes **no** se logro: el arnes k6 de P4 es incompatible con k6 v2.3.0 y
+la imagen desplegada no es la final de `S5-P1-03`. Los gauges `worker_pids_*` de P3
+no existen, asi que el panel muestra "no data". La tarea queda **PARCIAL**.
+
+## Paso 1 — Limites aplicados (VERDE)
+
+Comando:
+
+```bash
+docker inspect infra-extraction-worker-1 \
+  --format 'User={{.Config.User}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}} PidsLimit={{.HostConfig.PidsLimit}} Ulimits={{json .HostConfig.Ulimits}}'
+docker exec infra-extraction-worker-1 sh -c \
+  'echo pids.max=$(cat /sys/fs/cgroup/pids.max); echo pids.current=$(cat /sys/fs/cgroup/pids.current); echo memory.max=$(cat /sys/fs/cgroup/memory.max)'
+```
+
+Salida observada (verbatim):
+
+```
+User=10001:10001 ReadonlyRootfs=true Memory=805306368 NanoCpus=1500000000 PidsLimit=200 Ulimits=[{"Hard":200,"Name":"nproc","Soft":200},{"Hard":4096,"Name":"nofile","Soft":4096}]
+pids.max=200
+pids.current=7
+memory.max=805306368
+memory.peak=58347520
+```
+
+`docker inspect ... OOMKilled=false RestartCount=0`. Todos los valores coinciden
+con el Compose; **no se modifico ningun valor de limite**.
+
+## Paso 2 — Reparacion del scrape (VERDE)
+
+Edicion: `infra/compose/prometheus/prometheus.yml`, job `extraction-worker`, se
+añadio `fallback_scrape_protocol: PrometheusText0.0.4` (el endpoint no envia
+`Content-Type`; la correccion de fondo del header es deuda de P3, no se edito).
+
+Recreacion: `docker compose -f compose/docker-compose.yml --env-file .env --profile full up -d --force-recreate prometheus`.
+
+Antes (baseline):
+
+```
+up{job="extraction-worker"} -> value [<ts>,"0"]
+WorkerDown -> "state":"firing"
+```
+
+Despues (mounted `/etc/prometheus/prometheus.yml` con el fallback):
+
+```
+up{job="extraction-worker"} -> {"metric":{"__name__":"up","instance":"extraction-worker:8081","job":"extraction-worker"},"value":[1794526990.419,"1"]}
+```
+
+`/api/v1/alerts` despues: `DLQNotEmpty firing`, `QueueDepthHigh firing`; la alerta
+`WorkerDown` **ya no aparece** (paso a inactiva). No se edito ninguna regla.
+
+## Paso 3 — 4 concurrentes (FALLIDO: arnes k6 incompatible)
+
+Recreacion del worker y linea base:
+
+```bash
+docker compose -f compose/docker-compose.yml --env-file .env --profile full up -d --force-recreate extraction-worker
+docker exec infra-extraction-worker-1 cat /sys/fs/cgroup/memory.peak
+```
+
+`/readyz` respondio `200` a los 1 s. `memory.peak` linea base = `22462464`
+(~21,4 MiB), `pids.current=8`.
+
+Corrida k6 (comando literal del task, desde `platform-services`):
+
+```bash
+RUN_ID=s5-p1-01-$(date +%s) RATE_START=4 RATE_TARGET=4 RAMP_DURATION=2s \
+  PRE_VUS=4 MAX_VUS=4 k6 run \
+  --summary-export "$PWD/../infra/docs/evidencias/S5/S5-P1-01-k6-summary.json" \
+  tests/e2e/load/pipeline.js
+```
+
+Salida decisiva (verbatim):
+
+```
+GoError: the "open" function is only available in the init stage (i.e. the global scope)
+	at default (file:///.../platform-services/tests/e2e/load/pipeline.js:55:17(99))
+```
+
+`pipeline.js:55` invoca `open(FIXTURE, 'b')` dentro del VU stage; k6 v2.3.0 lo
+rechaza. La excepcion ocurre **despues** del `POST /api/v2/documents` y **antes**
+del upload. Contadores observados: `142 complete and 0 interrupted iterations`,
+`checks_succeeded...: 100.00% 142 out of 142` (todas `create 201`),
+`http_reqs......................: 142` (solo create; 0 upload, 0 poll),
+`iterations.....................: 142`.
+
+Resumen exportado: `infra/docs/evidencias/S5/S5-P1-01-k6-summary.json` (`iterations.count=142`,
+`checks.passes=142`, `http_req_failed.fails=142`, umbral `rate<0.01: false`).
+
+**0 documentos en estado terminal.** Efecto lateral real: `RUN_ID=s5-p1-01-1794527034`
+y **142 documentos en `PENDING_UPLOAD`** (verificado via `GET /api/v2/documents?status=PENDING_UPLOAD&limit=200`:
+`count_page: 142`, todos con `document_id` `load-s5-p1-01-1794527034-*`). **No se
+borraron documentos, mensajes ni objetos.**
+
+`memory.peak` despues = `39239680` (~37,4 MiB) < `805306368`. `OOMKilled=false`,
+`RestartCount=0`, el worker no se reinicio. El gap es del arnes (P4), no de limites.
+
+## Paso 4 — PDF hostil (PARCIAL: un test inexistente)
+
+Comandos literales desde `extraction-worker/`:
+
+```bash
+cargo test --all-features --test pdf_corpus job_timeout_devuelve_transitorio -- --nocapture
+cargo test --all-features --test pdf_corpus healthz_responde_durante_timeout_de_job -- --nocapture
+```
+
+Salidas observadas:
+
+```
+# job_timeout_devuelve_transitorio
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+```
+
+```
+# healthz_responde_durante_timeout_de_job
+running 1 test
+test healthz_responde_durante_timeout_de_job ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.31s
+```
+
+El target `pdf_corpus` existe en `crates/worker/tests/pdf_corpus.rs` con 9 tests;
+`job_timeout_devuelve_transitorio` **no existe** entre ellos (0 coincidencias). No
+se renombro ningun test ni se relajaron aserciones. El sondeo operativo de
+`/readyz` **no se ejecuto**: P3 no tiene un hostil activo (dependencia
+`S5-P3-05`); no se simulo el escenario.
+
+## Paso 5 — Panel de pids (PARCIAL: gauges ausentes)
+
+Consultas Prometheus (verbatim):
+
+```
+worker_pids_limit   -> {"status":"success","data":{"resultType":"vector","result":[]}}
+worker_pids_current -> {"status":"success","data":{"resultType":"vector","result":[]}}
+```
+
+`worker_memory_*`: no existe ninguna serie (lista de `__name__` con prefijo
+`worker_`: `worker_breaker_open`, `worker_claim_total`, `worker_dead_consumers`,
+`worker_dlq_depth`, `worker_dlq_oldest_age_seconds`, `worker_dlq_total`,
+`worker_documents_total`, `worker_extraction_seconds{,_count,_sum}`,
+`worker_inflight`, `worker_pel_pending`, `worker_s3_seconds{,_count,_sum}`,
+`worker_stream_depth`). No se añadieron paneles `worker_memory_*`.
+
+Dashboard creado: `infra/compose/grafana/provisioning/dashboards/s5-p1-worker-recursos.json`
+y espejo byte a byte `infra/compose/grafana/dashboards/s5-p1-worker-recursos.json`
+(`cmp` -> identicos). `uid=s5-p1-worker-recursos`, `title=S5-P1: Recursos del worker`,
+`tags=["s5","p1","worker"]`, `schemaVersion=39`, datasource `Prometheus`. Paneles:
+`worker_pids_limit` (timeseries, umbral en 200) y `worker_pids_current` (timeseries).
+No hay panel estatico ni serie inventada.
+
+Grafana: el archivo esta montado en el proveedor `default`
+(`/etc/grafana/provisioning/dashboards/s5-p1-worker-recursos.json`), pero la API
+requiere credenciales (`GET /api/dashboards/uid/s5-p1-worker-recursos` -> `401
+Unauthorized`) y el puerto 3000 no esta publicado al host. **Provisionado no
+verificado por API**; solo verificado que el archivo esta en la ruta del proveedor.
+
+## Paso 6 — Evidencia
+
+Este archivo y `infra/docs/evidencias/S5/S5-P1-01-k6-summary.json`. Sin secretos,
+sin contenido de `/run/secrets/`.
+
+## DoD
+
+| Item | Estado | Evidencia |
+|---|---|---|
+| `docker inspect` con limites esperados | CUMPLIDO | Paso 1 |
+| `pids.max=200`; `pids.current`/`memory.peak` legibles | CUMPLIDO | Paso 1 y 3 |
+| 4/4 terminales y `memory.peak < 805306368` | **NO CUMPLIDO** | 0/4 terminales; arnes k6 incompatible (P4) |
+| Tests de timeout/healthz pasan; `/readyz` 200 | **PARCIAL** | `healthz_...` ok; `job_timeout_...` inexistente; sondeo no ejecutado (P3) |
+| `up{job="extraction-worker"} == 1` y `WorkerDown` inactiva | CUMPLIDO | Paso 2 |
+| Panel con `worker_pids_limit`/`worker_pids_current` con datos reales | **NO CUMPLIDO** | Consultas vacias; P3 no entrego gauges |
+| Evidencia actualizada sin secretos; summary k6 archivado | CUMPLIDO | Paso 6 |
+| Dashboard en ruta provisionada y espejo identico | CUMPLIDO (espejo) / no verificado por API | Paso 5 |
+
+## Dependencias exactas que impiden CERRADA
+
+1. **Gauges P3 ausentes** (`worker_pids_limit`, `worker_pids_current`): consultas
+   vacias. El panel se creo con consultas reales (queda "no data"), sin valor estatico.
+2. **Tests hostiles P3**: `job_timeout_devuelve_transitorio` no existe; sin hostil
+   activo de `S5-P3-05` no se ejecuto el sondeo de `/readyz`.
+3. **Imagen final `S5-P1-03` no desplegada**: el worker corre la revision
+   `f4b7e75d` (`sha256:433889e1...`), no la imagen `a9bd8a2`.
+4. **Arnes k6 de P4 incompatible**: `pipeline.js:55` usa `open()` en el VU stage,
+   rechazado por k6 v2.3.0; 0/4 terminales (no atribuible a limites, H-08).
+
+## Cierre parcial — 2026-11-12 (P1)
+
+Corrida oficial con imagen vigente (digest sha256:433889e1..., rev f4b7e75d):
+- 4 VUs, 138 iteraciones, 99 uploads fallaron (400 MalformedPOST / 403 AccessDenied por reinicio de MinIO a mitad de corrida).
+- 39 documentos COMPLETED, 99 PENDING_UPLOAD.
+- memory.peak final = 28073984 (< 805306368), pero no es medición válida de contención porque el trabajo no completó.
+- Reinicios de MinIO durante la corrida: 1 (crash-loop previo mitigado con tmpfs en /opt/bitnami/minio/tmp, PR #47; aún inestable bajo carga).
+
+Verificaciones verdes:
+- docker inspect: PidsLimit=200, Memory=805306368, NanoCpus=1500000000, User=10001:10001, ReadonlyRootfs=true, nofile 4096, nproc 200.
+- pids.max=200, memory.max=805306368 (cgroup).
+- up{job="extraction-worker"} = 1; WorkerDown inactiva.
+- worker_pids_*: gauges publicados por el worker tras PR #43 de P3, pero la imagen desplegada es anterior a a9bd8a2: Prometheus devuelve series vacías. Panel en "no data" hasta desplegar la imagen nueva.
+
+Dependencias abiertas para cerrar el DoD:
+- P3 PR #43 mergeado + imagen nueva fijada por digest (H-01).
+- P4 PR #13 mergeado (k6 open() en init stage) — hecho; arnés ahora falla por MinIO, no por k6.
+- P1 PR #47 mergeado (tmpfs MinIO) — estabiliza MinIO; verificar 0 reinicios en la próxima corrida.
+- Re-correr el paso 3 con la imagen nueva y MinIO estable; actualizar esta evidencia a CERRADA solo con 4/4 terminales y memory.peak < 805306368.
+
+Estado: PARCIAL (no se declara CERRADA).
