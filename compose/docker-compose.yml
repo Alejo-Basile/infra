@@ -355,6 +355,11 @@ services:
     <<: *hardening-data
     secrets: [minio_root_password]
     environment:
+      # El entrypoint de Bitnami y `mc` escriben su config en $HOME/.mc. Como el
+      # rootfs es de solo lectura y por defecto la conf cae en "/.mc", el arranque
+      # fallaba en bucle; el home y la conf de mc deben vivir en el tmpfs de /tmp.
+      HOME: /tmp
+      MINIO_CLIENT_CONF_DIR: /tmp/.mc
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
