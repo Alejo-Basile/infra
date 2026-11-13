@@ -81,7 +81,7 @@ services:
     profiles: ["core", "full"]
     <<: *hardening-data
     read_only: true
-    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev"]
+    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev", "/opt/bitnami/minio/tmp:size=16m,noexec,nosuid,nodev"]
     command: ["--replSet", "rs0", "--bind_ip", "localhost,mongo", "--keyFile", "/etc/mongo/keyfile"]
     secrets: [mongo_initdb_root_password]
     environment:
@@ -386,7 +386,7 @@ services:
     profiles: ["core", "full"]
     <<: *hardening-data
     read_only: true
-    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev"]
+    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev", "/opt/bitnami/minio/tmp:size=16m,noexec,nosuid,nodev"]
     secrets: [minio_root_password, minio_webhook_secret]
     # El token del webhook NO se interpola en el compose: el wrapper lo lee de
     # /run/secrets/minio_webhook_secret y lo exporta antes de ceder al entrypoint
