@@ -1,0 +1,109 @@
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      - series: 'redis_stream_entries_added_total{stream="stream:pdf-processing"}'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600'
+      - series: 'redis_stream_group_entries_read{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'redis_stream_group_messages_pending{stream="stream:pdf-processing",group="extraction-workers"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: QueueDepthHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stream: stream:pdf-processing
+            exp_annotations:
+              summary: "Backlog de stream:pdf-processing (lag + PEL) supera 500 por 5m"
+              description: "Backlog = (redis_stream_entries_added_total - redis_stream_group_entries_read) + redis_stream_group_messages_pending. XLEN no mide profundidad (es monotónico) y el lag solo no alcanza (el prefetch lo lleva a 0). Confirmar con docservice_documents_non_terminal como corroboración. Si es backlog real, escalar workers con docker compose --profile full up -d --scale extraction-worker=N."
+              runbook_url: "infra/runbooks/escalado-worker.md"
+
+  - interval: 30s
+    input_series:
+      - series: 'worker_documents_total{outcome="rejected"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12'
+      - series: 'worker_dlq_total{cause="EXTRACTION_FAILED"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ExtractionErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Se observan errores de extraccion o documentos rechazados"
+              description: "Inspeccionar stream:pdf-processing-dlq y el corpus causante; no reintentar REJECTED y corregir antes de replay."
+              runbook_url: "infra/runbooks/errores-extraccion.md"
+
+  - interval: 30s
+    input_series:
+      - series: 'traefik_service_requests_total{code="429",service="api"}'
+        values: '0 10 20 30 40 50 60 70 80 90 100 110'
+      - series: 'traefik_service_requests_total{code="200",service="api"}'
+        values: '0 90 180 270 360 450 540 630 720 810 900 990'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TraefikRateLimited
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Mas de 1 por ciento de respuestas Traefik son 429 por 5m"
+              description: "Confirmar que el middleware rate-limit activo explica los 429; distinguirlos de errores 5xx/backend no disponible."
+              runbook_url: "infra/runbooks/gateway-trafico.md"
+
+  - interval: 30s
+    input_series:
+      - series: 'redis_aof_enabled{instance="redis-streams"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'redis_master_link_up{instance="redis-streams"}'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RedisPersistenceOrReplicaIssue
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: redis-streams
+            exp_annotations:
+              summary: "AOF deshabilitado o replica Redis desconectada"
+              description: "Restaurar AOF en el primario y diagnosticar INFO replication/master_link_status antes de intervenir en Sentinel."
+              runbook_url: "infra/runbooks/failover-redis.md"
+
+  - interval: 1m
+    input_series:
+      - series: 'traefik_tls_certs_not_after{cn="api.localhost"}'
+        values: '1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000 1000000'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AcmeCertificateExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              cn: api.localhost
+            exp_annotations:
+              summary: "Certificado TLS expira en menos de 14 dias"
+              description: "Revisar almacenamiento ACME, resolucion DNS, challenge y logs de Traefik; no borrar acme.json sin respaldo."
+              runbook_url: "infra/runbooks/certificados-traefik.md"
+
+  - interval: 30s
+    input_series:
+      - series: 'redis_sentinel_switch_master_total{master="myprimary"}'
+        values: '0 0 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SentinelFailoverObserved
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              master: myprimary
+            exp_annotations:
+              summary: "Sentinel reporto un cambio de maestro"
+              description: "Verificar reconexion automatica de Go/Rust, direccion primaria y ventana de perdida mitigada por WAIT; la convergencia depende del reconciliador."
+              runbook_url: "infra/runbooks/failover-redis.md"

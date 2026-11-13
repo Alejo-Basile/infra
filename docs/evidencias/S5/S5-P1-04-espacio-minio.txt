@@ -95,3 +95,47 @@ runbooks/minio-espacio.md (nuevo): que mide la metrica, como separar crecimiento
 de buckets vs presion del host, comandos `mc` con credenciales leidas desde
 MINIO_ROOT_PASSWORD_FILE (nunca por argv), purga de huerfanos, ampliacion del
 volumen y decision de respaldo v1 (no se respaldan objetos transitorios).
+
+=== 2026-11-13 — Ajuste a 70/85 y llenado aislado medido ===
+
+Umbrales. compose/prometheus/alert.rules.yml:
+  - MinioDiskHigh:     (1 - usable_free/usable_total) > 0.70 (antes 0.80) por 5m
+  - MinioDiskCritical: (1 - usable_free/usable_total) > 0.85 por 5m (sin cambio)
+  summary/description de MinioDiskHigh actualizados a 70 por ciento.
+  compose/prometheus/tests/s5-p1-04.rules.test.yml cubre 60 (nada), 75
+  (MinioDiskHigh), 90 (ambas) y 85 exacto (critical inactivo por comparacion
+  estricta); promtool termina en SUCCESS.
+
+Prueba de llenado aislado (sin tocar infra_minio-data ni el disco del host).
+Stack Compose propio `s5p104-minio` con MinIO sobre un tmpfs de 512 MiB,
+Prometheus con las reglas reales y Alertmanager; puertos 19000/19090/19093.
+Archivos: compose/docker-compose.test-minio-disk.yml,
+compose/prometheus/minio-disk.test.yml, scripts/test-minio-disk-fill.sh.
+Salida cruda completa en docs/evidencias/S5/S5-P1-04-fill.txt.
+
+Resultado (UTC, 2026-11-13):
+  - Cruce 70 %: 19:24:44Z (uso_tmpfs 0.7012)
+  - MinioDiskHigh firing: 19:31:12Z (valor 0.7012863159179688)
+  - MinioDiskHigh en Alertmanager: 19:31:12Z (startsAt 19:31:11.665Z)
+  - Cruce 85 %: 19:31:12Z (uso_tmpfs 0.8517)
+  - MinioDiskCritical firing: 19:37:12Z (valor 0.8516921997070312)
+  - MinioDiskCritical en Alertmanager: 19:37:12Z (startsAt 19:37:11.665Z)
+  - Mitigacion simulada (liberar espacio): inicio 19:37:12Z, fin 19:37:12Z
+  - Retardo cruce->firing: 6m28s a 70 % (incluye refresco de metricas de MinIO
+    y el for: 5m) y 6m00s a 85 %.
+  - Teardown: proyecto `s5p104-minio` sin contenedores, volumenes ni redes;
+    `infra-minio-1` sigue Up/healthy.
+
+Tiempo de accion. runbooks/minio-espacio.md agrega la seccion "Tiempo de accion"
+con las cuatro marcas: cruce del umbral, firing en Prometheus, recepcion en
+Alertmanager y mitigacion del runbook (inicio/fin). El criterio es que el margen
+entre el 70 % y el rechazo de escrituras de MinIO alcance para actuar; no se
+inventan numeros, cada ensayo anota las marcas reales (las de arriba).
+
+Decision de respaldo (vigente, sin cambio). No se respaldan `raw-pdfs` ni
+`extracted-txt`: son artefactos transitorios (retencion 7 y 30 dias),
+regenerables y sin requisito de retencion legal. La fuente de verdad es MongoDB,
+cubierta por runbooks/restore-mongo.md. Si aparece un requisito de auditoria o
+retencion >30 dias, se abre una tarea separada; no se implementa un backup nuevo
+en esta tarea.
+

@@ -32,7 +32,8 @@ tests:
         alertname: MinioDiskCritical
         exp_alerts: []
 
-  # Test 2: uso 75% -> MinioDiskHigh DISPARA (warning), MinioDiskCritical NO
+  # Test 2: uso 75% -> dispara MinioDiskHigh (warning exige > 70%),
+  # pero no MinioDiskCritical (exige > 85%).
   - interval: "30s"
     input_series:
       - series: 'minio_cluster_capacity_usable_free_bytes{server="127.0.0.1:9000"}'
@@ -48,7 +49,7 @@ tests:
               server: "127.0.0.1:9000"
             exp_annotations:
               summary: "Disco de MinIO sobre 70 por ciento"
-              description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+              description: "Advertir con margen: purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
               runbook_url: "infra/runbooks/minio-espacio.md"
       - eval_time: "6m"
         alertname: MinioDiskCritical
@@ -70,7 +71,7 @@ tests:
               server: "127.0.0.1:9000"
             exp_annotations:
               summary: "Disco de MinIO sobre 70 por ciento"
-              description: "Purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+              description: "Advertir con margen: purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
               runbook_url: "infra/runbooks/minio-espacio.md"
       - eval_time: "6m"
         alertname: MinioDiskCritical
