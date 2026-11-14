@@ -1,0 +1,159 @@
+S6-P1-01 — Failover de Redis Sentinel bajo carga (Go + Rust en la misma corrida) — RUN 3 (worker con fix de reconexión)
+Fecha (UTC): 2026-11-14T19:08:59Z
+RUN_ID: s6f3-20261114T190859Z
+Rama infra: feat/s5-p1-cierre-final @ 34a13825436248ad1437ec86bbaf713cc7197ec5
+Operador: P1
+Ventana: 3 h (X = 45 min para recuperacion por reconciliador)
+Fix aplicado: extraction-worker STALL_CODE en needs_reconnect (read bloqueante) — ver crates/worker/src/consumer/classify.rs y runner.rs
+
+Hashes de evidencias previas (registrados antes del drill):
+  S6-P1-01-failover-carga.txt           = 43c8c8f263ada8dcbeeb08ed3fba3281b493cc055988f7be44d96cbf34ff87dd
+  S6-P1-01-failover-carga-run2.txt      = 4050047205f4c210cf50ed41f2b074d0804dd3511c30caee8bdef1e1a7900eee
+  S6-P1-01-failover-redis.txt           = 90135382b885c4b9fe1c8d59f9871be6cb48df3214b2c97c26edd00e3014a0c6
+  S6-P1-02-restore-mongo.txt            = d4b876961f792f4540b4eeeae45dba1d98938e8ded64a73142401ee888b06fe3
+  S6-P1-01-corte-pause-validacion.txt   = 6f9808d2b389f18d42dbb766e5fdc1c90003f5ae90a4e8d01916c1a440c9b530
+
+=== 1. Identidad de lo probado ===
+DOC_IMAGE_ID=sha256:8a39f86a1aeb90295f0aa4d0ed4eb1a130611b818a1e074b65696a862eb05eac
+WRK_IMAGE_ID=sha256:fd5a459686cdc30b1d4a0f4b9c647885bb3f896166b776880857ae3c47c02b55 (extraction-worker:s6-p1-fix)
+WRK_IMAGE_ID_ANTERIOR=sha256:70ef939e5a160567d9c2e5ea822ed9d81229e3471aa076ae016db271a5bc851d (sin fix, NO usada)
+DOC_COMMIT=944346fa08a515e4f8195abc1b314ca2235566d7
+DOC_DIRTY_FILES=0
+WRK_COMMIT=bfbb6fa58ba3938f830be1ff17016a26f6a72ba5
+WRK_DIRTY_FILES=2 (fix sin commitear)
+WRK_DIFF_SHA256=76a94813b78de1fb7a00bebfecaedd8ee1c0653d340171beca19ac6a555c0e49
+INFRA_COMMIT=34a13825436248ad1437ec86bbaf713cc7197ec5
+Imagenes efectivas: doc-service:s6-p1, extraction-worker:s6-p1-fix
+Worker del drill: WORKER_MAX_CONCURRENCY=1, WORKER_BATCH_COUNT=1 (desvio de metodo declarado)
+Fixture: /tmp/s6-p1-01-fix/big.pdf, 400 paginas, 210862 bytes (pdfunite de minimal.pdf)
+
+=== 2. Config efectiva del drill ===
+Perfiles: --profile full --profile sentinel
+Archivos: compose/docker-compose.yml, compose/docker-compose.sentinel-worker.yml, /tmp/s6-p1-01-fix/drill.override.yml
+REDIS_STREAM_KEY: stream:pdf-processing-s6-failover
+REDIS_STREAM: stream:pdf-processing-s6-failover
+REDIS_DLQ_STREAM: stream:pdf-processing-s6-failover-dlq
+REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+REDIS_MASTER_NAME: myprimary
+
+=== 3. Preflight ===
+3 sentinels -> redis-streams; ckquorum OK 3 usable Sentinels; num-slaves=2 num-other-sentinels=2 quorum=2
+AOF: aof_enabled=1, aof_last_write_status=ok, aof_last_bgrewrite_status=ok, appendfsync=everysec, maxmemory-policy=noeviction en los 3 nodos
+/readyz: doc-service ready; extraction-worker ok (redis ok, redis_group ok, minio ok, mongo ok)
+XINFO GROUPS stream:pdf-processing-s6-failover: name=extraction-workers, consumers=1, pending=0, last-delivered-id=0-0, lag=0
+XLEN inicial del drill = 0
+XLEN stream:pdf-processing (real) = 2126
+Watcher de doc-service: "change stream watcher iniciado" confirmado antes de sembrar (resumed=true)
+
+=== 4. Siembra y canario ===
+Fixture largo: /tmp/s6-p1-01-fix/big.pdf, 400 paginas, 210862 bytes (pdfunite de minimal.pdf).
+Canario (minimal.pdf): primer intento quedo UPLOADED por resume token stale del Change Stream.
+  Log doc-service: "cannot resume stream; the resume token was not found" -> token descartado y
+  stream reiniciado fresco DESPUES del update del canario; evento perdido (ventana del watcher).
+  Mitigacion de corrida: se borro el token, se recreo doc-service (resumed=false) y se re-disparo
+  la transicion PENDING_UPLOAD -> UPLOADED. Canario: COMPLETED. XLEN=1.
+Pre-canary (big.pdf): COMPLETED en 3 s. XLEN=2. Extraccion del fixture largo validada.
+Oleada 1: 200 documentos con minimal.pdf; transicionados=200; XLEN=202.
+Oleada live: 100 documentos con big.pdf; transicionados=100; XLEN=302.
+Se pauso al alcanzar XLEN>=252 (se observo 302 antes del pause).
+
+=== 5. Carga en T0 ===
+XLEN_PRE=302. worker WORKER_MAX_CONCURRENCY=1 (desvio de metodo).
+XPENDING pre-corte guardado en /tmp/s6-p1-01-fix/xpending-pre.txt.
+
+=== 6. Corte y consenso ===
+T0=1794684053.745596267
+MASTER_ANTES=redis-streams
+Comando: docker compose pause redis-streams (NO stop/kill). Pause efectivo a los 0.23 s de T0.
+T1=1794684062.010534090
+MASTER_NUEVO=redis-streams-replica-1
+consenso=8.265 s
+Logs Sentinel:
+  +sdown master myprimary redis-streams 6379
+  +odown master myprimary redis-streams 6379 #quorum 3/2
+  +switch-master myprimary redis-streams 6379 redis-streams-replica-1 6379
+Roles post: redis-streams sin respuesta (pausado), replica-1=master, replica-2=slave.
+
+=== 7. Perdida ===
+XLEN_PRE=302
+XLEN_POST=302
+PERDIDOS=0
+(PERDIDOS=0 => recuperacion por reconciliador no ejercida; T_recovered=N/A)
+
+=== 8. Cliente Go ===
+Objeto post-go subido DESPUES de T1 (raw-pdfs/raw-pdfs/<RUN_ID>-post-go.pdf), luego se inserto y
+transiciono el documento.
+T_go=1794684100.618037273
+T_go - T0 = 46.873 s. DESVIO DE MEDICION: el objeto se subio a mano ~40 s despues de T1, por lo que
+ese tiempo incluye latencia del operador, no del relay. Evidencia de reconexion de Go:
+XREVRANGE del maestro nuevo, ultimo mensaje:
+  document_id = s6f3-20261114T190859Z-post-go
+  object_key  = raw-pdfs/s6f3-20261114T190859Z-post-go.pdf
+  enqueued_at = 2026-11-14T19:21:40Z
+  schema_version = 1
+(b1) PASA: el relay Go escribio en el maestro nuevo y el mensaje nuevo quedo publicado.
+
+=== 9. Cliente Rust (fix STALL_CODE) ===
+Snapshot de no terminales post-T1: 57 documentos (live-44..live-100 y otros).
+Logs del worker (fix activo):
+  19:20:54 WARN conexion con el master inservible; re-resolviendo — REDIS_IO: timed out
+  19:20:59 WARN conexion con el master inservible; re-resolviendo — REDIS_STALL: xreadgroup timeout
+  19:21:05 WARN conexion con el master inservible; re-resolviendo — REDIS_IO: timed out
+El codigo nuevo SI se ejercio (REDIS_STALL disparo re-resolucion). PERO el consumidor NO reanudo:
+  last-delivered-id congelado en 1794684052714-0 (previo a T0)
+  pending=58, lag=303 en el maestro nuevo
+  XPENDING: 58 mensajes, consumer-16138ab9d34d-1, rango 1794684052411-0..1794684052714-0
+  conexiones del worker: 3 ESTABLISHED a 172.22.0.4 (maestro viejo pausado)
+                          1 ESTABLISHED a 172.22.0.3 (maestro nuevo, xautoclaim)
+  sin reinicios (RestartCount=0), sin panic en logs, CPU ~0.14%, health=healthy
+  post-go quedo en QUEUED; los 57 del snapshot quedaron no terminales.
+Hipotesis de causa raiz: la re-resolucion bloqueante del cliente Sentinel (RedisClient::reset ->
+spawn_blocking -> I/O bloqueante del crate redis) puede colgarse; el reader y el ack no reemplazan
+su conexion y quedan clavados en el maestro viejo. El fix minimo (STALL_CODE) no alcanza.
+(b2) FALLA: Rust no reanudo el consumo ni escribio estados terminales post-failover en la ventana.
+No se reinicio el worker ni se intervino el stack para "ayudar" al drill.
+
+=== 10. Recuperacion (reconciliador) ===
+PERDIDOS=0 => recuperacion no ejercida. T_recovered=N/A.
+El set NO llego a 100% terminal en la ventana: al cierre 245 COMPLETED y 58 QUEUED.
+
+=== 11. Estado final del drill ===
+Agregacion por status al cierre: COMPLETED=245, QUEUED=58.
+XLEN drill=303; XLEN DLQ=0; XLEN stream real=2126 (sin cambios por el drill).
+
+=== 12. Recursos ===
+No capturados con sampler en esta corrida (desvio). RestartCount=0 y OOMKilled=false en doc-service
+y extraction-worker. memory.peak no medido.
+
+=== 13. Failback ===
+unpause: redis-streams role=slave, master_link_status=up.
+SENTINEL FAILOVER: intento 1 (replica-1), intento 2 (redis-streams) -> MASTER_FINAL=redis-streams.
+
+=== 14. Restauracion y teardown ===
+Documentos del set borrados: 303. Objetos restantes con prefijo RUN_ID: 0.
+Streams de drill borrados (EXISTS=0). Stream real XLEN=2126.
+doc-service y extraction-worker recreados con imagenes y archivos pre-drill
+(ghcr.io/alejo-basile/doc-service:s5p1-pull / extraction-worker:s5p1-closure), healthy.
+Maestro redis-streams con 2 replicas.
+
+=== 15. Desvios y no verificado ===
+- Fix de codigo insuficiente: REDIS_STALL dispara re-resolucion pero el consumidor no reanuda.
+  Causa raiz probable en la re-resolucion bloqueante de Sentinel (ver seccion 9). (b2) FALLA.
+- T_go = 46.9 s incluye latencia del operador (objeto subido a mano tras T1); no mide solo el relay.
+- T_rust no medible: el consumidor no reanudo; last-delivered-id congelado.
+- PERDIDOS=0: recuperacion por reconciliador no ejercida (T_recovered=N/A).
+- Resume token stale del Change Stream: evento del canario perdido; se mitigo borrando el token y
+  recreando doc-service con resumed=false.
+- Worker con WORKER_MAX_CONCURRENCY=1 y fixture de 400 paginas (desvio de metodo).
+- Recursos (docker stats, memory.peak) no capturados; RestartCount/OOM si.
+- P9 RAM: disponible ~2.9 GB < umbral estimado 4 GB (no go/no-go).
+
+=== 16. Resultado ===
+FALLIDO para el DoD del drill:
+  (a) T_rec: no computable limpiamente; T_go observado 46.9 s (con latencia de operador); T_rust N/A.
+  (b1) PASA — Go escribio en el maestro nuevo.
+  (b2) FALLA — el worker Rust no reanudo el consumo ni escribio terminales post-failover.
+  (c1) PERDIDOS=0 medido. (c2) N/A (no ejercido).
+  100 % terminal: FALLA (58 QUEUED al cierre).
+  Sin intervencion: se mantuvo (0 reinicios); el drill se cierra como fallido, no se invalida.
+El fix de codigo (STALL_CODE) quedo implementado y testeado, pero NO es suficiente para (b2).
