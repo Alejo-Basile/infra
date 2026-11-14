@@ -1,0 +1,71 @@
+S6-P1-01 — Failover de Redis Sentinel bajo carga (Go + Rust en la misma corrida)
+Fecha (UTC): 2026-11-14T02:30:34Z
+RUN_ID: s6f-20261114T023034Z
+Rama infra: feat/s5-p1-cierre-final @ 34a13825436248ad1437ec86bbaf713cc7197ec5
+Operador: P1
+Ventana: 3 h (X = 45 min para recuperacion por reconciliador)
+Hashes de evidencias previas (P7, registrados antes del drill):
+  S6-P1-01-failover-redis.txt  = 90135382b885c4b9fe1c8d59f9871be6cb48df3214b2c97c26edd00e3014a0c6
+  S6-P1-02-restore-mongo.txt   = d4b876961f792f4540b4eeeae45dba1d98938e8ded64a73142401ee888b06fe3
+
+=== Precondiciones (P1..P10) ===
+P1 repos: doc-service extraction-worker infra platform-services -> 4 rutas listadas [OK]
+P2 fix P2: sweepStuckQueued en internal/reconciler/reconciler.go:422; StatusQueued en internal/adapters/relay/relay.go:91 [OK]
+P3 doc-service limpio: status --porcelain = 0 lineas; git diff | sha256sum = e3b0c44298fc1c149afbf4c8996fb9227ae41e4649b934ca495991b7852b855 (hash del diff vacio) [OK]
+P4 worker Sentinel-aware: REDIS_SENTINEL_ADDRS con env_csv en extraction-worker/crates/worker/src/consumer/config.rs:141 [OK]
+P5 secretos: 7 archivos presentes en infra/secrets/ (no impresos) [OK]
+P6 .env interpolable: docker compose --env-file infra/.env -f infra/compose/docker-compose.yml config --quiet -> exit 0 [OK]
+P7 evidencia previa intacta: hashes coinciden con los registrados [OK]
+P8 evidencia nueva libre: test ! -e ... -> LIBRE [OK]
+P9 capacidad: free -m available=1666 MB (~1,6 GB) por debajo del umbral estimado >=4 GB -> DESVIACION registrada (P9 es estimacion no verificada y no esta en el go/no-go). df -h / = 22G disponibles [DESVIO]
+P10 stack: docker compose --profile full --profile sentinel ps -> solo servicios del proyecto infra, todos healthy. Contenedor ajeno 'restaurante_backend' publica 3000 (proyecto distinto, no interfiere) [OK con nota]
+
+=== Baseline de aislamiento (antes del drill) ===
+Maestro Sentinel: redis-streams 6379; roles: redis-streams=master, redis-streams-replica-1=slave, redis-streams-replica-2=slave
+XLEN stream:pdf-processing = 2126
+Documentos Mongo: total=1425, COMPLETED=1425, no terminales=0
+Stream de drill inexistente antes del drill (EXISTS=0)
+Labels de lanzamiento (docker inspect com.docker.compose.project.config_files):
+  infra-doc-service-1:       compose/docker-compose.yml, compose/docker-compose.doc-local.yml
+  infra-extraction-worker-1: compose/docker-compose.yml, compose/docker-compose.worker-local.yml
+Imagenes en ejecución: doc-service=ghcr.io/alejo-basile/doc-service:s5p1-pull, extraction-worker=ghcr.io/alejo-basile/extraction-worker:s5p1-closure
+
+=== 1. Identidad de lo probado ===
+DOC_IMAGE_ID=sha256:93432e11fcc437ccb75da643ff7ebf18773653f3406d3cfa633e29bc55c9cc41
+WRK_IMAGE_ID=sha256:c43182e01ed1b43f0bfa4f230c26f727362c4e115557484f18ed73987ee18b08
+DOC_COMMIT=944346fa08a515e4f8195abc1b314ca2235566d7
+DOC_DIRTY_FILES=0
+DOC_DIFF_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+WRK_COMMIT=bfbb6fa58ba3938f830be1ff17016a26f6a72ba5
+INFRA_COMMIT=34a13825436248ad1437ec86bbaf713cc7197ec5
+Imagenes efectivas (config | grep image:): doc-service:s6-p1, extraction-worker:s6-p1
+Digests publicados ghcr.io/...@sha256 para los dos clientes: 0 (override aplicado)
+
+=== 2. Config efectiva del drill ===
+Perfiles: --profile full --profile sentinel
+Archivos: compose/docker-compose.yml, compose/docker-compose.sentinel-worker.yml, /tmp/s6-p1-01/images.override.yml
+REDIS_STREAM_KEY exportado: stream:pdf-processing-s6-failover
+Valores interpolados (filtrados, sin MONGO_URI):
+      REDIS_DLQ_STREAM: stream:pdf-processing-s6-failover-dlq
+      REDIS_MASTER_NAME: myprimary
+      REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_STREAM: stream:pdf-processing-s6-failover
+
+=== 3. Preflight del stack ===
+7.1 Maestro por los 3 sentinels: sentinel-1 -> redis-streams; sentinel-2 -> redis-streams; sentinel-3 -> redis-streams
+7.1 ckquorum: OK 3 usable Sentinels. Quorum and failover authorization can be reached
+7.1 SENTINEL master: num-slaves=2; num-other-sentinels=4; quorum=2
+    DESVIO: num-other-sentinels=4 (esperado 2). SENTINEL sentinels lista 4 entradas, 2 con flags=s_down (stale, s-down-time ~3,8 h) y 2 saludables + sentinel-1 = 3 utilizables. ckquorum OK con quorum 2; el drill es valido.
+7.2 AOF/memoria (los 3 nodos redis-streams, redis-streams-replica-1, redis-streams-replica-2):
+    aof_enabled=1; aof_last_write_status=ok; aof_last_bgrewrite_status=ok; appendfsync=everysec; maxmemory-policy=noeviction; maxmemory=201326592
+7.3 /readyz: extraction-worker HTTP 200; doc-service HTTP 200 ({"status":"ready"...})
+7.4 XINFO GROUPS stream:pdf-processing-s6-failover: name=extraction-workers, consumers=1, pending=0, last-delivered-id=0-0, entries-read=0, lag=0
+7.5 XLEN inicial del drill = 0 (grupo presente; creacion idempotente no requerida)
+7.6 Aislamiento: XLEN stream:pdf-processing = 2126 (sin cambios por el drill)
+
+
+=== ABORTED — Failover no alcanzó consenso ===
+Motivo: tras dc stop redis-streams, sentinel entró en tilt mode ("Failed to resolve hostname 'redis-streams'") y reportó "NOGOODSLAVE No suitable replica to promote"; los dos replicas quedaron con master_link_status:down porque el hostname redis-streams desaparece al detener el contenedor. No se alcanzó T1 en 90 s ni con SENTINEL FAILOVER manual.
+Restauracion: dc start redis-streams; master volvio a redis-streams; replicas master_link_status:up. Clientes restaurados a setup pre-drill (doc-service:s5p1-pull, extraction-worker:s5p1-closure, direct mode) via dc_base.
+T0=1794673270.726676163 MASTER_ANTES=redis-streams MASTER_NUEVO=N/A PERDIDOS=N/A T_go=N/A T_rust=N/A T_recovered=N/A
+Teardown: 201 docs borrados, objetos_restantes_s6f-20261114T023034Z=0, drill stream+DLQ eliminados (EXISTS=0). Stream real XLEN sin reduccion por el drill.

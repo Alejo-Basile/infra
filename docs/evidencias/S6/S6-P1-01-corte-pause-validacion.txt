@@ -1,0 +1,91 @@
+S6-P1-01 — Validacion del corte por `pause` del primario (mecanismo de failover)
+Fecha (UTC): 2026-11-14
+Entorno: stack local, perfiles `full` + `sentinel`, proyecto `infra`
+Objetivo: demostrar que el corte por `docker pause` (contenedor y DNS vivos, Redis sin responder)
+produce failover automatico de Sentinel sin `+tilt` y sin `Failed to resolve hostname`, y que el
+nodo viejo se reincorpora como replica al despausar.
+Alcance: SOLO mecanismo de corte. No se ejecuto el drill con carga ni se midio reconexion de
+clientes (eso corresponde a la corrida S6-P1-01 con `RUN_ID`).
+
+=== 0. Motivacion (defecto medido con `stop`) ===
+La corrida del 2026-11-14 con `docker compose stop redis-streams` aborts en modo tilt:
+  +tilt #tilt mode entered
+  Failed to resolve hostname 'redis-streams'
+  NOGOODSLAVE No suitable replica to promote
+Causa: al detener el contenedor desaparece su entrada DNS; con `sentinel resolve-hostnames yes`
+los Sentinels bloquean resolviendo el hostname del primario y no eligen replica.
+Evidencia del aborto: `S6-P1-01-failover-carga.txt`.
+
+=== 1. Baseline (antes del corte) ===
+Maestro por los 3 sentinels: redis-streams (sentinel-1, sentinel-2, sentinel-3)
+INFO replication en redis-streams: role:master; connected_slaves:2
+  slave0: redis-streams-replica-2 online
+  slave1: redis-streams-replica-1 online
+XLEN stream:pdf-processing = 2126
+EXISTS stream:pdf-processing-s6-failover stream:pdf-processing-s6-failover-dlq = 0
+Clientes: detenidos durante la validacion (doc-service y extraction-worker, pre-drill images,
+  worker en modo directo) para evitar `READONLY` ajeno al mecanismo de corte.
+
+=== 2. Corte ===
+MASTER_ANTES=redis-streams
+T0=1794680744.128933488 (2026-11-14T18:25:44Z aprox.)
+Comando: docker pause infra-redis-streams-1
+El contenedor permanece en la red (el hostname `redis-streams` sigue resolviendo).
+
+=== 3. Consenso de Sentinel ===
+T1=1794680751.952706108
+MASTER_NUEVO=redis-streams-replica-1
+consenso=7.824 s
+Los 3 sentinels coinciden: sentinel-1 -> redis-streams-replica-1; sentinel-2 -> redis-streams-replica-1;
+sentinel-3 -> redis-streams-replica-1.
+
+Logs de sentinel-1 (extracto):
+  18:25:50.215 # +sdown master myprimary redis-streams 6379
+  18:25:50.292 # +odown master myprimary redis-streams 6379 #quorum 3/2
+  18:25:51.343 # +switch-master myprimary redis-streams 6379 redis-streams-replica-1 6379
+  18:25:51.345 * +slave slave redis-streams-replica-2:6379 @ myprimary redis-streams-replica-1 6379
+  18:25:51.346 * +slave slave redis-streams:6379 @ myprimary redis-streams-replica-1 6379
+  18:26:02.270 * +convert-to-slave slave redis-streams:6379 @ myprimary redis-streams-replica-1 6379
+switch-master observado en los 3 sentinels:
+  sentinel-1: 18:25:51.343 (a replica-1) y 18:26:13.829 (de vuelta a redis-streams)
+  sentinel-2: 18:25:52.366 (a replica-1) y 18:26:08.570 (de vuelta a redis-streams)
+  sentinel-3: 18:25:51.344 (a replica-1) y 18:26:08.570 (de vuelta a redis-streams)
+Verificacion negativa: `+tilt` y `Failed to resolve hostname` = 0 ocurrencias en los 3 sentinels
+en la ventana del corte.
+
+Nuevo maestro verificado: redis-streams-replica-1 con role:master; connected_slaves:1
+  (redis-streams-replica-2 online; `redis-streams` pausado).
+
+=== 4. Reincorporacion del nodo viejo ===
+T_UNPAUSE=1794680752.196288881
+Comando: docker unpause infra-redis-streams-1
+Democion automatica: redis-streams -> role:slave; master_link_status:up
+Sentinel: `+convert-to-slave slave redis-streams:6379` a las 18:26:02.270.
+No hubo split brain: el nodo viejo estuvo congelado hasta despues de medir el corte y fue demotado
+por Sentinel antes de devolver los clientes.
+
+=== 5. Failback a la topologia original ===
+intento=1 maestro=redis-streams-replica-1 -> SENTINEL FAILOVER myprimary
+intento=2 maestro=redis-streams
+MASTER_FINAL=redis-streams
+Estado final: redis-streams role:master; connected_slaves:2
+  slave0: redis-streams-replica-2 online lag=1
+  slave1: redis-streams-replica-1 online lag=0 (resincronizacion completada)
+
+=== 6. Restauracion y aislamiento ===
+Clientes recreados con los archivos pre-drill (`compose/docker-compose.yml` +
+`compose/docker-compose.doc-local.yml` + `compose/docker-compose.worker-local.yml`, sin override
+sentinel del worker): doc-service y extraction-worker `healthy`; `/readyz` HTTP 200 en ambos.
+XLEN stream:pdf-processing final = 2126 (sin reduccion por el corte).
+EXISTS stream:pdf-processing-s6-failover stream:pdf-processing-s6-failover-dlq = 0.
+
+=== 7. Resultado ===
+PASS — el corte por `pause` produce failover automatico en 7.824 s, sin tilt, sin fallo de
+resolucion de hostname, y el nodo viejo se reincorpora como replica. El corte por `stop` queda
+descartado para este stack.
+
+Desvios:
+- Validacion sin carga y con los dos clientes detenidos: mide el mecanismo de corte, no la
+  reconexion de clientes ni la convergencia del reconciliador.
+- La perdida real del nodo (contenedor eliminado, sin DNS) sigue sin soportarse con
+  `resolve-hostnames` + DNS de Compose: deuda de configuracion registrada en el runbook §3.

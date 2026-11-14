@@ -1,0 +1,99 @@
+S6-P1-01 — Failover de Redis Sentinel bajo carga (Go + Rust en la misma corrida) — RUN 2
+Fecha (UTC): 2026-11-14T18:36:03Z
+RUN_ID: s6f-20261114T183603Z
+Rama infra: feat/s5-p1-cierre-final @ 34a13825436248ad1437ec86bbaf713cc7197ec5
+Operador: P1
+Ventana: 3 h (X = 45 min para recuperacion por reconciliador)
+Hashes de evidencias previas (A1):
+  S6-P1-01-failover-carga.txt           = (corrida abortada 2026-11-14, stop)
+  S6-P1-01-failover-redis.txt           = 90135382b885c4b9fe1c8d59f9871be6cb48df3214b2c97c26edd00e3014a0c6
+  S6-P1-02-restore-mongo.txt             = d4b876961f792f4540b4eeeae45dba1d98938e8ded64a73142401ee888b06fe3
+  S6-P1-01-corte-pause-validacion.txt   = (validacion pause 2026-11-14)
+
+=== Identidad de lo probado ===
+DOC_IMAGE_ID=sha256:8a39f86a1aeb90295f0aa4d0ed4eb1a130611b818a1e074b65696a862eb05eac
+WRK_IMAGE_ID=sha256:70ef939e5a160567d9c2e5ea822ed9d81229e3471aa076ae016db271a5bc851d
+DOC_COMMIT=944346fa08a515e4f8195abc1b314ca2235566d7
+DOC_DIRTY_FILES=0
+DOC_DIFF_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+WRK_COMMIT=bfbb6fa58ba3938f830be1ff17016a26f6a72ba5
+INFRA_COMMIT=34a13825436248ad1437ec86bbaf713cc7197ec5
+Imagenes efectivas: doc-service:s6-p1, extraction-worker:s6-p1 (override aplicado)
+
+=== Preflight ===
+3 sentinels -> redis-streams; ckquorum OK; num-other-sentinels=2; quorum=2
+AOF: aof_enabled=1, aof_last_write_status=ok, appendfsync=everysec, maxmemory-policy=noeviction, maxmemory=201326592 en los 3 nodos
+/readyz: doc-service 200, extraction-worker 200
+XLEN drill inicial = 0; XLEN stream real = 2126
+
+=== Siembra ===
+Canario: COMPLETED (re-trigger por resume token invalidado del change stream)
+XLEN_BASE=1
+200 docs insertados + transicionados; XLEN_PRE (oleada1)=201
+Oleada live: 100 docs insertados+transicionados; XLEN final pre-corte=301
+nonterm-ids.txt en T0: 0 (worker dreno todo antes del corte) -> DESVIO A3 parcial
+
+=== Carga en T0 ===
+XLEN_PRE=301 (C1 cumplida: >=201)
+C2: last-delivered-id=1794681580947-0, pending=0, lag=0 (worker dreno todo; consumo activo observado en logs)
+
+=== Corte y consenso ===
+T0=1794681720.233816267
+MASTER_ANTES=redis-streams
+Comando: docker compose pause redis-streams (NO stop/kill)
+T1=1794681728.035369017
+MASTER_NUEVO=redis-streams-replica-1
+consenso=7.802 s
+Logs Sentinel: +sdown, +odown (quorum 3/2), +switch-master redis-streams -> redis-streams-replica-1
+Sentinel log guardado en scratch.
+
+=== Perdida ===
+XLEN_PRE=301
+XLEN_POST=301
+PERDIDOS=0
+(DESVIO A6: PERDIDOS=0 => recuperacion por reconciliador no ejercida; T_recovered=N/A)
+
+=== Cliente Go ===
+T_go=1794681743.980437867
+T_go - T0 = 23.7466 s  (<30 => (a) PASA para Go)
+XREVRANGE ultimo mensaje: document_id=s6f-20261114T183603Z-post-go, object_key=raw-pdfs/...-post-go.pdf, schema_version=1
+(b1) PASA
+
+=== Cliente Rust ===
+T_rust: N/A (no habia documentos no terminales en T0 por drenaje rapido)
+POST_TERMINAL=0 (documento post-go quedo en QUEUED; worker no consumio tras el failover)
+Worker logs: REDIS_TIMEOUT xreadgroup en loop, sin re-resolucion automatica a redis-streams-replica-1 en ~5 min.
+readyz del worker reporto redis ok (conexion separada), pero el consumer principal no reconecto.
+(b2) FALLA: el worker Rust no reconecto automaticamente dentro de la ventana observada.
+No se reinicio el worker (prueba de reconexion automatica preservada).
+
+=== Recuperacion (reconciliador) ===
+PERDIDOS=0 => T_recovered=N/A (no ejercido). Criterion (c2) declarado no ejercido.
+
+=== Estado final ===
+Todos los 302 docs del set (200+100+canary+post-go) en COMPLETED antes del corte; post-go quedo QUEUED.
+Teardown: 302 docs borrados, objetos_restantes=0, drill stream+DLQ eliminados (DEL).
+Stream real XLEN=2126 (sin reduccion).
+
+=== Recursos ===
+No capturados en esta corrida (muestreador no ejecutado). memory.peak/restart/OOM: no verificado.
+
+=== Failback ===
+unpause: redis-streams role=slave link=up (OK)
+SENTINEL FAILOVER: intento 1 (replica-1), intento 2 (replica-2), intento 3 (redis-streams) -> MASTER_FINAL=redis-streams
+Failback exitoso en 3 intentos.
+
+=== Restauracion stack ===
+doc-service y extraction-worker recreados con imagenes pre-drill (ghcr.io/...:s5p1-pull / s5p1-closure), healthy, /readyz 200, maestro redis-streams con 2 replicas.
+
+=== Desvios ===
+- A2: nonterm-ids.txt vacio (worker dreno antes del corte); T_rust no medible por snapshot; se uso POST_TERMINAL como proxy.
+- A3: XLEN llego a 301 pero last-delivered-id no avanzo entre muestras (backlog drenado); corte ejecutado con XLEN_PRE=301.
+- A5: sampler de reconciliacion no aplicado (PERDIDOS=0).
+- num-other-sentinels=2 (sin desvio; corrida anterior reportaba 4 stale).
+- P9 RAM: available 2895 MB < 4 GB (desvio registrado, no go/no-go).
+- Recursos no capturados (S6-P1-04 sin datos de esta corrida).
+- Worker Rust NO reconecto automaticamente: hallazgo critico.
+
+=== Resultado ===
+PARCIAL: (a) Go T_rec=23.7 s PASA; (b1) Go PASA; (b2) Rust FALLA; (c1) PERDIDOS=0; (c2) N/A (no ejercido); 100% terminal del set pre-corte OK; post-go no terminal al cerrar (QUEUED) pero borrado en teardown.
