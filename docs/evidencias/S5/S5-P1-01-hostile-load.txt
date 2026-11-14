@@ -1,0 +1,121 @@
+# S5-P1-01 — hostil operativo reproducible (extraction-worker)
+
+Fecha UTC de la corrida: 2026-11-14T09:28:13Z a 2026-11-14T09:29:23Z.
+Arnés: `extraction-worker/labs/hostile_load_harness.sh` (rama
+`test/worker-hostile-load`).
+Entorno: stack de laboratorio `extraction-worker-dev` (MinIO, Redis 7 y Mongo 7
+rs0), red `extraction-worker-dev_default`. No se usó infraestructura de
+staging/producción.
+
+## Comando ejecutado
+
+Desde la raíz de `extraction-worker/extraction-worker`:
+
+```
+$ cd labs
+$ OUT_DIR=/tmp/opencode/hostile-load-evidence-final KEEP=0 ./hostile_load_harness.sh
+```
+
+Salida resumida del arnés:
+
+```
+[hostile-load] run_id=20261114T092813Z-2781914
+[hostile-load] generando 4 PDFs de 412 páginas
+pdf-1.pdf 26581102 bytes
+pdf-2.pdf 26579320 bytes
+pdf-3.pdf 26582098 bytes
+pdf-4.pdf 26582600 bytes
+[hostile-load] sembrando documentos QUEUED en Mongo
+seeded 4
+[hostile-load] encolando 4 mensajes en stream:hostile-load-20261114T092813Z-2781914
+[hostile-load] esperando saturación del bulkhead
+[hostile-load] reporte: /tmp/opencode/hostile-load-evidence-final/hostile-load-report.txt
+...
+- pids_limit=200: PASS
+- /readyz 200 y max <200 ms: PASS
+- OVERALL: PASS
+```
+
+## Imagen y límites
+
+- Imagen: `ghcr.io/alejo-basile/extraction-worker:latest`
+- Digest: `sha256:fb206335906130de7e599a954352df237380fa83e12117436ce8bb90cec00a72`
+- Revisión OCI: `21b9bc7b3ccf845dfe5a907c6bd4be6cd837fdd9`
+- Worker: `--pids-limit 200 --memory 768m --cpus 1.5`, rootfs de solo lectura,
+  `tmpfs /tmp:size=256m`, usuario `10001:10001`.
+- Configuración: `WORKER_MAX_CONCURRENCY=4`,
+  `WORKER_JOB_TIMEOUT_SECS=300`, `WORKER_MAX_PAGES=2000`,
+  `WORKER_MAX_PDF_BYTES=31457280`, `WORKER_MIN_IDLE_MS=600001`,
+  `WORKER_DEAD_CONSUMER_MS=600001`, `WORKER_METRICS_INTERVAL_SECS=1`.
+
+## Carga
+
+- 4 PDFs de 412 páginas: 400 de texto denso (PostScript + `gs`) más 12 de
+  imagen de ruido (PIL, 1260x1780, calidad 92).
+- Tamaños: 26.581.102 / 26.579.320 / 26.582.098 / 26.582.600 bytes
+  (~25,3 MiB cada uno), por debajo de `WORKER_MAX_PDF_BYTES` (30 MiB).
+- 4 documentos `QUEUED` en `app.documents`, 4 objetos en el bucket
+  `raw-pdfs` con keys `raw-pdfs/hostile-...pdf` y 4 mensajes en el stream aislado.
+- `/readyz` sondeado cada 250 ms desde dentro del contenedor.
+
+## /readyz durante la saturación
+
+```
+samples=19  ok_200=19  errors=0
+mean=9.639 ms  p95=65.788 ms  max=65.788 ms
+```
+
+Muestras (primeras y últimas, `timestamp_ms código segundos`):
+
+```
+1794648555276 200 0.003967
+1794648555563 200 0.004612
+1794648555849 200 0.011595
+...
+1794648560314 200 0.008668
+1794648560607 200 0.003062
+1794648560888 200 0.003092
+```
+
+## PIDs y memoria
+
+```
+worker_pids_current 16
+worker_pids_limit 200
+HostConfig.PidsLimit 200
+memory.peak 310202368 bytes (~295,8 MiB)
+worker_inflight 3
+worker_pel_pending{group="extraction-workers"} 3
+worker_stream_depth{stream="stream:hostile-load-20261114T092813Z-2781914"} 4
+worker_documents_total{outcome="completed"} 1
+```
+
+La captura se hizo con 1 de 4 documentos ya completado y 3 en vuelo, por lo que
+los gauges de PIDs y las muestras de `/readyz` corresponden a la ventana de
+saturación, no al reposo.
+
+## Documentos al cierre
+
+```json
+{"statuses":[["hostile-20261114T092813Z-2781914-1","COMPLETED"],["hostile-20261114T092813Z-2781914-2","COMPLETED"],["hostile-20261114T092813Z-2781914-3","COMPLETED"],["hostile-20261114T092813Z-2781914-4","COMPLETED"]],"counts":{"COMPLETED":4}}
+```
+
+Duraciones de extracción registradas por el worker: 2323, 3544, 3891 y 3862 ms.
+Los cuatro documentos quedaron `COMPLETED` y los cuatro mensajes fueron
+ACkeados; el PEL no conserva mensajes de esta corrida.
+
+## Resultado
+
+- `pids_limit=200` verificado en `/metrics` y en `HostConfig.PidsLimit`: PASS.
+- `/readyz` 200 en 19/19 muestras, máximo 65,788 ms (<200 ms): PASS.
+- Memoria pico 295,8 MiB, por debajo de `mem_limit=768m`: PASS.
+- 4/4 documentos `COMPLETED`: PASS.
+- OVERALL: PASS.
+
+## Alcance de esta evidencia
+
+Esta corrida demuestra que el hostil es **reproducible** y que la contención de
+PIDs, memoria, CPU y `/readyz` se sostiene bajo 4 PDFs de 412 páginas. No cierra
+por sí sola los hallazgos pendientes de S5-P1-01 sobre estado terminal de fallo
+y reconciliación de documentos `QUEUED` sin mensaje; esos siguen documentados en
+`S5-P1-01-recursos-worker.txt` y deben resolverse en su propia tarea.
