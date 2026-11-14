@@ -110,3 +110,12 @@ No es plomeria: los fakes de S3 existen (`tests/resilience_it.rs` implementa
 (`crates/worker/src/document_store.rs:37`) y el job `integration` de CI solo
 levanta Redis y MinIO, **sin Mongo**. Para escribirlo hace falta un seam (trait)
 para el store o Mongo en ese job. Es un cambio de diseño, con su propia tarea.
+
+## Evidencia reproducible (2026-11-14)
+
+El hostil se repitio con un arnes versionado en el repo del worker:
+`labs/hostile_load_harness.sh`. La salida consolidada (4 PDFs de 412 paginas,
+`pids_limit=200`, `/readyz` 19/19 en 200 y maximo 65,788 ms, 4/4 documentos
+`COMPLETED`) esta en `S5-P1-01-hostile-load.txt`. Esta corrida no cambia el
+estado ABIERTA de los hallazgos de estado terminal y reconciliacion descritos
+arriba.
