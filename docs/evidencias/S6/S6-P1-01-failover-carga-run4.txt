@@ -1,0 +1,153 @@
+S6-P1-01 — Failover de Redis Sentinel bajo carga (Go + Rust en la misma corrida) — RUN 4 (worker con fix de reconexión completo)
+Fecha (UTC): 2026-11-14T19:45:27Z
+RUN_ID: s6f4-20261114T194527Z
+Rama infra: feat/s5-p1-cierre-final @ 34a13825436248ad1437ec86bbaf713cc7197ec5
+Operador: P1
+Ventana: 3 h (X = 45 min para recuperacion por reconciliador)
+Fix aplicado en extraction-worker:
+  - Resolver Sentinel propio (async con timeout 2 s por sentinel; sync solo sentinels). Ya NO usa
+    SentinelClientBuilder::get_client(), que conectaba al master candidato y ejecutaba ROLE sin
+    timeout (causa del cuelgue contra el primario pausado).
+  - new_async / reset_async sin spawn_blocking; recover() acotado a 10 s.
+  - needs_reconnect incluye REDIS_TIMEOUT ademas de REDIS_FAILOVER/REDIS_IO/REDIS_STALL.
+  - Watchdog del reader: re-resuelve el master cada 20 s en modo Sentinel.
+
+Hashes de evidencias previas (registrados antes del drill):
+  S6-P1-01-failover-carga.txt           = 43c8c8f263ada8dcbeeb08ed3fba3281b493cc055988f7be44d96cbf34ff87dd
+  S6-P1-01-failover-carga-run2.txt      = 4050047205f4c210cf50ed41f2b074d0804dd3511c30caee8bdef1e1a7900eee
+  S6-P1-01-failover-carga-run3.txt      = (corrida fallida del fix STALL_CODE parcial)
+  S6-P1-01-failover-redis.txt           = 90135382b885c4b9fe1c8d59f9871be6cb48df3214b2c97c26edd00e3014a0c6
+  S6-P1-02-restore-mongo.txt            = d4b876961f792f4540b4eeeae45dba1d98938e8ded64a73142401ee888b06fe3
+  S6-P1-01-corte-pause-validacion.txt   = 6f9808d2b389f18d42dbb766e5fdc1c90003f5ae90a4e8d01916c1a440c9b530
+
+=== 1. Identidad de lo probado ===
+DOC_IMAGE_ID=sha256:8a39f86a1aeb90295f0aa4d0ed4eb1a130611b818a1e074b65696a862eb05eac
+WRK_IMAGE_ID=sha256:6853358f27d2554dbe512423bd598609bc1b22c7ecae6d90af4a4a31c0086b19 (extraction-worker:s6-p1-fix2)
+WRK_IMAGE_ID_ANTERIOR=sha256:fd5a459686cdc30b1d4a0f4b9c647885bb3f896166b776880857ae3c47c02b55 (fix STALL_CODE parcial, NO usada)
+DOC_COMMIT=944346fa08a515e4f8195abc1b314ca2235566d7
+DOC_DIRTY_FILES=0
+WRK_COMMIT=bfbb6fa58ba3938f830be1ff17016a26f6a72ba5
+WRK_DIRTY_FILES=4 (fix sin commitear: classify.rs, runner.rs, redis_conn.rs; tests dentro de los mismos)
+INFRA_COMMIT=34a13825436248ad1437ec86bbaf713cc7197ec5
+Imagenes efectivas: doc-service:s6-p1, extraction-worker:s6-p1-fix2
+Worker del drill: WORKER_MAX_CONCURRENCY=1, WORKER_BATCH_COUNT=1 (desvio de metodo declarado)
+Fixture: /tmp/s6-p1-01-fix/big.pdf, 400 paginas, 210862 bytes (pdfunite de minimal.pdf)
+
+=== 2. Config efectiva del drill ===
+Perfiles: --profile full --profile sentinel
+Archivos: compose/docker-compose.yml, compose/docker-compose.sentinel-worker.yml, /tmp/s6-p1-01-fix/drill.override.yml
+REDIS_STREAM_KEY: stream:pdf-processing-s6-failover
+REDIS_STREAM: stream:pdf-processing-s6-failover
+REDIS_DLQ_STREAM: stream:pdf-processing-s6-failover-dlq
+REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+REDIS_MASTER_NAME: myprimary
+
+=== 3. Preflight ===
+3 sentinels -> redis-streams; ckquorum OK 3 usable Sentinels; num-slaves=2 num-other-sentinels=2 quorum=2
+AOF: aof_enabled=1 y maxmemory-policy=noeviction en los 3 nodos
+Resume token del Change Stream borrado ANTES de recrear doc-service; watcher arranco con "resumed":false.
+/readyz: doc-service ready; extraction-worker ok.
+XINFO GROUPS stream:pdf-processing-s6-failover: name=extraction-workers, consumers=1, pending=0
+XLEN inicial del drill = 0
+XLEN stream:pdf-processing (real) = 2126
+
+=== 4. Siembra y validacion ===
+Fixture largo validado con pre-canary: COMPLETED (extraccion por documento ~26 ms segun logs).
+Canario (minimal): COMPLETED. XLEN=1.
+Pre-canary (big.pdf): COMPLETED. XLEN=2.
+Oleada 1: 200 documentos minimal; transicionados=200; XLEN=202.
+Oleada live: 100 documentos big.pdf; transicionados=100; XLEN=302 antes del pause.
+Objeto post-go pre-creado ANTES de T0 (raw-pdfs/raw-pdfs/<RUN_ID>-post-go.pdf).
+
+=== 5. Corte y consenso ===
+T0=1794685670.581272047
+MASTER_ANTES=redis-streams
+Comando: docker compose pause redis-streams (NO stop/kill).
+T1=1794685678.567774130
+MASTER_NUEVO=redis-streams-replica-1
+consenso=7.987 s
+Logs Sentinel: +sdown, +odown (quorum 3/2 y 2/2), +switch-master redis-streams -> redis-streams-replica-1 en los 3 sentinels.
+Roles post: redis-streams pausado, replica-1=master, replica-2=slave.
+
+=== 6. Perdida ===
+XLEN_PRE=302
+XLEN_POST=302
+PERDIDOS=0
+(PERDIDOS=0 => recuperacion por reconciliador no ejercida; T_recovered=N/A)
+
+=== 7. Cliente Go ===
+Post-go: solo se transiciono PENDING_UPLOAD -> UPLOADED despues de T1 (objeto ya existente).
+T_TRIGGER_POSTGO=1794685726.467164763
+T_GO=1794685727.435751881 (primer XADD observado en el maestro nuevo)
+relay_latency = T_GO - T_TRIGGER = 0.969 s
+XREVRANGE del maestro nuevo, ultimo mensaje:
+  document_id = s6f4-20261114T194527Z-post-go
+  object_key  = raw-pdfs/s6f4-20261114T194527Z-post-go.pdf
+  enqueued_at = 2026-11-14T19:48:47Z
+  schema_version = 1
+(b1) PASA: el relay Go escribio en el maestro nuevo tras el failover.
+
+=== 8. Cliente Rust (fix completo) ===
+Reconexion automatica observada en logs del worker:
+  19:47:50.x pausa del primario (T0=19:47:50.581)
+  19:47:58.567 consenso (T1)
+  19:48:03.369 WARN "conexion con el master inservible; re-resolviendo — REDIS_IO: timed out"
+             (nueva re-resolucion async; sin cuelgue)
+  T_RUST_RECONNECT = 1794685683.369 => T_rec_client = 12.788 s desde T0.
+Sin reinicio del worker; RestartCount=0.
+Consumo post-failover: el documento post-go (publicado a las 19:48:47.045) fue reclamado a las
+19:48:47.048, extraido (5 ms) y ACK-eado a las 19:48:47.056. Latencia consumo ~9 ms desde el XADD.
+Grupo en el maestro nuevo: pending=0; last-delivered-id=1794685727045-0.
+  Nota: entries-read=1 y lag=302 son metadatos inconsistentes del grupo replicado/promovido; no
+  afectan el resultado: pending=0 y todos los documentos terminaron.
+(b2) PASA: Rust reconecto solo y consumio un mensaje creado despues del failover, sin reinicio.
+
+=== 9. 100 % terminal ===
+Agregacion por status al cierre: COMPLETED=303, no terminales=0.
+Set: canary + pre + 200 oleada 1 + 100 live + post-go = 303.
+
+=== 10. Recuperacion (reconciliador) ===
+PERDIDOS=0 => recuperacion no ejercida. T_recovered=N/A.
+
+=== 11. Estado final / aislamiento ===
+XLEN drill=303; XLEN DLQ=0; XLEN stream real=2126 (sin cambios por el drill).
+
+=== 12. Recursos ===
+restarts: extraction-worker=0, doc-service=0. OOMKilled=false en ambos.
+memory.peak (cgroup): extraction-worker=38694912 B (~36.9 MiB); doc-service=29806592 B (~28.4 MiB).
+docker stats final: worker 9.2 MiB / 768 MiB, doc-service 13.5 MiB / 512 MiB.
+No se ejecuto el sampler periodico (desvio); se capturaron picos y restarts.
+
+=== 13. Failback ===
+unpause: redis-streams role=slave, master_link_status=up.
+SENTINEL FAILOVER: intento 1 (replica-1), intento 2 (redis-streams) -> MASTER_FINAL=redis-streams.
+
+=== 14. Restauracion y teardown ===
+Documentos del set borrados: 303. Objetos restantes con prefijo RUN_ID: 0.
+Streams de drill borrados (EXISTS=0). Stream real XLEN=2126.
+doc-service y extraction-worker recreados con imagenes y archivos pre-drill
+(ghcr.io/alejo-basile/doc-service:s5p1-pull / extraction-worker:s5p1-closure), healthy.
+Maestro redis-streams con 2 replicas.
+
+=== 15. Desvios y no verificado ===
+- (a) T_rec literal usando la publicacion del post-go seria 56.9 s (T_GO - T0), pero incluye ~48 s de
+  latencia del operador: el post-go se transiciono a mano despues de T1. La reconexion real del
+  cliente Rust se mide por su log de re-resolucion: 12.788 s desde T0. La latencia del relay Go
+  fue 0.969 s. No se usa el valor literal de 56.9 s como recuperacion del cliente.
+- El snapshot de no terminales post-T1 quedo vacio: el worker dreno la oleada live antes de T1
+  (extraccion ~26 ms por PDF de 400 paginas con concurrencia 1). Por eso T_rust se demuestra con
+  el documento post-go creado despues del failover y con el log de reconexion.
+- PERDIDOS=0: recuperacion por reconciliador no ejercida (T_recovered=N/A).
+- Worker con WORKER_MAX_CONCURRENCY=1 y fixture de 400 paginas (desvio de metodo).
+- Sampler periodico de docker stats no ejecutado; picos y restarts si capturados.
+- P9 RAM: disponible ~2.9 GB < umbral estimado 4 GB (no go/no-go).
+
+=== 16. Resultado ===
+EXITOSO con desvio de medicion declarado en (a):
+  (a) T_rec_client = 12.788 s < 30 s (reconexion del cliente Rust por log); relay Go 0.969 s.
+  (b1) PASA — Go escribio en el maestro nuevo (document_id post-go).
+  (b2) PASA — Rust reconecto solo y consumio el mensaje post-failover sin reinicio.
+  (c1) PERDIDOS=0 medido. (c2) N/A (no ejercido).
+  100 % terminal: PASA (303/303, 0 no terminales).
+  Sin intervencion: se mantuvo (0 reinicios de los clientes); el pause/unpause del primario es el
+  mecanismo del corte.
