@@ -95,3 +95,113 @@ el estado del consumer group en `/readyz`.
 **Dato de impacto**: cualquier instancia del worker en `main` deja de procesar a
 los 15 s. No es un problema de configuracion de este compose: se reproduce con el
 stream vacio, sin mensajes y sin pendientes.
+
+---
+
+# Closure run 2026-11-14T00:01Z (UTC)
+
+## Imagen desplegada
+
+| Campo | Valor |
+|---|---|
+| Tag | `ghcr.io/alejo-basile/extraction-worker:s5p1-closure` |
+| Revision | `bfbb6fa58ba3938f830be1ff17016a26f6a72ba5` (incluye `4c14645`, `a9bd8a2`) |
+| Config digest | `sha256:00d490d7eb34894f85053ff6b98ae6e37a7b69d70850cf4d5fa9eae8be74e380` |
+| Build UTC | `2026-11-13T23:48:51Z` |
+
+Build local (no publicado en GHCR; token de CI sin `write:packages`). Desplegado
+con `compose/docker-compose.worker-local.yml`; el compose versionado se mantiene
+con su digest anterior para rollback (`sha256:433889e1...`, revision `f4b7e75d`).
+
+## `/readyz` — cuerpo completo (verbatim)
+
+```
+docker exec infra-extraction-worker-1 curl -s http://127.0.0.1:8081/readyz
+{"status":"ok","checks":{"redis":"ok","redis_group":"ok","minio":"ok","mongo":"ok"}}
+HTTP 200
+```
+
+`redis_group` ahora aparece y valida el consumer group real. H-07 resuelto en
+`4c14645`: `Readiness` toma `REDIS_STREAM`/`REDIS_GROUP` de `ConsumerConfig`
+(`crates/worker/src/http.rs`: trait `stream_group()` lineas 48-52, consumido en
+`check_all()` linea 137 y `redis_group_check()` linea 247).
+
+## `/metrics` — Content-Type (verbatim)
+
+```
+docker exec infra-extraction-worker-1 sh -c \
+  'curl -s -D - -o /dev/null http://127.0.0.1:8081/metrics'
+content-type: text/plain; version=0.0.4; charset=utf-8
+```
+
+H-02 resuelto: Prometheus v3.16 acepta el scrape sin `fallback_scrape_protocol`
+(aunque el compose aun lo declara, es inocuo).
+
+Gauges:
+
+```
+# TYPE worker_pids_limit gauge
+worker_pids_limit 200
+# TYPE worker_pids_current gauge
+worker_pids_current 5
+```
+
+## `/readyz` bajo saturacion
+
+600 muestras cada 250 ms desde dentro del contenedor, con 4 extracciones reales
+concurrentes:
+
+| Muestras | Codigos | Media | p95 | p99 | Max |
+|---|---|---|---|---|---|
+| 600 | 600 x 200 | 3,90 ms | 3,21 ms | 5,38 ms | 583,25 ms |
+
+Detalle completo en `S5-P1-03-saturacion.txt`. **Salvedad honesta**: el DoD pide
+`< 200 ms`; p99 es 5,38 ms pero 2 muestras (0,583 s y 0,519 s) superan el tope.
+Ambas caen en los reinicios en bucle de MinIO (cada ~70 s) y corresponden al
+chequeo `minio` de `/readyz`, no al bulkhead del worker. La corrida con el arnes
+k6 dio 600/600 = 200, media 4,2 ms, p95 3,2 ms, max 732 ms (mismos picos por MinIO).
+
+## 503 sin consumer group (verificacion HTTP real)
+
+Stream/grupo desechables `stream:s5p1-test` / `group-s5p1-test` en el mismo Redis;
+worker descartable con la imagen nueva en `172.24.0.11:8081` (el `--publish` de
+`docker compose run` no expuso 18081; se accedio por IP de red). `/readyz` inicial:
+`{"status":"ok","checks":{"redis":"ok","redis_group":"ok","minio":"ok","mongo":"ok"}}`
+HTTP 200.
+
+Tras `XGROUP DESTROY stream:s5p1-test group-s5p1-test`:
+
+```
+curl -s -o body -w '%{http_code}' http://172.24.0.11:8081/readyz
+HTTP_CODE=503
+{"status":"unhealthy","checks":{"redis":"ok","redis_group":"redis: consumer group group-s5p1-test no encontrado en stream:s5p1-test","minio":"ok","mongo":"ok"}}
+```
+
+El cuerpo identifica `redis_group` y el grupo ausente. Evidencia cruda:
+`S5-P1-03-503-sin-grupo.txt`.
+
+Limpieza: worker descartable detenido/eliminado; `DEL stream:s5p1-test stream:s5p1-test-dlq`;
+`EXISTS` -> 0. El stream/grupo de produccion (`stream:pdf-processing` /
+`extraction-workers`) quedo intacto (12 consumidores, `lag 0`) y el worker de
+produccion sigue `200` con `redis_group":"ok"`.
+
+## Estado
+
+`/readyz` con `redis_group`, Content-Type correcto y gauges de pids: CERRADO.
+Verificacion 503 sin grupo: CERRADA. Cota de latencia `< 200 ms`: no cumplida
+estrictamente por el reinicio en bucle de MinIO (p99 5,38 ms).
+
+## Addendum 2026-11-14T00:35Z — re-medicion con MinIO estable
+
+Se corrigio el reinicio en bucle de MinIO (tmpfs `/opt/bitnami/minio/tmp` +
+`HOME=/tmp` + `MINIO_CLIENT_CONF_DIR=/tmp/.mc`; ver addendum en
+`S5-P1-01-recursos-worker.txt`). Con MinIO healthy (`Restarts=0`), la re-medicion
+de `/readyz` durante la corrida k6 corregida dio:
+
+| Muestras | Codigos | Media | p95 | p99 | Max |
+|---|---|---|---|---|---|
+| 600 | 600 x 200 | 2,2 ms | 3,5 ms | 7,6 ms | 43,4 ms |
+
+La cota `< 200 ms` del DoD **queda cumplida** (max 43,4 ms). El cuerpo sigue
+incluyendo `"redis_group":"ok"`. La verificacion 503-sin-grupo no cambia y sigue
+vigente (ver arriba).

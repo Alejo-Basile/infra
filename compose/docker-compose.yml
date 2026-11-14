@@ -386,7 +386,7 @@ services:
     profiles: ["core", "full"]
     <<: *hardening-data
     read_only: true
-    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev"]
+    tmpfs: ["/tmp:size=64m,noexec,nosuid,nodev", "/opt/bitnami/minio/tmp:size=16m,noexec,nosuid,nodev"]
     secrets: [minio_root_password, minio_webhook_secret]
     # El token del webhook NO se interpola en el compose: el wrapper lo lee de
     # /run/secrets/minio_webhook_secret y lo exporta antes de ceder al entrypoint
@@ -399,6 +399,11 @@ services:
         export MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE="$$(cat /run/secrets/minio_webhook_secret)";
         exec /opt/bitnami/scripts/minio/entrypoint.sh /opt/bitnami/scripts/minio/run.sh
     environment:
+      # El entrypoint de Bitnami y `mc` escriben su config en $HOME/.mc. Como el
+      # rootfs es de solo lectura y por defecto la conf cae en "/.mc", el arranque
+      # fallaba en bucle; el home y la conf de mc deben vivir en el tmpfs de /tmp.
+      HOME: /tmp
+      MINIO_CLIENT_CONF_DIR: /tmp/.mc
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?definir en .env}
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
       MINIO_REGION: ${MINIO_REGION:-us-east-1}

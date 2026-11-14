@@ -80,16 +80,34 @@ for s in 1 2 3; do
 done | sort -u
 ```
 
-## 3. Failover de emergencia (el maestro está caído)
+## 3. Failover de emergencia (el maestro no responde)
+
+**No usar `docker compose stop` ni `docker kill` sobre `redis-streams`.** Motivo medido el
+2026-11-14: al detener el contenedor desaparece su entrada DNS; con
+`sentinel resolve-hostnames yes` los Sentinels quedan bloqueados resolviendo
+`redis-streams`, entran en `+tilt` y el failover se aborta con
+`NOGOODSLAVE No suitable replica to promote` (ver
+`infra/docs/evidencias/S6/S6-P1-01-failover-carga.txt`). `docker kill` tampoco sirve
+por `restart: unless-stopped`.
 
 ```bash
-$C --profile full stop redis-streams
+# Corte: el contenedor sigue en la red (el hostname resuelve) pero Redis no responde.
+$C --profile full pause redis-streams
 ```
 
-Los sentinels detectan la caída (`down-after-milliseconds`) y promueven una réplica.
-Después del failover **no vuelvas a levantar el nodo viejo esperando que siga siendo
-maestro**: al arrancar entra como réplica del maestro nuevo. Si querés devolver la
-topología original, usá el rollback del paso 6.
+Los sentinels detectan la caída (`down-after-milliseconds 5000`) y promueven una réplica;
+verificar consenso con el bucle de `SENTINEL get-master-addr-by-name`.
+
+Reincorporación (después de medir el corte, no antes):
+
+```bash
+$C --profile full unpause redis-streams
+```
+
+Esperar a que el nodo vuelva como réplica (`role:slave` + `master_link_status:up`);
+Sentinel lo reconfigura (`+convert-to-slave`). Aclarar que hasta el unpause el nodo viejo
+está congelado y no puede aceptar escrituras (no hay split brain mientras esté pausado);
+después del unpause, verificar la democión antes de devolver clientes a producción.
 
 ## 4. Verificación del pipeline
 
@@ -270,9 +288,11 @@ que el cliente pueda escribir. Por eso la verificación del paso 4 no es opciona
 
 ## 6. Rollback (volver al maestro original)
 
-Sentinel no permite elegir el próximo maestro: promueve la réplica que considera mejor.
-Para volver a `redis-streams`, repetí el failover hasta que lo promueva (en la práctica,
-uno o dos intentos):
+Antes de forzar `SENTINEL FAILOVER`, requerir que `redis-streams` esté unpaused; si el
+nodo nunca se despausó, hacer unpause primero y esperar la democión. Sentinel no permite
+elegir el próximo maestro: promueve la réplica que considera mejor. Para volver a
+`redis-streams`, repetí el failover hasta que lo promueva (en la práctica, uno o dos
+intentos):
 
 ```bash
 for intento in 1 2 3; do
@@ -307,6 +327,7 @@ Estado sano: `redis-streams` con `role:master` y `connected_slaves:2`; las dos r
 | Un nodo reporta `role:master` y el maestro real no lo reconoce | Posible split brain transitorio durante la resincronización: esperar y confirmar con `INFO replication` en los tres antes de intervenir |
 | Escrituras con `READONLY` después del failover | El cliente no es Sentinel-aware: revisar `REDIS_SENTINEL_ADDRS` y `REDIS_MASTER_NAME` en su servicio |
 | Cola que no baja después del failover | No es un problema de Sentinel: revisar si hay workers vivos y consumiendo (ver el runbook de escalado del worker, S5-P1-02 / ADR-0019) |
+| `+tilt` / `Failed to resolve hostname 'redis-streams'` | El nodo perdió su entrada DNS (stop/kill o caída real del contenedor); para drills usar `pause`; la pérdida real del nodo requiere corregir la resolución de Sentinel (deuda) |
 
 ## 8. Estado del ensayo (2026-10-31)
 
@@ -320,6 +341,9 @@ Ejecutado de punta a punta en el stack local, con mediciones reales en
 - Con el fix: escritura de punta a punta verificada contra el maestro nuevo
   (`XLEN` 77 → 78 con el mensaje del relay).
 - Rollback ensayado: maestro de vuelta en `redis-streams`, 2 réplicas `up`, `XLEN` 77.
+
+Nota: el ensayo del 2026-11-14 con `stop` se abortó en modo tilt; el corte válido es
+`pause` (ver `infra/docs/evidencias/S6/S6-P1-01-failover-carga.txt`).
 
 El cliente **Rust** (worker) se verificó después, en el ensayo S5-P1-05
 (`docs/evidencias/S5/S5-P1-05-failover-sentinel.txt`): reconecta por Sentinel sin

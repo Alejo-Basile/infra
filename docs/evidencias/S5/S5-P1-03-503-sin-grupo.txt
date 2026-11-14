@@ -1,0 +1,62 @@
+# S5-P1-03 — /readyz 503 sin consumer group (evidencia cruda) — 2026-11-14T00:01Z
+
+Imagen: `ghcr.io/alejo-basile/extraction-worker:s5p1-closure` (revision `bfbb6fa`).
+Prueba descartable y no destructiva: stream `stream:s5p1-test`, grupo
+`group-s5p1-test`, en el mismo Redis. NO se toco `stream:pdf-processing` ni el
+grupo `extraction-workers`.
+
+## Worker descartable
+
+```
+docker compose -f compose/docker-compose.yml -f compose/docker-compose.worker-local.yml \
+  --env-file .env --profile full run -d --rm --name s5p1-throwaway --no-deps \
+  --publish 18081:8081 \
+  -e REDIS_STREAM=stream:s5p1-test -e REDIS_GROUP=group-s5p1-test \
+  -e REDIS_DLQ_STREAM=stream:s5p1-test-dlq extraction-worker
+# Container s5p1-throwaway Created / Started (healthy)
+```
+
+Nota: `docker compose run --publish 18081:8081` no publico el puerto al host
+(`NetworkSettings.Ports={"8081/tcp":null}`); el contenedor se alcanzo por su IP de
+red (`172.24.0.11:8081`). El 18081 del comando del task no quedo mapeado.
+
+## Antes (grupo presente)
+
+```
+docker exec s5p1-throwaway curl -s http://127.0.0.1:8081/readyz
+{"status":"ok","checks":{"redis":"ok","redis_group":"ok","minio":"ok","mongo":"ok"}}
+HTTP 200
+```
+
+## Destruir el grupo
+
+```
+docker exec infra-redis-streams-1 sh -c \
+  'redis-cli -a "$(cat /run/secrets/redis_streams_password)" --no-auth-warning \
+   XGROUP DESTROY stream:s5p1-test group-s5p1-test'
+1
+```
+
+## Despues (grupo ausente) — verbatim
+
+```
+$ curl -s -m 5 -o /tmp/s5p1-503-body -w 'HTTP_CODE=%{http_code}\n' http://172.24.0.11:8081/readyz
+HTTP_CODE=503
+$ cat /tmp/s5p1-503-body
+{"status":"unhealthy","checks":{"redis":"ok","redis_group":"redis: consumer group group-s5p1-test no encontrado en stream:s5p1-test","minio":"ok","mongo":"ok"}}
+```
+
+`/readyz` devuelve **503** y el cuerpo identifica `redis_group` y el grupo ausente.
+
+## Limpieza
+
+```
+docker stop s5p1-throwaway            # --rm: eliminado al detenerse
+redis-cli ... DEL stream:s5p1-test stream:s5p1-test-dlq   # -> 1
+redis-cli ... EXISTS stream:s5p1-test stream:s5p1-test-dlq # -> 0
+```
+
+Produccion intacta:
+`XINFO GROUPS stream:pdf-processing` -> `extraction-workers`, `consumers 12`,
+`pending 0`, `lag 0`; el worker de produccion sigue
+`{"status":"ok","checks":{"redis":"ok","redis_group":"ok",...}}` HTTP 200.
