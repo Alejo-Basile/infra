@@ -112,6 +112,26 @@ groups:
           description: "Confirmar que el middleware rate-limit activo explica los 429; distinguirlos de errores 5xx/backend no disponible."
           runbook_url: "infra/runbooks/gateway-trafico.md"
 
+      - alert: RateLimitDegraded
+        expr: sum(increase(ratelimit_requests_total{decision="degraded"}[2m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ratelimitd sirvio fail-open (Redis no disponible)"
+          description: "ratelimitd no pudo consultar redis-ratelimit y sirvio fail-open; la API responde 200 con X-RateLimit-Degraded: true y sin limite efectivo; restaurar redis-ratelimit, no reiniciar Traefik ni ratelimitd."
+          runbook_url: "infra/runbooks/gateway-trafico.md"
+
+      - alert: RateLimitDaemonDown
+        expr: up{job="ratelimitd"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ratelimitd caido: ForwardAuth de /api/v2 falla y el gateway devuelve 5xx"
+          description: "el fail-open solo cubre la caida de Redis; si ratelimitd esta caido el ForwardAuth de /api/v2 falla y el gateway devuelve 5xx."
+          runbook_url: "infra/runbooks/gateway-trafico.md"
+
   - name: s1-p1-13-infra
     interval: 30s
     rules:
