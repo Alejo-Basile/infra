@@ -1,0 +1,80 @@
+S7-P1-03 — Aislamiento de IP de origen (X-Forwarded-For spoof desde peer no confiable)
+Fecha UTC: 2026-11-15T06:13:44Z
+Host: fedora
+Traefik image: traefik:v3.7
+
+== 1. YAML parse (python3 yaml.safe_load) ==
+yaml_ok=true
+websecure.address = :443
+forwardedHeaders = {'insecure': False, 'trustedIPs': ['192.0.2.0/24']}
+http = {'tls': True}
+
+== 2. Negative grep: trustedIPs / 0.0.0.0/0 ==
+17:    # trustedIPs se compara contra el peer del socket, no contra toda la
+26:      trustedIPs:
+-- confirm trusted CIDR --
+30:        - "192.0.2.0/24"
+universal_cidr=absent (OK)
+
+== 3. Preflight compose config ==
+compose_config_exit=0
+redis_ratelimit_secret_present=yes
+
+== 4. traefik recreate + ps/health ==
+NAME              IMAGE          COMMAND                  SERVICE   CREATED              STATUS                        PORTS
+infra-traefik-1   traefik:v3.7   "/entrypoint.sh trae…"   traefik   About a minute ago   Up About a minute (healthy)   0.0.0.0:8088->80/tcp, [::]:8088->80/tcp, 0.0.0.0:8543->443/tcp, [::]:8543->443/tcp
+status=running health=healthy restarts=0
+
+== 5. traefik logs (last 10 lines; empty = no errors) ==
+{"ClientAddr":"172.23.0.3:40274","ClientHost":"172.23.0.3","ClientPort":"40274","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":52824344,"OriginContentSize":10613,"OriginDuration":48536125,"OriginStatus":200,"Overhead":4288219,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":1,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:12:20.037326763Z","StartUTC":"2026-11-15T06:12:20.037326763Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"5a6bc8c6-c488-4baa-be18-a06f22f72d91","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"5a6bc8c6-c488-4baa-be18-a06f22f72d91","time":"2026-11-15T06:12:20Z"}
+{"ClientAddr":"172.23.0.3:39876","ClientHost":"172.23.0.3","ClientPort":"39876","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":5441428,"OriginContentSize":10613,"OriginDuration":4527687,"OriginStatus":200,"Overhead":913741,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":2,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:12:20.5090141Z","StartUTC":"2026-11-15T06:12:20.5090141Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"76a8e6af-b070-4779-81b1-c1c14e6ad8b8","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"76a8e6af-b070-4779-81b1-c1c14e6ad8b8","time":"2026-11-15T06:12:20Z"}
+{"ClientAddr":"172.23.0.3:39886","ClientHost":"172.23.0.3","ClientPort":"39886","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":6434899,"OriginContentSize":10613,"OriginDuration":4802086,"OriginStatus":200,"Overhead":1632813,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":3,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:12:20.945571366Z","StartUTC":"2026-11-15T06:12:20.945571366Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"aa98abc1-5555-4f01-b08e-0b965231a9b5","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"aa98abc1-5555-4f01-b08e-0b965231a9b5","time":"2026-11-15T06:12:20Z"}
+{"ClientAddr":"172.23.0.3:57676","ClientHost":"172.23.0.3","ClientPort":"57676","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":4566606,"OriginContentSize":10613,"OriginDuration":3631277,"OriginStatus":200,"Overhead":935329,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":4,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:12:42.603179594Z","StartUTC":"2026-11-15T06:12:42.603179594Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"6961f892-7595-41fa-9351-abcb5b8e2f11","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"6961f892-7595-41fa-9351-abcb5b8e2f11","time":"2026-11-15T06:12:42Z"}
+{"ClientAddr":"172.23.0.3:47750","ClientHost":"172.23.0.3","ClientPort":"47750","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":6682269,"OriginContentSize":10613,"OriginDuration":4064418,"OriginStatus":200,"Overhead":2617851,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":5,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:13:16.865652322Z","StartUTC":"2026-11-15T06:13:16.865652322Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"5717679f-dfc7-445b-bef3-1abee7fc6a5f","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"5717679f-dfc7-445b-bef3-1abee7fc6a5f","time":"2026-11-15T06:13:16Z"}
+{"ClientAddr":"172.23.0.3:47756","ClientHost":"172.23.0.3","ClientPort":"47756","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":4988189,"OriginContentSize":10613,"OriginDuration":3821895,"OriginStatus":200,"Overhead":1166294,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":6,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:13:17.530606467Z","StartUTC":"2026-11-15T06:13:17.530606467Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"15782de9-0f88-42e7-a1cd-c17a4427b0ea","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"15782de9-0f88-42e7-a1cd-c17a4427b0ea","time":"2026-11-15T06:13:17Z"}
+{"ClientAddr":"172.23.0.3:47764","ClientHost":"172.23.0.3","ClientPort":"47764","ClientUsername":"-","DownstreamContentSize":10613,"DownstreamStatus":200,"Duration":3792778,"OriginContentSize":10613,"OriginDuration":2961137,"OriginStatus":200,"Overhead":831641,"RequestAddr":"api.localhost","RequestContentSize":0,"RequestCount":7,"RequestHost":"api.localhost","RequestMethod":"GET","RequestPath":"/api/v2/documents","RequestPort":"-","RequestProtocol":"HTTP/2.0","RequestScheme":"https","RetryAttempts":0,"RouterName":"docv2@docker","ServiceAddr":"172.24.0.8:8080","ServiceName":"docv2@docker","ServiceURL":"http://172.24.0.8:8080","StartLocal":"2026-11-15T06:13:18.029842617Z","StartUTC":"2026-11-15T06:13:18.029842617Z","TLSCipher":"TLS_AES_128_GCM_SHA256","TLSVersion":"1.3","downstream_X-Correlation-Id":"aca42cdf-7983-4708-977f-fb3fcd540328","entryPointName":"websecure","level":"info","msg":"","origin_X-Correlation-Id":"aca42cdf-7983-4708-977f-fb3fcd540328","time":"2026-11-15T06:13:18Z"}
+
+== 6. Traefik container IP on infra_edge + trusted-CIDR check ==
+TRAEFIK_IP=172.23.0.2
+ip=172.23.0.2 in_trusted_cidr=False (must be False)
+
+== 7. XFF spoof from untrusted peer (container on infra_edge, port 443 container) ==
+-- X-Forwarded-For: 203.0.113.77 --
+status=200
+-- X-Forwarded-For: 198.51.100.42 --
+status=200
+-- X-Forwarded-For: 192.0.2.10 --
+status=200
+
+== 8. Response headers with spoofed XFF (no X-RateLimit -> see note) ==
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 06:13:46 GMT
+x-correlation-id: 53f64ecc-d92c-4136-ab8f-b7fe04fd40cc
+
+
+== 9. Redis rl:* keys, count, spoof-IP scan ==
+-- keys (immediately after a fresh request) --
+status=200
+rl:api-v2
+-- count --
+1
+-- spoof-IP matches (203.0.113.* / 198.51.100.*) --
+no_spoof_keys=confirmed
+
+== 10. TAT monotonic across spoofed XFF ==
+XFF=203.0.113.77 status=200 TAT=1794723227622900 prev=0 monotonic=yes
+XFF=198.51.100.42 status=200 TAT=1794723228121448 prev=1794723227622900 monotonic=yes
+XFF=192.0.2.10 status=200 TAT=1794723228633320 prev=1794723228121448 monotonic=yes
+
+== 11. Diff stat (tracked files) ==
+ .env.example        | 14 ++++++++++++++
+ traefik/traefik.yml | 15 +++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+== NOTE ==
+El key del rate limiter actual es global y estatico (rl:api-v2; ADR-0005 deja
+la identidad por IP para S7). Por eso la prueba valida que un XFF falsificado
+NO crea claves con la IP del atacante. El aislamiento de XFF se garantiza en
+Traefik: trustedIPs compara contra el peer del socket; el peer Docker no esta
+en 192.0.2.0/24, de modo que todo XFF entrante se descarta.

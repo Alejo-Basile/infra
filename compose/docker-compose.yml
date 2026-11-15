@@ -530,6 +530,7 @@ services:
       - "traefik.http.routers.legacy.priority=1"
       - "traefik.http.routers.legacy.entrypoints=websecure"
       - "traefik.http.routers.legacy.tls=true"
+      - "traefik.http.routers.legacy.middlewares=rate-limit@file"
       - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
 
   # --- doc-service (Go): contrato v2 + webhook de MinIO + reconciliador.
