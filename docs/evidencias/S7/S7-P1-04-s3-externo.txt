@@ -113,3 +113,23 @@ Preflight: PASS - router s3-api solo a :9000, 9001 sin publicar ni enrutar, list
 
 Timestamp fin: 2026-11-15T15:14:30-03:00
 Operador: @Alejo-Basile
+
+--- Alcance DNS publico (2026-11-15T19:53:00Z) ---
+No hay zona DNS publica para los hosts del stack: ambos nombres resuelven a loopback en este host,
+que es exactamente el limite ya declarado para esta evidencia. Por eso el paso "repetir S3 desde
+internet" NO es ejecutable en este entorno y NO se reclama como cumplido. La evidencia archivada
+sigue siendo LAN / fuera de loopback (192.168.1.70, interfaz wlp2s0).
+
+$ getent hosts s3.localhost
+::1             localhost
+$ getent hosts api.localhost
+::1             localhost
+$ dig +short s3.localhost
+127.0.0.1
+$ getent hosts api.localhost / dig (ambos -> loopback)
+$ ip -4 -o addr show scope global   # unica direccion no-loopback del host
+2: wlp2s0    inet 192.168.1.70/24 brd 192.168.1.255 scope global dynamic noprefixroute wlp2s0\       valid_lft 23915sec preferred_lft 23915sec
+
+Condicion para repetir desde internet: DNS publico real (A/AAAA) apuntando al host, puerto HTTPS
+publicado en el borde y certificados validos. Los cuatro checks y el upload prefirmado son los
+mismos de la seccion anterior; solo cambia TARGET y la validacion TLS.
