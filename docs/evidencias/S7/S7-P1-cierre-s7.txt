@@ -1,0 +1,43 @@
+=== S7 — Cierre de la fase P1 (estado al 2026-11-15T22:37:51Z) ===
+Operador: @Alejo-Basile (P1)
+Base desplegada: infra main cb00558 (traefik/doc-service/ratelimitd recreados 2026-11-15T22:34:45Z,
+Prometheus reiniciado), platform-services main e76bba2, doc-service main 75b607d + patch local de PR #77.
+
+| Tarea | PR | Commit en main | Evidencia | Estado |
+|---|---|---|---|---|
+| S7-P1-01 CI rate-limiter | platform-services #15 | 8fc47a3 | platform-services/docs/evidencias/S7/S7-P1-01-ci-ratelimitd.txt | PASS (job rate-limiter verde en #17) |
+| S7-P1-02 ForwardAuth legacy + 429 | infra #57 | cbabd2b | infra/docs/evidencias/S7/S7-P1-02-forwardauth-429.txt | PASS |
+| S7-P1-03 Aislamiento XFF | infra #58 | 99fd802 | infra/docs/evidencias/S7/S7-P1-03-xff-spoof.txt | PASS (revalidado post-merge, ver abajo) |
+| S7-P1-04 Exposicion S3 externa | infra #61 | cb00558 | infra/docs/evidencias/S7/S7-P1-04-s3-externo.txt | PASS con limitacion: LAN/fuera de loopback, sin DNS publico |
+| S7-P1-05 Fail-open operacionalizado | infra #59 | 60da444 | infra/docs/evidencias/S7/S7-P1-05-failopen.txt + S7-P1-05-alerta.txt | PASS con limitacion: headers 2xx dependen de doc-service #77 (abierto) |
+| S7-P1-06 Strangler + smoke | infra #60 | 4d7975a | infra/docs/evidencias/S7/S7-P1-06-strangler-smoke.txt | PASS |
+| k6 gateway (S7-P4-04) | platform-services #17 | e76bba2 | platform-services/docs/evidencias/S7/S7-P4-k6-gateway.txt | PASS (checks 100%, denied 39, 5xx 0) |
+
+--- Verificacion de ruteo post-merge (Traefik 127.0.0.1:8543, Host api.localhost) ---
+GET /api/v2/documents              -> 200 (stack nuevo, con x-ratelimit-remaining)
+GET /api/v2/other                  -> 404 (ya no cae en docv2)
+GET /health                        -> 200 (monolito)
+GET /health/ready                  -> 200 (monolito)
+GET /registros?page=1&page_size=1  -> 200 (monolito)
+GET /healthz                       -> 200
+POST /internal/documents/x/uploaded -> 404 (edge)
+Router efectivo de doc-service: Host(`api.localhost`) && PathPrefix(`/api/v2/documents`)
+forwardedHeaders presente en la config montada y cargada por el Traefik recreado.
+
+--- Revalidacion XFF (peer no confiable en infra_edge, Traefik 172.23.0.2) ---
+$ docker run --rm --network infra_edge curlimages/curl:8.10.1 -sk --resolve api.localhost:443:172.23.0.2 \
+    -H 'X-Forwarded-For: 203.0.113.77' https://api.localhost/api/v2/documents   -> 200
+$ idem con 'X-Forwarded-For: 198.51.100.42'                                      -> 200
+$ docker compose ... exec -T redis-ratelimit ... redis-cli KEYS "rl:*"
+rl:api-v2:172.23.0.3
+Resultado: una sola clave, con la IP real del peer (172.23.0.3); ninguno de los XFF falsos creo
+clave propia. PASS.
+
+--- Limitaciones declaradas ---
+1. S3 desde internet: no ejecutado. No hay DNS publico (api/s3.localhost resuelven a loopback); la
+   evidencia archivada es LAN / fuera de loopback y asi se declara.
+2. Propagacion de headers de rate-limit en respuestas 2xx: depende del echo de doc-service (PR #77,
+   abierto por falta de aprobacion del codeowner). El stack local lo obtiene de doc-service:local
+   construido con ese patch; un redeploy desde doc-service main sin #77 lo revierte y k6 gateway
+   volveria a fallar en el assert de header en 200.
+3. RateLimitDaemonDown: regla cargada y target up verificado, sin drill de caida del wrapper.
