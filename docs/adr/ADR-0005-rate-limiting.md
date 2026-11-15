@@ -1,6 +1,6 @@
 # ADR-0005 — Algoritmo de rate limiting distribuido en Redis
 
-- **Estado:** Aceptado (decisión técnica de P4; revisión cruzada P1 pendiente de acuse)
+- **Estado:** Aceptado (decisión técnica de P4; revisión cruzada P1 acusada en S7 — ver nota de S7)
 - **Fecha:** Semana 1 (S1-P4-01), 2026-10-21
 - **Owner:** P4
 - **Contexto:** `SPEC.md` v2.1 §8 · `plan-P4-S0-S1.md` §5.2 · ADR-0016 · `redis-ratelimit`
@@ -93,6 +93,14 @@ Decisión para S1: **fail-open controlado**. Si `redis-ratelimit` no responde, e
 `200` con `X-RateLimit-Degraded: true` y emite una métrica de error. Se prefiere degradar la
 protección antes que tumbar la API completa. El modo fail-closed queda como opción de
 configuración para S7, cuando exista una política de negocio que lo justifique.
+
+> **Nota de S7 (P1, 2026-11-12) — ratificación operativa.** P1 ratifica el fail-open controlado
+> como modo por defecto y asume su consecuencia: durante la caída de `redis-ratelimit` no hay
+> límite efectivo. La ratificación se apoya en la prueba `S7-P1-05-failopen` (200 +
+> `X-RateLimit-Degraded: true`, recuperación automática al volver Redis) y en el procedimiento de
+> `infra/runbooks/gateway-trafico.md`. El fail-closed queda **rechazado como modo por defecto** y
+> admitido solo como opción de P4 por ruta sensible, con 503 y presupuesto de error aceptado. Esta
+> nota no cambia GCRA ni los parámetros `rate`/`burst`.
 
 ## Consecuencias
 
