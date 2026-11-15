@@ -1,0 +1,115 @@
+=== S7-P1-04 Verificacion externa de exposicion S3 ===
+Timestamp inicio: 2026-11-15T15:13:08-03:00
+Host de origen: fedora (192.168.1.70)
+IP/host destino: 192.168.1.70:8543
+Alcance: LAN - fuera del loopback (interfaz wlp2s0 del propio host Docker); NO verificado desde otra maquina ni desde internet
+Version curl: curl 8.15.0 (x86_64-redhat-linux-gnu) libcurl/8.15.0 OpenSSL/3.5.9
+Certificado: mkcert + `-k` (sin validacion)
+Config usada: TRAEFIK_HTTPS_PORT=8543, MINIO_PUBLIC_ENDPOINT=https://s3.localhost:8543
+Commit infra observado: 58415bc
+
+--- Preflight (§3) ---
+$ rg -n 's3-api|9000|9001' infra/traefik/dynamic/middlewares.yml
+26:    # Se enruta UNICAMENTE al puerto S3 (9000). La consola (9001) NUNCA.
+27:    s3-api:
+43:          - url: "http://minio:9000"
+$ rg -n '9001' infra/traefik infra/compose --glob '!**/docs/**' || echo 'OK: sin 9001 en config activa'
+infra/traefik/dynamic/middlewares.yml:26:    # Se enruta UNICAMENTE al puerto S3 (9000). La consola (9001) NUNCA.
+OK: sin 9001 en config activa (solo comentario)
+$ rg -n -A2 '^  minio:' infra/compose/docker-compose.yml
+352:  minio:
+353-    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+354-    profiles: ["core", "full"]
+(sin clave ports: en el bloque minio)
+$ rg -n 'anonymous' infra/compose/minio/init-buckets.sh
+61:  # Listado anonimo DESHABILITADO por defecto (ningun mc anonymous set)
+$ rg -n '^MINIO_PUBLIC_ENDPOINT=|^TRAEFIK_HTTPS_PORT=' infra/.env infra/.env.example
+infra/.env:10:MINIO_PUBLIC_ENDPOINT=https://s3.localhost:8543
+infra/.env:47:TRAEFIK_HTTPS_PORT=8543
+infra/.env.example:11:MINIO_PUBLIC_ENDPOINT=https://s3.localhost
+infra/.env.example:68:TRAEFIK_HTTPS_PORT=443
+$ docker compose -f infra/compose/docker-compose.yml --env-file infra/.env --profile full ps --format 'table {{.Name}}\t{{.Status}}'
+infra-doc-service-1  Up (healthy)
+infra-minio-1        Up (healthy)
+infra-traefik-1      Up (healthy)
+$ docker run --rm -v .../traefik/certs:/c:ro alpine:latest sh -c 'apk add --no-cache openssl ... && openssl x509 -in /c/s3.localhost.pem -noout -subject -ext subjectAltName'
+subject=CN=s3.localhost
+X509v3 Subject Alternative Name:
+    DNS:s3.localhost
+$ docker run --rm -v .../traefik/certs:/c:ro alpine:latest sh -c '... /c/api.localhost.pem ...'
+subject=CN=api.localhost
+X509v3 Subject Alternative Name:
+    DNS:api.localhost
+
+--- Check A: salud S3 por host dedicado ---
+$ curl -sk --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/minio/health/live -o /dev/null -w 'health_live=%{http_code} host=%{remote_ip} tls=%{ssl_verify_result}\n'
+health_live=200 host=192.168.1.70 tls=18
+$ curl -skI --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/minio/health/live | sed -n '1,8p'
+HTTP/2 200
+accept-ranges: bytes
+date: Sun, 15 Nov 2026 15:13:14 GMT
+server: MinIO
+strict-transport-security: max-age=31536000; includeSubDomains
+vary: Origin
+x-amz-bucket-region: us-east-1
+
+--- Check B: consola 9001 no alcanzable ---
+$ nc -vz -w 5 192.168.1.70 9001 || echo "9001 cerrado (esperado)"
+Ncat: Version 7.92 ( https://nmap.org/ncat )
+Ncat: Connection refused.
+9001 cerrado (esperado)
+$ curl -sk --max-time 5 -o /dev/null -w 'consola_http=%{http_code}\n' https://192.168.1.70:9001/ ; echo "exit=$?"
+consola_http=000
+exit=7
+
+--- Check C: listado anonimo denegado ---
+$ curl -sk --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/raw-pdfs/?list-type=2 -w '\nlistado_anon=%{http_code}\n'
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied.</Message><BucketName>raw-pdfs</BucketName><Resource>/raw-pdfs/</Resource><Region>us-east-1</Region><RequestId>18E840B55E76F3DA</RequestId><HostId>dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8</HostId></Error>
+listado_anon=403
+$ curl -sk --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/extracted-txt/?list-type=2 -o /dev/null -w 'listado_anon_txt=%{http_code}\n'
+listado_anon_txt=403
+
+--- Check D: host S3 distinto del de API ---
+$ curl -sk --resolve api.localhost:8543:192.168.1.70 https://api.localhost:8543/healthz -o /dev/null -w 'api_health=%{http_code}\n'
+api_health=200
+$ curl -sk --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/minio/health/live -o /dev/null -w 's3_health=%{http_code}\n'
+s3_health=200
+$ curl -sk --resolve api.localhost:8543:192.168.1.70 https://api.localhost:8543/minio/health/live -o /dev/null -w 's3_por_host_api=%{http_code}\n'
+s3_por_host_api=404
+
+--- Check E: presign POST + subida multipart ---
+$ curl -sk -X POST --resolve api.localhost:8543:192.168.1.70 https://api.localhost:8543/api/v2/documents -H 'Content-Type: application/json' -d '{"size_bytes": 55, "idempotency_key": "s7-p1-04-externo-1794755601"}' -o crear.json -w 'crear=%{http_code}\n'  # gitleaks:allow
+crear=201
+document_id=s7-p1-04-externo-1794755601
+upload_url=https://s3.localhost:8543/raw-pdfs/
+form_fields keys: Content-Type, bucket, key, policy, x-amz-algorithm, x-amz-credential, x-amz-date, x-amz-signature
+X-Amz-SignedHeaders: AUSENTE (politica POST no firma cabeceras, incluido host)
+$ curl -sk -o subir.out -w 'subir=%{http_code}\n' -F 'Content-Type=application/pdf' -F 'bucket=raw-pdfs' -F 'key=raw-pdfs/s7-p1-04-externo-1794755601.pdf' -F 'policy=...' -F 'x-amz-algorithm=AWS4-HMAC-SHA256' -F 'x-amz-credential=...' -F 'x-amz-date=...' -F 'x-amz-signature=...' -F "file=@s7-p1-04-prueba.pdf;type=application/pdf" https://s3.localhost:8543/raw-pdfs/
+subir=204
+$ curl -sk --resolve s3.localhost:8543:192.168.1.70 https://s3.localhost:8543/raw-pdfs/?list-type=2 -o /dev/null -w 'listado_post_subida=%{http_code}\n'
+listado_post_subida=403
+
+--- Check F: firma de host con presign GET/PUT ---
+presign GET interno (mc share download):
+URL: http://minio:9000/raw-pdfs/raw-pdfs/s7-p1-04-externo-1794755601.pdf
+Query (truncado por seguridad): ...&X-Amz-SignedHeaders=host&X-Amz-Signature=<redacted>
+presign_get_host_cruzado=403 (SignatureDoesNotMatch esperado)
+
+NOTA: la politica POST NO firma el host; el negativo SignatureDoesNotMatch aplica solo a GET/PUT prefirmado. Cross-ref: infra/docs/evidencias/S1/S1-P1-16-sigv4.txt:5-6,16.
+
+--- Conclusion ---
+1 PASS - health_live=200 remote_ip=192.168.1.70
+2 PASS - nc Connection refused, consola_http=000 exit=7
+3 PASS - listado_anon=403 AccessDenied en raw-pdfs y extracted-txt
+4 PASS - api_health=200 s3_health=200 s3_por_host_api=404
+5 PASS - upload_url=https://s3.localhost:8543/raw-pdfs/
+6 PASS - X-Amz-SignedHeaders ausente en form_fields
+7 PASS - subir=204
+8 PASS - listado_post_subida=403
+9 PASS - X-Amz-SignedHeaders=host en presign GET; cruzado 403 SignatureDoesNotMatch
+10 PASS - evidencia completa, fechada, alcance LAN declarado
+Preflight: PASS - router s3-api solo a :9000, 9001 sin publicar ni enrutar, listado anonimo deshabilitado, SAN por host correcto
+
+Timestamp fin: 2026-11-15T15:14:30-03:00
+Operador: @Alejo-Basile
