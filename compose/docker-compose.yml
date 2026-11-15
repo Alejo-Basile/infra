@@ -603,8 +603,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=infra_internal"
-      # Router v2 (prioridad ALTA sobre `legacy`): SOLO /api/v2 (SPEC §3.1).
-      - "traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2`)"
+      # Router v2 (prioridad ALTA sobre `legacy`): SOLO /api/v2/documents (SPEC §3.1, §13 F4).
+      - "traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2/documents`)"
       - "traefik.http.routers.docv2.priority=100"
       - "traefik.http.routers.docv2.entrypoints=websecure"
       - "traefik.http.routers.docv2.tls=true"
