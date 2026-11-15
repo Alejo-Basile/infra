@@ -1,0 +1,34 @@
+# S7-P1-06 — Strangler y smoke de rutas viejas
+Fecha (UTC): 2026-11-15T16:16:30Z
+Commit de infra: 830e3f3d8895bb2fd58e1e3074746b38a9215274
+Imagen doc-service: ghcr.io/alejo-basile/doc-service:latest@sha256:aeb1cdcff2374e4a0a7c37006fef22476b17527b61eb2d5a3d2b13a79dee1e48
+TRAEFIK_HTTPS_PORT: 8543
+
+## Configuración efectiva
+traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2/documents`)
+traefik.http.routers.docv2.priority=100
+traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)
+traefik.http.routers.legacy.priority=1
+
+## Antes (línea base, pre-cambio)
+GET /health                      -> 200
+GET /health/ready                -> 200
+GET /registros?page=1&page_size=1 -> 200
+
+## Después (post-cambio)
+GET /health                      -> 200  (cuerpo identico en esquema)
+GET /health/ready                -> 200  (cuerpo identico en esquema)
+GET /registros?page=1&page_size=1 -> 200  (items 0, page 1, page_size 1)
+POST /api/v2/documents           -> 201  document_id=01M7FZXP0TTF17GQXQPVP4WT1X upload_url=https://s3.localhost:8543/raw-pdfs/
+GET /api/v2/documents            -> 200  (listado del servicio Go)
+GET /healthz                     -> 200  (doc-service)
+POST /internal/documents/x/uploaded -> 404
+GET /internal/storage/events     -> 404
+
+## Negativos
+5xx observados: 0
+429 en smoke de 20 GET /registros: 0
+404 del monolito en /api/v2/documents: no
+
+## Logs
+Traefik reloaded router docv2 without errors; doc-service healthy after recreate.
