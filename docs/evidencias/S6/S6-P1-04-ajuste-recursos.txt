@@ -1,0 +1,190 @@
+S6-P1-04 — Ajuste de recursos del extraction-worker — evidencia
+Fecha (UTC): 2026-11-15T05:31Z
+Owner: @Alejo-Basile (P1)
+Rama infra: docs/s6-p1-04-recursos-worker (base origin/main @ 24b5557)
+Imagen: extraction-worker=ghcr.io/alejo-basile/extraction-worker:s5p1-closure@sha256:00d490d7eb34894f85053ff6b98ae6e37a7b69d70850cf4d5fa9eae8be74e380
+Host: fedora · Docker 29.9.2 · CgroupDriver=systemd · CgroupVersion=2
+
+## 1. Cabecera
+CID del worker observado: b464b67d118531e15f9af03ef5b57e8ed7ac1f9d1f12cc5900800a96c58ab012.
+StartedAt=2026-11-15T03:26:23.140304789Z. Status=running. RestartCount=0. OOMKilled=false.
+El worker en ejecución usa el tag `s5p1-closure` (Image ID `sha256:00d490d7...`). En `main` el Compose
+referencia la imagen en `compose/docker-compose.yml:643` sin digest pineado; el digest se fija por las
+variables `EXTRACTION_WORKER_IMAGE`/`_TAG`/`_DIGEST` del entorno de despliegue.
+
+## 2. Metodología
+- Ruta de cgroup: lectura DESDE DENTRO del contenedor via `docker exec "$CID" cat /sys/fs/cgroup/<archivo>`.
+  Driver confirmado con `docker info --format 'CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'`
+  → `CgroupDriver=systemd CgroupVersion=2`. La ruta del host (`/sys/fs/cgroup/system.slice/docker-<cid>.scope`)
+  no fue necesaria y queda (no verificado).
+- Muestreo: una única lectura puntual en vivo sobre el contenedor en ejecución. No se ejecutó sampler
+  periódico: el drill `S6-P1-01` run4 ya declaró ese desvío y esta corrida no lo repite. `memory.peak`
+  es acumulativo por vida del contenedor (se reinició en su última recreación, `StartedAt` arriba).
+- `docker stats` NO se usó para decidir el pico, solo como contexto de CPU/pids. La decisión de memoria
+  se tomó con `memory.peak` del cgroup; la de OOM con `memory.events` + `docker inspect .State.OOMKilled`
+  (ver `docs/evidencias/S5/S5-P1-01-recursos-worker.txt:16-17` y el plan §4.3).
+- Muestreo de solo lectura: solo `docker ps/inspect/stats/exec cat`, `date`, `grep`, `sha256sum`, `git status`.
+  No se ejecutó `stop`, `restart`, `rm`, `compose up/down`, `pause`, `unpause`, ni escrituras a
+  MongoDB/Redis/MinIO, ni drills nuevos.
+
+## 3. Límites aplicados (verificación en runtime)
+Nota de cita: el plan (`docs/S6/tasks/task-4.md:95-101`) cita líneas de una variante del Compose que no es
+la de `main` (en `main` el bloque `extraction-worker` empieza en la línea 642 y los límites están en
+712-723). Se citan las líneas verificadas por grep sobre `compose/docker-compose.yml` de esta rama.
+
+| Clave | Compose (archivo:línea) | Valor configurado | Runtime observado | Coincide |
+|---|---|---|---|---|
+| mem_limit | compose/docker-compose.yml:712 | 768m | Memory=805306368; memory.max=805306368 | sí |
+| cpus | compose/docker-compose.yml:713 | 1.5 | NanoCpus=1500000000; cpu.max=150000 100000 | sí |
+| pids_limit | compose/docker-compose.yml:714 | 200 | PidsLimit=200; pids.max=200 | sí |
+| ulimits.nofile | compose/docker-compose.yml:716-718 | 4096/4096 | nofile Hard=4096 Soft=4096 | sí |
+| ulimits.nproc | compose/docker-compose.yml:719-721 | 200/200 | nproc Hard=200 Soft=200 | sí |
+| tmpfs /tmp | compose/docker-compose.yml:722-723 | size=256m,noexec,nosuid,nodev | /tmp=size=256m,noexec,nosuid,nodev | sí |
+
+Comandos y salidas verbatim:
+```
+$ docker inspect -f '... Mem={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}} PidsLimit={{.HostConfig.PidsLimit}} OOMKilled={{.State.OOMKilled}} RestartCount={{.RestartCount}} Status={{.State.Status}}' b464b67d1185
+Mem=805306368 NanoCpus=1500000000 PidsLimit=200 OOMKilled=false RestartCount=0 Status=running
+$ docker inspect -f '{{json .HostConfig.Ulimits}}' b464b67d1185
+[{"Name":"nofile","Hard":4096,"Soft":4096},{"Name":"nproc","Hard":200,"Soft":200}]
+$ docker inspect -f '{{json .HostConfig.Tmpfs}}' b464b67d1185
+{"/tmp":"size=256m,noexec,nosuid,nodev"}
+$ docker exec b464b67d1185 sh -c 'cat /sys/fs/cgroup/memory.max; cat /sys/fs/cgroup/pids.max; cat /sys/fs/cgroup/cpu.max'
+805306368
+200
+150000 100000
+```
+
+## 4. Muestreo S6-P1-01
+El drill `S6-P1-01` (run4) vive en la rama `docs/s6-p1-01-run4-evidence` (PR #52, base
+`feat/s5-p1-cierre-final`) y **no está presente en `main`**. Sus cifras se citan con esa procedencia
+explícita y no se re-miden aquí: no se repitió el drill en esta tarea.
+run_id: (no verificado — run4 no ejecutó sampler periódico, desvío declarado por esa propia corrida)
+StartedAt del contenedor del drill: (no verificado — run4 no lo registró)
+cid del drill: (no verificado — run4 no lo registró)
+
+Tabla de picos (run4, sección "12. Recursos" de `S6-P1-01-failover-carga-run4.txt`):
+| Señal | Valor | Unidad | ts_utc del pico |
+|---|---|---|---|
+| memory.peak | 38694912 | bytes | (no verificado) |
+| memory.current (máx) | (no verificado) | bytes | (no verificado) |
+| memory.max | 805306368 | bytes | — |
+| pids.current (máx) | (no verificado) | pids | (no verificado) |
+| pids.max | 200 | pids | — |
+| cpu.stat nr_throttled / nr_periods | (no verificado) / (no verificado) | — | (no verificado) |
+| memory.events oom_kill | (no verificado en run4) | eventos | — |
+| RestartCount | 0 | reinicios | — |
+| OOMKilled | false | — | — |
+
+Hitos del drill run4 (`INICIO_SIEMBRA`, `XLEN_PRE`, `FAILOVER_T0`, `FAILOVER_T1`, `T_RUST`,
+`T_RECOVERED`, `FIN_MUESTREO`): (no verificado) — run4 registró el pico y los reinicios, no una serie
+temporal ni marcas `ts_utc` por señal.
+
+Lectura puntual del worker en vivo (2026-11-15T05:31Z, contenedor `b464b67d1185`):
+- memory.current=34516992; memory.peak=49709056; memory.max=805306368;
+  memory.events: oom=0, oom_kill=0, oom_group_kill=0, high=0, max=0
+- pids.current=9; pids.max=200; pids.events: max=0
+- cpu.stat: nr_periods=1467, nr_throttled=0, throttled_usec=0, nr_bursts=0; cpu.max=150000 100000
+- docker stats: cpu=0.03%, mem=8.199MiB/768MiB (1.07%), pids=6
+- docker inspect: OOMKilled=false, RestartCount=0, Status=running
+
+## 5. Muestreo S6-P1-02
+worker_no_participa: el backup no requirió worker efímero. Verificado por grep sobre
+`docs/evidencias/S6/S6-P1-02-restore-mongo.txt` (única evidencia de restauración presente en `main`):
+cero coincidencias de `extraction-worker`, `worker` y `memory`. No se fabrican muestras.
+Nota: `S6-P1-02-restore-drill.txt` y `S6-P1-02-restore-drill-run2.txt` no están en `main`; en el árbol
+donde se generaron tampoco aparecen referencias al worker. Su contenido queda (no verificado) desde
+`main`.
+
+## 6. Comparación contra la base S5
+Base leída de `docs/evidencias/S5/S5-P1-01-recursos-worker.txt` presente en `main` (121 líneas).
+
+| Escenario | Fuente | memory.peak (bytes) | memory.max | ratio_mem | oom_kill | Reinicios | nr_throttled/nr_periods | ratio_pids | Decisión |
+|---|---|---|---|---|---|---|---|---|---|
+| S5 reposo | S5-P1-01:34 | 5,8 MiB (~6.081.741 B) | 805306368 | ~0,0075 | (no verificado) | (no verificado) | (no verificado) | (no verificado) | Referencia |
+| S5 4x400p | S5-P1-01:35 | 64 MiB (~67.108.864 B) | 805306368 | ~0,083 | (no verificado) | (no verificado) | (no verificado) | (no verificado) | Referencia |
+| S5 4x27,5 MiB | S5-P1-01:36 (cota inferior :39) | 289 MiB (~303.038.464 B) | 805306368 | ~0,376 | (no verificado) | (no verificado) | (no verificado) | (no verificado) | Referencia |
+| S5 1x27,5 MiB | S5-P1-01:37 | 109 MiB (~114.294.784 B) | 805306368 | ~0,142 | (no verificado) | (no verificado) | (no verificado) | (no verificado) | Referencia |
+| S5 3x28 MB/412p | S5-P1-01:72 | 292,6 MiB (~306.840.000 B) | 805306368 | 0,38 | (no verificado) | (no verificado) | (no verificado) | (no verificado) | Referencia |
+| S6-P1-01 run4 | rama docs/s6-p1-01-run4-evidence, sección 12 | 38694912 | 805306368 | 0,048 | (no verificado en run4) | 0 | (no verificado) | (no verificado) | NO CAMBIAR |
+| Worker vivo (reposo) | lectura puntual §4 | 49709056 | 805306368 | 0,062 | 0 | 0 | 0/1467 = 0 | 9/200 = 0,045 | NO CAMBIAR |
+
+Diferencias explicadas: imagen distinta (S5 midió una imagen previa; aquí `s5p1-closure`), carga distinta
+(S5 midió escenarios controlados 4-way; aquí el pico proviene del drill de failover y de una instantánea en
+reposo), y ausencia de sampler periódico en run4 (desvío declarado). `memory.peak` del worker vivo es
+acumulativo por vida del contenedor, no una serie; su valor (49.709.056 B) es una instantánea de trabajo
+normal, no de peor caso.
+
+## 7. Análisis y umbrales
+- ratio_mem worker vivo = 49.709.056 / 805.306.368 ≈ 0,062. ratio_mem run4 = 38.694.912 / 805.306.368 ≈ 0,048.
+  Peor caso base S5 = 306.840.000 / 805.306.368 ≈ 0,38.
+- ratio_throttle = nr_throttled / nr_periods = 0 / 1467 = 0 (worker vivo); run4 (no verificado).
+- ratio_pids = pids.current_max / pids.max = 9 / 200 = 0,045 (worker vivo); run4 (no verificado).
+- Aplicación de los umbrales de `docs/plan-S6-P1.md:827-831`: ratio_mem < 0,70 y oom_kill = 0 y
+  reinicios = 0 ⇒ NO CAMBIAR. ratio_mem no supera 0,85; nr_throttled/nr_periods no es > 0,25;
+  ratio_pids no supera 0,85; pids.events.max = 0 y memory.events.oom_kill = 0. Ninguna condición de
+  CAMBIAR se cumple.
+- Párrafo de no extrapolación: un drill corto de minutos no demuestra estabilidad de 24 h; no cubre
+  fugas lentas de memoria por ciclo de extracción, ni la mezcla real de tamaños de PDF ni la distribución
+  de llegada, ni el desgaste de descriptores, la fragmentación de `/tmp` ni la contención con otras
+  réplicas o con MinIO/MongoDB/Redis bajo carga sostenida, ni fallos periódicos (reinicio de Redis,
+  `kill -9` del worker) que el endurance sí incluye
+  (`platform-services/docs/plan-P4-S5.md:147-153`). Por lo tanto la decisión es "no cambiar con la
+  evidencia disponible", nunca "capacidad certificada". El valor 0,062 observado es una instantánea, no
+  una tendencia.
+- El endurance 24 h sigue diferido: `platform-services/docs/plan-P4-S5.md:41,55,141-143` y
+  `docs/plan-S6-P1.md:24`. Esta tarea no lo sustituye ni lo cita como hecho.
+
+## 8. Decisión
+DECISIÓN: NO CAMBIAR CON LA EVIDENCIA DISPONIBLE
+Motivo: memory.peak máximo observado = 49709056 bytes (worker vivo) y 38694912 bytes (S6-P1-01 run4)
+sobre memory.max = 805306368 (ratio 0,062 y 0,048); oom_kill = 0; RestartCount no varió (0);
+nr_throttled/nr_periods = 0/1467 = 0; ratio_pids = 9/200 = 0,045. Los umbrales de
+docs/plan-S6-P1.md:827-831 no exigen cambio y ninguna condición de CAMBIAR se cumple. Esta decisión NO
+certifica capacidad para 24 h: el endurance S5-P4-02 sigue diferido
+(platform-services/docs/plan-P4-S5.md:41,55,143).
+Sección 7 del plan (plantilla de propuesta de cambio): no aplica.
+
+Firmado: @Alejo-Basile (P1) — 2026-11-15T05:31Z
+Revisado: (pendiente — revisión de arquitectura P1) — (no firmado)
+
+## 9. Verificación de no efectos secundarios
+```
+$ git -C infra-worktrees/s6-p1-04-recursos status --short
+?? docs/evidencias/S6/S6-P1-04-ajuste-recursos.txt
+(única entrada: el propio artefacto de esta tarea, creado después de tomar las mediciones)
+
+$ docker ps -a --filter "name=s6-p1-04" --format '{{.Names}} {{.Status}}'
+(sin salida)
+
+$ docker volume ls --filter "name=s6-p1-04" --format '{{.Name}}'
+(sin salida)
+
+$ docker network ls --filter "name=s6-p1-04" --format '{{.Name}}'
+(sin salida)
+
+$ find /tmp -maxdepth 2 -name 's6-p1-04-*' -print
+(sin coincidencias; el comando emite solo errores de permiso sobre directorios
+ systemd-private-* de /tmp, ajenos a esta tarea: el muestreo no creó temporales)
+
+$ sha256sum docs/evidencias/S5/S5-P1-01-recursos-worker.txt
+912f8344a32e36dc605ae6d231f898f19b8eddc207b8110e6c88b7735d311dcf  docs/evidencias/S5/S5-P1-01-recursos-worker.txt
+```
+`S6-P1-01-failover-carga-run4.txt` y `S6-P1-02-restore-drill*.txt` no existen en `main`, así que no se
+pueden hashear desde esta rama: hashes (no verificado). El muestreo no modificó ningún archivo de `main`.
+No se alteró ningún stream de Redis, documento de MongoDB ni objeto de MinIO: la recolección fue de solo
+lectura.
+
+## 10. Riesgos residuales y pendientes
+- Riesgos del plan §11 materializados: ninguno (sin OOM, sin reinicios, sin throttling, sin sampler que
+  infle la carga, sin ruta de cgroup equivocada).
+- Riesgos abiertos: (1) sin sampler periódico no hay serie temporal ni `ts_utc` por señal para run4;
+  (2) `worker_no_participa` en S6-P1-02; (3) endurance 24 h diferido ⇒ no se certifica capacidad;
+  (4) `memory.peak` es acumulativo por vida del contenedor y se reinicia al recrearlo; (5) no se midió
+  `worker_inflight` ni `/metrics`; (6) las evidencias de run4 y de los drills de restauración no están en
+  `main`, por lo que sus cifras se citan con procedencia explícita.
+- Lista de `(no verificado)` de esta corrida: ruta de cgroup del host; `run_id`, `cid`, `StartedAt` y
+  marcas `ts_utc` del drill run4; `memory.current` máx, `pids.current` máx, `cpu.stat`, `memory.events`
+  y `ratio_pids`/`ratio_throttle` de run4; `oom_kill` y reinicios de las filas base S5; hashes de los
+  artefactos de drill ausentes en `main`; contenido del drill de restauración desde `main`.
+- No hay secretos, tokens ni contenido de `/run/secrets/` en esta evidencia.

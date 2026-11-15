@@ -8,7 +8,9 @@ http:
         address: "http://ratelimitd:8090/check?key=api-v2&rate=10&burst=20"
         authResponseHeaders:
           - Retry-After
+          - X-RateLimit-Limit
           - X-RateLimit-Remaining
+          - X-RateLimit-Reset
           - X-RateLimit-Retry-After
           - X-RateLimit-Degraded
 

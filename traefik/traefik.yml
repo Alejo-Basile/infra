@@ -13,6 +13,21 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    # S7-P1-03: Traefik solo acepta X-Forwarded-For del salto inmediato.
+    # trustedIPs se compara contra el peer del socket, no contra toda la
+    # cadena de la cabecera: se declara el proxy que tenemos delante, no
+    # "quien dice ser". Si el peer no esta en la lista, Traefik descarta el
+    # XFF entrante y propaga como origen el peer real.
+    # En v3 forwardedHeaders es campo del entryPoint (hermano de `address`),
+    # NO hijo de `http`: anidarlo bajo `http` aborta el arranque.
+    forwardedHeaders:
+      # Explicito aunque sea el default de v3: deja la postura auditable.
+      insecure: false
+      trustedIPs:
+        # LABORATORIO: TEST-NET-1 (RFC 5737). No incluye ningun peer de
+        # Docker, por lo que TODO XFF entrante se ignora y la prueba de
+        # falsificacion es valida. En produccion va el CIDR del LB/ingress.
+        - "192.0.2.0/24"
     http:
       tls: true
   # Puerto interno de metricas (solo red interna, sin publicar al host)

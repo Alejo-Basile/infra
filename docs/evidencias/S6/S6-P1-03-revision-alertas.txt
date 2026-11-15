@@ -1,0 +1,315 @@
+## Encabezado
+
+task: S6-P1-03 - Revision de resiliencia y alertas
+fecha_utc: 2026-11-15
+propietario: P1 / @Alejo-Basile
+repo_infra: rama docs/s6-p1-01-run4-evidence @ 774f8f1 (arbol raiz multi-repo sin trackear; preexistente)
+contenedores: infra-prometheus-1, infra-alertmanager-1, infra-extraction-worker-1, infra-doc-service-1,
+  infra-redis-streams-1, infra-redis-streams-replica-1-1, infra-redis-streams-replica-2-1,
+  infra-sentinel-1-1, infra-sentinel-2-1, infra-sentinel-3-1, infra-redis-exporter-1, infra-minio-1,
+  infra-mongo-1, infra-traefik-1, infra-grafana-1, infra-loki-1, infra-ratelimitd-1,
+  infra-redis-ratelimit-1, infra-monolito-1
+ventana_drill: 2026-11-15T03:12:24Z - 2026-11-15T03:38:47Z
+host_access: Prometheus 9090 y Alertmanager 9093 no publican puerto en el host; toda consulta se hizo
+  con `docker exec <contenedor> wget -qO-`. Desvio declarado respecto de los comandos `curl localhost`
+  del plan: el acceso por host queda (no verificado).
+scrape_interval: global 5s (infra/compose/prometheus/prometheus.yml). Grupos: streams/http 15s,
+  infra/business/chain 30s.
+
+## Inventario de reglas
+
+Total de reglas: 19 (verificado con `grep -c 'alert:' infra/compose/prometheus/alert.rules.yml` = 19).
+Todas las `runbook_url` apuntan a archivos existentes en `infra/runbooks/`.
+
+| # | Regla | Grupo | expr (resumen) | for | Severidad | Metricas requeridas | Runbook | Propietario |
+|---|---|---|---|---|---|---|---|---|
+| 1 | QueueDepthHigh | s1-p1-13-streams | (entries_added{stream} - ignoring(group) entries_read{stream,group} + ignoring(group) messages_pending{stream,group}) > 500 | 5m | warning | redis_stream_entries_added_total, redis_stream_group_entries_read, redis_stream_group_messages_pending | infra/runbooks/escalado-worker.md | P1 |
+| 2 | PELBacklog | s1-p1-13-streams | messages_pending{stream,group} > 100 | 10m | warning | redis_stream_group_messages_pending | infra/runbooks/failover-redis.md | P1 |
+| 3 | PELStale | s1-p1-13-streams | messages_pending > 0 and max by (stream,group)(consumer_idle_seconds) > 600 | 5m | warning | redis_stream_group_messages_pending, redis_stream_group_consumer_idle_seconds | infra/runbooks/failover-redis.md | P1 |
+| 4 | ExtractionErrors | s1-p1-13-streams | sum(rate(worker_documents_total{outcome="rejected"}[5m])) + sum(rate(worker_dlq_total[5m])) > 0 | 5m | warning | worker_documents_total, worker_dlq_total | infra/runbooks/errores-extraccion.md | P1 (gaps metricas: P3) |
+| 5 | RedisMemHigh | s1-p1-13-streams | redis_memory_used_bytes / redis_memory_max_bytes > 0.8 | 5m | warning | redis_memory_used_bytes, redis_memory_max_bytes | infra/runbooks/failover-redis.md | P1 |
+| 6 | HighErrorRate | s1-p1-13-http | sum(rate(traefik_service_requests_total{code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total[5m])) > 0.01 | 5m | critical | traefik_service_requests_total | infra/runbooks/gateway-trafico.md | P1 (gap G12: P3) |
+| 7 | LatencyP95High | s1-p1-13-http | histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le)) > 0.5 | 5m | warning | traefik_service_request_duration_seconds_bucket | infra/runbooks/gateway-trafico.md | P1 (gap G13: P3) |
+| 8 | TraefikRateLimited | s1-p1-13-http | sum(rate(traefik_service_requests_total{code="429"}[5m])) / clamp_min(sum(rate(traefik_service_requests_total[5m])),0.001) > 0.01 | 5m | warning | traefik_service_requests_total | infra/runbooks/gateway-trafico.md | P1 (gap G12: P3) |
+| 9 | MinioDiskHigh | s1-p1-13-infra | (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.80 | 5m | warning | minio_cluster_capacity_usable_free_bytes, minio_cluster_capacity_usable_total_bytes | infra/runbooks/minio-espacio.md | P1 |
+| 10 | MinioDiskCritical | s1-p1-13-infra | (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.85 | 5m | critical | minio_cluster_capacity_usable_free_bytes, minio_cluster_capacity_usable_total_bytes | infra/runbooks/minio-espacio.md | P1 |
+| 11 | DocsStuck | s4-p1-02-business | max by (status)(docservice_documents_oldest_intermediate_age_seconds) > 900 | 2m | warning | docservice_documents_oldest_intermediate_age_seconds | infra/runbooks/reconciliador-documentos.md | P2 |
+| 12 | DocsAccumulating | s4-p1-02-business | docservice_documents_non_terminal > 10 | 15m | warning | docservice_documents_non_terminal | infra/runbooks/reconciliador-documentos.md | P2 |
+| 13 | WorkerDown | s4-p1-03-chain | up{job="extraction-worker"} == 0 | 10m | critical | up | infra/runbooks/healthchecks.md | P1 |
+| 14 | QueueNotAdvancing | s4-p1-03-chain | messages_pending > 0 and changes(messages_pending[5m]) == 0 | 0m | warning | redis_stream_group_messages_pending | infra/runbooks/failover-redis.md | P1 |
+| 15 | DLQNotEmpty | s4-p1-03-chain | redis_stream_length{stream="stream:pdf-processing-dlq"} > 0 | 0m | critical | redis_stream_length | infra/runbooks/errores-extraccion.md | P1 |
+| 16 | DocServiceNotReady | s4-p1-03-chain | up{job="doc-service"} == 0 | 2m | critical | up | infra/runbooks/healthchecks.md | P1 |
+| 17 | SentinelFailoverObserved | s4-p1-03-chain | increase(redis_sentinel_switch_master_total[5m]) > 0 | 0m | warning | redis_sentinel_switch_master_total | infra/runbooks/failover-redis.md | P1 (metrica: P3) |
+| 18 | RedisPersistenceOrReplicaIssue | s4-p1-03-chain | redis_aof_enabled == 0 or redis_master_link_up == 0 | 2m | critical | redis_aof_enabled, redis_master_link_up | infra/runbooks/failover-redis.md | P1 (metrica: P3) |
+| 19 | AcmeCertificateExpiring | s4-p1-03-chain | (traefik_tls_certs_not_after - time()) < 14 * 24 * 3600 | 1h | warning | traefik_tls_certs_not_after | infra/runbooks/certificados-traefik.md | P1 |
+
+Runbooks verificados con `test -f` (8 unicos, 0 FALTA):
+infra/runbooks/certificados-traefik.md, errores-extraccion.md, escalado-worker.md, failover-redis.md,
+gateway-trafico.md, healthchecks.md, minio-espacio.md, reconciliador-documentos.md.
+
+Runbooks sin regla asociada (no gatillan desde alertas): hardening-contenedores.md,
+minio-lifecycle.md, mongo-ttl.md, restore-mongo.md, rotacion-secretos.md (gap G6).
+
+## Disponibilidad de metricas
+
+Metodo: `docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=<metrica>'`,
+dos pasadas separadas 12 s (>= 2 x scrape_interval de 5 s). Veredicto AUSENTE solo cuando ambas pasadas
+devuelven `status=success` y `data.result=[]`.
+
+| Metrica | Reglas que la usan | pass1 | pass2 | Veredicto |
+|---|---|---|---|---|
+| redis_stream_entries_added_total | QueueDepthHigh | 2 | 2 | exportada |
+| redis_stream_group_entries_read | QueueDepthHigh | 1 | 1 | exportada |
+| redis_stream_group_messages_pending | QueueDepthHigh, PELBacklog, PELStale, QueueNotAdvancing | 1 | 1 | exportada |
+| redis_stream_group_consumer_idle_seconds | PELStale | 12 | 12 | exportada |
+| worker_documents_total | ExtractionErrors | 0 | 0 | AUSENTE |
+| worker_dlq_total | ExtractionErrors | 0 | 0 | AUSENTE |
+| redis_memory_used_bytes | RedisMemHigh | 1 | 1 | exportada |
+| redis_memory_max_bytes | RedisMemHigh | 1 | 1 | exportada |
+| traefik_service_requests_total | HighErrorRate, TraefikRateLimited | 0 | 0 | AUSENTE (familia inexistente, G12) |
+| traefik_service_request_duration_seconds_bucket | LatencyP95High | 0 | 0 | sin series ahora (G13) |
+| minio_cluster_capacity_usable_free_bytes | MinioDiskHigh, MinioDiskCritical | 1 | 1 | exportada |
+| minio_cluster_capacity_usable_total_bytes | MinioDiskHigh, MinioDiskCritical | 1 | 1 | exportada |
+| docservice_documents_oldest_intermediate_age_seconds | DocsStuck | 6 | 6 | exportada |
+| docservice_documents_non_terminal | DocsAccumulating | 1 | 1 | exportada |
+| up | WorkerDown, DocServiceNotReady | 5 | 5 | exportada |
+| up{job="extraction-worker"} | WorkerDown | 1 | 1 | exportada (valor 1) |
+| up{job="doc-service"} | DocServiceNotReady | 1 | 1 | exportada (valor 1) |
+| redis_stream_length | DLQNotEmpty | 2 | 2 | exportada |
+| redis_sentinel_switch_master_total | SentinelFailoverObserved | 0 | 0 | AUSENTE |
+| redis_aof_enabled | RedisPersistenceOrReplicaIssue | 1 | 1 | exportada (valor 1) |
+| redis_master_link_up | RedisPersistenceOrReplicaIssue | 0 | 0 | condicional: 0 series mientras el nodo scrapeado es maestro |
+| traefik_tls_certs_not_after | AcmeCertificateExpiring | 2 | 2 | exportada (api.localhost, s3.localhost) |
+
+Evidencia cruda acotada (muestras, truncadas a 200 caracteres):
+
+```text
+redis_stream_entries_added_total     {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_stream_entries_added_total","db":"db0","instance":"redis-exporter:9121","job":"redis-exporter","stream":"stream...
+redis_stream_group_entries_read      {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_stream_group_entries_read","db":"db0","group":"extraction-workers","instance":"redis-exporter:9121","job":"redi...
+redis_stream_group_messages_pending  {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_stream_group_messages_pending","db":"db0","group":"extraction-workers","instance":"redis-exporter:9121","job":"
+redis_stream_group_consumer_idle_seconds {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_stream_group_consumer_idle_seconds","consumer":"chaos-pel-consumer","db":"db0","group":"extraction-workers","in
+redis_memory_used_bytes              {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_memory_used_bytes","instance":"redis-exporter:9121","job":"redis-exporter"},"value":[1794713867.961,"2420664"]}]}}
+redis_memory_max_bytes               {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_memory_max_bytes","instance":"redis-exporter:9121","job":"redis-exporter"},"value":[1794713868.090,"201326592"]
+minio_cluster_capacity_usable_free_bytes  {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"minio_cluster_capacity_usable_free_bytes","instance":"minio:9000","job":"minio","server":"127.0.0.1:9000"},"value":[1
+minio_cluster_capacity_usable_total_bytes {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"minio_cluster_capacity_usable_total_bytes","instance":"minio:9000","job":"minio","server":"127.0.0.1:9000"},"value":[
+docservice_documents_oldest_intermediate_age_seconds {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"docservice_documents_oldest_intermediate_age_seconds","instance":"172.22.0.16:8080","job":"doc-service","status":"COM
+docservice_documents_non_terminal    {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"docservice_documents_non_terminal","instance":"172.22.0.16:8080","job":"doc-service"},"value":[1794713868.486,"0"]}]}}
+up                                   {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"up","instance":"traefik:8082","job":"traefik"},"value":[1794713868.539,"1"]},{"metric":{"__name__":"up","instance":"m
+up{job="extraction-worker"}          {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"up","instance":"extraction-worker:8081","job":"extraction-worker"},"value":[1794713868.591,"1"]}]}}
+up{job="doc-service"}                {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"up","instance":"172.22.0.16:8080","job":"doc-service"},"value":[1794713868.645,"1"]}]}}
+redis_stream_length                  {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_stream_length","db":"db0","instance":"redis-exporter:9121","job":"redis-exporter","stream":"stream:pdf-processi
+redis_aof_enabled                    {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_aof_enabled","instance":"redis-exporter:9121","job":"redis-exporter"},"value":[1794713868.823,"1"]}]}}
+redis_master_link_up (post-failover) {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"redis_master_link_up","instance":"redis-exporter:9121","job":"redis-exporter","master_host":"redis-streams-replica-1"
+traefik_tls_certs_not_after          {"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"traefik_tls_certs_not_after","cn":"api.localhost","instance":"traefik:8082","job":"traefik","sans":"api.localhost","s
+redis_sentinel_switch_master_total   {"status":"success","data":{"resultType":"vector","result":[]}}
+worker_documents_total               {"status":"success","data":{"resultType":"vector","result":[]}}
+worker_dlq_total                     {"status":"success","data":{"resultType":"vector","result":[]}}
+traefik_service_requests_total       {"status":"success","data":{"resultType":"vector","result":[]}}
+traefik_service_request_duration_seconds_bucket {"status":"success","data":{"resultType":"vector","result":[]}}
+```
+
+Nota sobre `redis_master_link_up`: la consulta devuelve 0 series mientras el nodo scrapeado
+(`redis-streams:6379` -> `infra-redis-streams-1`) es maestro, porque la metrica solo existe en replicas.
+Durante el escenario C, mientras `infra-redis-streams-1` estuvo demotado a replica, la metrica SI
+aparecio con `master_host="redis-streams-replica-1"`. Tras el failback a `redis-streams` como maestro
+volvio a 0 series. Es decir: la rama de replica de la regla 18 solo puede evaluarse cuando el nodo
+scrapeado es replica, que es justo el caso contrario al estado normal del stack.
+
+Targets activos observados (todos `health=up`, sin `lastError`):
+traefik:8082, doc-service (172.22.0.16:8080 via DNS SD), extraction-worker:8081, redis-exporter:9121,
+minio:9000.
+
+Health: `Prometheus Server is Healthy.` / `Prometheus Server is Ready.` / Alertmanager `OK` / `OK`.
+
+Alertmanager: `route.receiver: "default"` y `receivers: - name: "default"` sin `webhook_configs` ni
+`email_configs` (infra/compose/prometheus/alertmanager.yml:1-18). El receptor no tiene notificador
+externo: los disparos prueban transporte Prometheus -> Alertmanager, no paging humano (gap G5).
+
+## Disparos
+
+### Baseline (antes de inducir)
+
+- DLQNotEmpty: state=firing, activeAt 2026-11-15T00:06:43.273Z, value 8. Alertmanager: active.
+- QueueDepthHigh: state=firing, activeAt 2026-11-15T01:35:41.869Z, value 832. Alertmanager: active.
+- XLEN stream:pdf-processing = 2126; XLEN stream:pdf-processing-dlq = 8 (baseline de limpieza).
+- `up{job="extraction-worker"}` = 1, `up{job="doc-service"}` = 1.
+
+### A - WorkerDown (critical, for 10m) - DISPARO INDUCIDO 1
+
+- Induccion: `docker stop infra-extraction-worker-1` a las 2026-11-15T03:12:24Z.
+- `up{job="extraction-worker"}` paso a 0 (target en estado down; la serie `up` se conserva porque el
+  target sigue configurado, por eso la regla puede disparar).
+- Prometheus: state=firing a las 2026-11-15T03:22:57Z, activeAt 2026-11-15T03:22:43.273Z
+  (10m19s desde la induccion, dentro de la ventana `for`+intervalo).
+- Alertmanager: recibida como active a las 2026-11-15T03:22:43Z, `silencedBy` = 5de62837 (silencio del
+  drill; el silencio impide notificacion, no la evaluacion).
+- Restauracion: `docker start infra-extraction-worker-1`; `up` = 1 a las 2026-11-15T03:27:25Z.
+  Estado final: resolved.
+
+### B - Cola profunda (durante la ventana A) - NO ES UN DISPARO NUEVO
+
+- Induccion: 600 entradas `XADD stream:pdf-processing '*' s6_test "S6-P1-03-<i>"` con el worker detenido,
+  IDs capturados para borrado posterior. `XLEN` 2126 -> 2726.
+- `QueueDepthHigh` ya estaba firing en el baseline (activeAt 2026-11-15T01:35:41.869Z). El valor de la
+  expresion subio de ~832 a 1410. Se registra como empeoramiento de una alerta preexistente; NO se
+  cuenta como disparo inducido.
+- `PELBacklog`, `PELStale` y `QueueNotAdvancing` no dispararon (los mensajes de prueba nunca se
+  entregaron: el worker estaba detenido, por lo que el PEL no crecio).
+- Limpieza en orden estricto, con el worker todavia detenido: `XDEL` por lotes de 100 sobre los IDs
+  capturados; `XLEN` volvio a 2126 y el DLQ siguio en 8. Recien despues se reinicio el worker.
+- Desvio declarado: la cola del entorno ya estaba por encima del umbral antes del drill; no fue posible
+  observar una transicion pending->firing limpia para esta regla.
+
+### D - Persistencia / replica (AOF) - DISPARO INDUCIDO 2
+
+- Induccion: `CONFIG SET appendonly no` en `infra-redis-streams-1` (rama `redis_aof_enabled == 0`) a las
+  2026-11-15T03:27:26Z. No se uso la variante de pausar replica porque `redis_master_link_up` no tiene
+  series mientras el nodo scrapeado es maestro (ver seccion de metricas).
+- `redis_aof_enabled` paso a 0 en ~20 s (observado en el primer poll).
+- Prometheus: state=firing a las 2026-11-15T03:30:10Z, activeAt 2026-11-15T03:27:43.273Z (2m17s, dentro
+  de la ventana `for` 2m + intervalo 30s).
+- Alertmanager: active a las 2026-11-15T03:29:43Z, `silencedBy` = 452a10b6.
+- Restauracion: `CONFIG SET appendonly yes` a las ~2026-11-15T03:30:30Z; `INFO persistence` mostro
+  `aof_enabled:1`, `aof_last_write_status:ok`; `redis_aof_enabled` = 1 en Prometheus. Estado final:
+  resolved.
+
+### E - DocServiceNotReady (critical, for 2m) - DISPARO INDUCIDO 3
+
+- Induccion: `docker stop infra-doc-service-1` a las 2026-11-15T03:31:36Z.
+- Prometheus: state=firing a las 2026-11-15T03:34:00Z, activeAt 2026-11-15T03:31:43.273Z (2m24s).
+- Alertmanager: active con startsAt 2026-11-15T03:33:43.273Z, `silencedBy` = a99e76da.
+- Restauracion: `docker start infra-doc-service-1`; `up{job="doc-service"}` = 1 a las
+  2026-11-15T03:34:19Z; `/readyz` respondio ready. Estado final: resolved.
+
+### C - Maestro caido / failover - NO DISPARO NINGUNA REGLA (hallazgo)
+
+- `MASTER_ANTES` = redis-streams (contenedor `infra-redis-streams-1`).
+- Induccion: `docker pause infra-redis-streams-1` a las 2026-11-15T03:34:21Z (metodo del runbook seccion 3;
+  se uso `pause` y no `stop` para no borrar el DNS del nodo y evitar `+tilt`/`NOGOODSLAVE`).
+- Consenso de los 3 sentinels en `redis-streams-replica-1`, T1 ~ 2026-11-15T03:34:22.9Z
+  (epoch 1794713662.85); promocion observada del orden de 2 s desde el corte, mas rapida que los
+  9.877 s medidos en S5-P1-08. Los logs de `infra-sentinel-1-1` registraron el cambio de maestro.
+- Consultas durante el corte:
+  - `redis_sentinel_switch_master_total` -> `result: []` -> `SentinelFailoverObserved` NO dispara.
+  - `redis_master_link_up` -> sin series (el nodo scrapeado estaba pausado) -> la rama de replica de
+    `RedisPersistenceOrReplicaIssue` queda en NoData.
+  - `redis_aof_enabled` -> 1 (valor retenido de la ultima muestra) -> la rama de AOF tampoco dispara.
+  - Resultado: NINGUNA regla disparo durante un failover real. Un failover de Redis es silencioso
+    (confirma G1 y G3 con observacion directa, no solo por ausencia de metrica en reposo).
+- Restauracion: `docker unpause infra-redis-streams-1`; el nodo volvio como `role:slave` con
+  `master_link_status:up` sin intervencion manual, replicando desde `redis-streams-replica-1`.
+  `XLEN` legible = 2126.
+- Failback posterior (operacion, no parte de la falla inducida): `SENTINEL FAILOVER myprimary` en
+  `infra-sentinel-1-1`; el maestro volvio a `redis-streams` con `connected_slaves:2`.
+  `SENTINEL ckquorum myprimary` = `OK 3 usable Sentinels`.
+- Desvio: el plan original pedia `docker stop`; se uso `pause` segun runbook. El failback no estaba
+  pedido por la tarea pero estaba previsto por `docs/plan-S6-P1.md` seccion 4.1.7 y se ejecuto para devolver
+  la topologia al estado inicial.
+
+### Silencios
+
+9 silencios preventivos creados antes de inducir (`createdBy: S6-P1-03`, `comment: drill S6-P1-03`,
+duracion 120 min), y eliminados al cierre:
+
+| Alerta | Silence ID | Estado final |
+|---|---|---|
+| WorkerDown | 5de62837-2767-465e-b1d8-87901a2b1064 | deleted |
+| QueueDepthHigh | 716e59ce-0e53-418e-9f30-9b8aad6e5605 | deleted |
+| DLQNotEmpty | b03f6198-9e62-457a-9be5-0aeb5a78a7c0 | deleted |
+| PELBacklog | c5a84245-a705-4762-9ed7-e046d894f932 | deleted |
+| PELStale | deb795c5-af7b-489b-9971-7c36c6f872c8 | deleted |
+| QueueNotAdvancing | 5b501852-af6a-4a29-9408-8f02505d42c4 | deleted |
+| RedisPersistenceOrReplicaIssue | 452a10b6-ae2f-4aa1-9363-0c6ee8c283b9 | deleted |
+| SentinelFailoverObserved | 09e81d6e-19d0-4792-aa40-f883286a4c31 | deleted |
+| DocServiceNotReady | a99e76da-a22f-4a2e-b220-aa97e8afe15d | deleted |
+
+Lista final de silencios activos con `comment: drill S6-P1-03`: `[]`.
+Detalle operativo: el `wget` de BusyBox de la imagen de Alertmanager no soporta `-X DELETE`; el borrado
+se hizo con `nc` enviando la peticion HTTP DELETE cruda contra `localhost:9093`. Se registra como
+desvio de metodo, no de resultado.
+
+Resumen de disparos: 3 disparos criticos inducidos y observados (WorkerDown, RedisPersistenceOrReplicaIssue,
+DocServiceNotReady), 1 alerta preexistente agravada sin nueva transicion (QueueDepthHigh), 1 escenario
+sin ningun disparo (failover de maestro).
+
+## Gaps
+
+| ID | Gap | Evidencia | Severidad | Impacto en G3 | Dueno |
+|---|---|---|---|---|---|
+| G1 | `SentinelFailoverObserved` es decorativa: `redis_sentinel_switch_master_total` no se exporta | dos pasadas con `result: []`; escenario C sin disparo | Alta | Un failover real no genera alerta | P3 |
+| G2 | Sin alerta critica de profundidad de cola: `QueueDepthHigh` es warning y el reaper de PEL esta diferido | alert.rules.yml regla 1 (severity warning) | Media | El backlog crece sin pagina critica | P3 |
+| G3 | Sin alerta dedicada de maestro caido: durante el failover real ninguna regla disparo | escenario C: `SentinelFailoverObserved` sin metrica, `RedisPersistenceOrReplicaIssue` en NoData | Alta | Caida de maestro sin cobertura confiable | P3 |
+| G4 | `redis_master_link_up` solo existe cuando el nodo scrapeado es replica; con el maestro normal devuelve 0 series | pass1/pass2 = 0; aparecio con `master_host="redis-streams-replica-1"` solo tras demotar el nodo | Media | La rama de replica de la regla 18 es NoData en operacion normal | P3 |
+| G5 | Receptor `default` sin notificador externo: ninguna alerta pagina a una persona real | alertmanager.yml:1-18; `/api/v2/status` sin webhook/email | Alta operativa | Deteccion sin notificacion a una persona | P3 |
+| G6 | Runbooks sin regla asociada: hardening-contenedores.md, minio-lifecycle.md, mongo-ttl.md, restore-mongo.md, rotacion-secretos.md | `ls infra/runbooks/` vs `runbook_url` (8 de 13 referenciados) | Media | Documentacion operativa no gatilla desde alertas | P2 |
+| G7 | Umbrales sin evidencia formal: `>500`, `>100`, `80/85 %`, `900 s`, `>10` por 15m | comentarios de alert.rules.yml; sin baseline documentado | Media | Riesgo de subdeteccion o flapping | P2 / P3 |
+| G8 | doc-service no expone `http_requests_total` ni histograma propio; `HighErrorRate` y `LatencyP95High` dependen solo de Traefik | reglas 6 y 7 | Media | Visibilidad parcial del servicio | P3 |
+| G9 | Arbol `doc-service/` sucio con un fix sin commitear | plan-S6-P1.md seccion 1.1 | Alta para validez | Las alertas de negocio pueden medir otro comportamiento | P2 / P1 |
+| G10 | Residuos del arnes de pruebas: 5 contenedores `s4p103-test-*` detenidos y 3 volumenes `s4p103-test_*` retenidos | `docker ps -a --filter name=s4p103-test`, `docker volume ls --filter name=s4p103-test` | Baja | Ruido y espacio en el entorno de drills | P2 |
+| G11 | `ExtractionErrors` es NoData: `worker_documents_total` y `worker_dlq_total` no existen; el worker expone gauges (`worker_dlq_depth`, `worker_pel_pending`, `worker_stream_depth`, ...) | dos pasadas de ambas queries = 0; `# TYPE worker_*` del endpoint `/metrics` del worker (target up) | Alta | Errores de extraccion y DLQ no alertan por esta regla | P3 |
+| G12 | `traefik_service_requests_total` no existe como familia en este Traefik v3: el exporter publica `traefik_service_requests_bytes_total` y `traefik_service_router_requests_total` / `traefik_service_request_duration_seconds_count` | `result: []` en dos pasadas; lista de nombres `traefik_*` del TSDB | Alta | `HighErrorRate` y `TraefikRateLimited` son NoData por construccion | P3 |
+| G13 | `traefik_service_request_duration_seconds_bucket` existe como nombre pero hoy tiene 0 series (solo materializa con trafico por servicio) | `result: []` en dos pasadas; nombre presente en `__name__` | Media | `LatencyP95High` queda NoData hasta que haya trafico | P3 |
+| G14 | El entorno arrastra un backlog preexistente (`XLEN`=2126, `QueueDepthHigh` firing desde 01:35:41Z y `DLQNotEmpty` con 8 mensajes desde 00:06:43Z) | baseline del drill y `redis_stream_length` | Media | El baseline enmascara transiciones pending->firing de las reglas de cola | P2 / P3 |
+
+## Mapeo G3
+
+| Disparo | Que prueba | Que NO prueba |
+|---|---|---|
+| A. WorkerDown | Que `WorkerDown` detecta la ausencia del worker a los ~10m y llega a Alertmanager | No prueba reconexion automatica, `XAUTOCLAIM` ni reaper de PEL (P3); no prueba recuperacion de documentos en vuelo |
+| B. Cola profunda | Que la expresion de `QueueDepthHigh` crece con la cola (832 -> 1410) y que el umbral ya estaba superado | No prueba una transicion limpia: la alerta ya estaba firing; no prueba drenaje ni integridad de documentos |
+| D. Persistencia (AOF) | Que `redis_aof_enabled == 0` dispara una alerta critica en 2m-2m30s y llega a Alertmanager | No prueba durabilidad real de los mensajes, ni la rama de replica (NoData, G4) |
+| E. DocServiceNotReady | Que `DocServiceNotReady` detecta la caida del servicio en 2m-2m30s y llega a Alertmanager | No prueba recuperacion del pipeline asincrono |
+| C. Maestro caido | Que el failover de Sentinel ocurre sin intervencion (~2s de consenso) | **Prueba lo contrario de una cobertura**: ninguna regla dispara durante un failover real (G1/G3); no prueba reconexion de Go/Rust (S6-P1-01), ventana de perdida ni recuperacion por reconciliador |
+
+En conjunto: las reglas existentes se evaluan y Prometheus entrega a Alertmanager cuando la metrica
+existe. Los 3 disparos criticos fueron de disponibilidad de procesos/estado de Redis, no del camino de
+datos del PDF. No se probo resiliencia extremo a extremo, recuperacion automatizada, paging humano ni la
+instrumentacion pendiente de P3.
+
+## Limpieza y salud final
+
+- Silencios: 9 creados, 9 eliminados; lista final de silencios activos del drill = `[]`.
+- Servicios restaurados: `infra-extraction-worker-1` up y healthy; `infra-doc-service-1` up y healthy;
+  `appendonly yes` restaurado con `aof_enabled:1` y `aof_last_write_status:ok`.
+- Sin contenedores pausados: `docker ps --filter status=paused` = vacio.
+- Redis Streams: `XLEN stream:pdf-processing` = 2126 y `XLEN stream:pdf-processing-dlq` = 8 (igual al
+  baseline). IDs de prueba (`s6_test`) eliminados con `XDEL`; archivo temporal `/tmp/s6p103-ids.txt`
+  eliminado.
+- Topologia final: `infra-redis-streams-1` = `role:master` con `connected_slaves:2`;
+  `SENTINEL get-master-addr-by-name myprimary` = redis-streams; `ckquorum` = OK 3 usable Sentinels.
+- `up` = 1 para `extraction-worker` y `doc-service`. Al cierre siguen firing/active, como al inicio:
+  `DLQNotEmpty` y `QueueDepthHigh` (preexistentes, no inducidas).
+- Prometheus: `/-/healthy` = `Prometheus Server is Healthy.`, `/-/ready` = `Prometheus Server is Ready.`
+- Alertmanager: `/-/healthy` = `OK`, `/-/ready` = `OK`.
+- Contenedores `infra-*` en ejecucion al cierre: 19/19 (los originales del stack).
+- Residuos del arnes aislado (preexistentes de una corrida S4-P1-03, no creados por este drill):
+  `s4p103-test-redis-exporter-test-1`, `s4p103-test-redis-test-1`, `s4p103-test-alert-fixture-test-1`,
+  `s4p103-test-prometheus-test-1`, `s4p103-test-alertmanager-test-1` (detenidos) y los volumenes
+  `s4p103-test_alertmanager-test-data`, `s4p103-test_prometheus-test-data`, `s4p103-test_redis-test-data`.
+  No se borraron: la tarea prohibe operar sobre el arnes aislado y su limpieza corresponde a P2 (G10).
+- `git -C infra status --short`: sin cambios nuevos introducidos por el drill; este archivo de evidencia
+  es el unico artefacto generado (el arbol raiz multi-repo ya estaba sin trackear antes del drill).
+- `git status --short` en la raiz: sin modificaciones rastreadas nuevas.
+
+## Checklist de cierre
+
+- [x] El encabezado identifica `S6-P1-03`, fecha, propietario y ventana del drill.
+- [x] La tabla de inventario lista exactamente 19 reglas y coincide con `alert.rules.yml`.
+- [x] Cada regla tiene su runbook verificado con `test -f` (8 unicos, 0 FALTA, sin `SIN RUNBOOK`).
+- [x] Cada metrica requerida tiene su query PromQL y el resultado de dos pasadas registrado.
+- [x] Las metricas ausentes estan declaradas AUSENTES (`worker_documents_total`, `worker_dlq_total`,
+      `traefik_service_requests_total`, `redis_sentinel_switch_master_total`) o condicionales
+      (`redis_master_link_up`, `traefik_service_request_duration_seconds_bucket`) y asignadas a P3,
+      sin simularlas.
+- [x] Hay 3 disparos criticos con timestamp, expresion, `for`, firing en Prometheus y recepcion en
+      Alertmanager: WorkerDown, RedisPersistenceOrReplicaIssue, DocServiceNotReady.
+- [x] Cada disparo muestra induccion, firing, recepcion y restauracion.
+- [x] Los silencios creados aparecen con ID y fueron eliminados (lista final vacia).
+- [x] El entorno final esta limpio: contenedores 19/19, sin pausados, `XLEN` restaurado, residuos
+      `s4p103-test_*` declarados como preexistentes.
+- [x] Prometheus y Alertmanager responden `/-/healthy` y `/-/ready` al cierre.
+- [x] Los gaps tienen severidad, impacto en G3 y dueno asignado (G1-G14).
+- [ ] Lo no ejecutado esta marcado `(no verificado)`: el acceso por host a 9090/9093 no se verifico
+      (puertos no publicados).
+- [x] No se incluyeron secretos, contrasenas, tokens ni IDs de documentos.
+- [x] No se edito ninguna regla, compose ni runbook durante este drill.
