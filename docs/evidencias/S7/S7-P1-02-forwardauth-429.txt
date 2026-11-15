@@ -1,0 +1,115 @@
+# S7-P1-02 — ForwardAuth en rutas públicas y contrato 429
+# Fecha: 2026-11-15T06:04:18Z
+# Rama/commit (repo infra): docs/s6-p1-05-contrato-congelado @ eb795ec
+# TRAEFIK_HTTPS_PORT=8543
+# ratelimitd image: ratelimitd:p4-04
+# Ejecutado desde: host local (loopback), via gateway Traefik (api.localhost:8543)
+
+## 1. authResponseHeaders (infra/traefik/dynamic/middlewares.yml)
+    rate-limit:
+      forwardAuth:
+        address: "http://ratelimitd:8090/check?key=api-v2&rate=10&burst=20"
+        authResponseHeaders:
+          - Retry-After
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+          - X-RateLimit-Retry-After
+          - X-RateLimit-Degraded
+
+## 2. Label legacy (infra/compose/docker-compose.yml, servicio monolito)
+      - "traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)"
+      - "traefik.http.routers.legacy.priority=1"
+      - "traefik.http.routers.legacy.entrypoints=websecure"
+      - "traefik.http.routers.legacy.tls=true"
+      - "traefik.http.routers.legacy.middlewares=rate-limit@file"
+      - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
+
+Verificacion de la label en el contenedor real:
+$ docker inspect infra-monolito-1 --format '{{index .Config.Labels "traefik.http.routers.legacy.middlewares"}}'
+rate-limit@file
+
+## 3. Conteo /api/v2/documents (40 peticiones secuenciales)
+$ docker compose ... restart redis-ratelimit   # bucket limpio
+$ for i in $(seq 1 40); do curl ... /api/v2/documents; done | sort | uniq -c
+     24 200
+     16 429
+
+## 4. Conteo ruta legacy
+### 4.1 /health (40 peticiones, paralelo 20) — ruta sin dependencia de Mongo
+$ seq 1 40 | xargs -P20 -I{} curl ... /health | sort | uniq -c
+     21 200
+     19 429
+
+### 4.2 /registros?page=1&page_size=1 (40 peticiones, paralelo 25)
+$ seq 1 40 | xargs -P25 -I{} curl ... /registros?page=1&page_size=1 | sort | uniq -c
+     11 000
+     19 429
+     10 500
+
+El 429 confirma que el middleware se aplica al router legacy. Los 500/000 de /registros NO
+provienen del rate limit ni de Traefik: el monolito falla al autenticar contra Mongo
+(pymongo.errors.OperationFailure: Authentication failed) por un defecto de entorno
+preexistente al percent-encoding de la password (ver §8). Sin la presion del rate limit la
+misma ruta responde 500 en 13 ms.
+
+## 5. Respuesta 429 /api/v2/documents
+$ curl -sk -D - -o /dev/null ... /api/v2/documents | grep -iE 'HTTP/|retry-after|x-ratelimit'
+HTTP/2 429
+retry-after: 1
+x-ratelimit-remaining: 0
+x-ratelimit-retry-after: 1
+
+## 6. Respuesta 429 ruta legacy (/health, bajo rafaga sostenida)
+$ curl -sk -D - -o /dev/null ... /health | grep -iE 'HTTP/|retry-after|x-ratelimit'
+HTTP/2 429
+retry-after: 1
+x-ratelimit-remaining: 0
+x-ratelimit-retry-after: 1
+
+## 7. Control negativo (5 peticiones, 1s de pausa)
+$ for i in $(seq 1 5); do curl ... /api/v2/documents; sleep 1; done | sort | uniq -c
+      5 200
+
+## 8. Verificaciones adicionales
+$ docker compose ... config --quiet && echo "compose OK"
+compose OK
+
+$ curl ... /healthz
+{"status":"healthy",...,"service":"doc-service"}  -> 200
+
+$ curl -X POST ... /internal/documents/x/uploaded
+404
+
+Router legacy cargado por Traefik (logs):
+"RouterName":"legacy@docker" presente; no hay 404 de "no router" en el trafico legacy.
+
+## 9. Deuda
+- X-RateLimit-Limit / X-RateLimit-Reset: declarados en authResponseHeaders pero el servicio
+  aun NO los emite (responsabilidad P4-02). No aparecen en la respuesta 429; no es un fallo
+  de esta tarea.
+- k6 de gateway: pendiente P4-04 (platform-services/tests/k6/ratelimit/gateway.js no
+  versionado; run.sh y concurrency.js apuntan al servicio :8090, no al gateway).
+- Bucket global (clave estatica api-v2): todos los clientes comparten rate=10/burst=20;
+  el limite por identidad es P4-03.
+- /registros no puede demostrar 200 en este entorno por el defecto preexistente del §8;
+  la cobertura 200+429 de la ruta legacy se demostro con /health y /health/ready.
+
+## 10. Defecto de entorno preexistente detectado (fuera del alcance de S7-P1-02)
+MONOLITO_MONGO_PASSWORD en infra/.env contiene "+". El monolito construye el DSN
+(settings.py:37) sin percent-encoding y pymongo interpreta "+" como espacio -> auth falla.
+Prueba en el contenedor:
+$ docker exec infra-monolito-1 python -c "... MongoDB URI raw vs percent-encoded ..."
+raw FAIL OperationFailure Authentication failed.
+percent-encoded OK
+Remediacion sugerida (fuera de esta tarea): percent-encode de la password al construir el
+DSN (codigo del monolito) o regenerar la password sin caracteres reservados y actualizar el
+usuario en Mongo con mongo-init.
+
+## 11. Incidente de entorno durante la ejecucion (resuelto)
+El `--force-recreate monolito traefik` recreo tambien dependencias y expuso que
+infra/compose/mongo/keyfile (git-ignored) habia quedado como directorio vacio root:root
+creado por Docker; mongo entraba en crash-loop ("permissions on /etc/mongo/keyfile are too
+open"). Se regenero el keyfile (openssl rand -base64 756, 999:999, modo 400) via un
+contenedor efimero y se recreo mongo; mongo-init completo con exit 0 y rs0 quedo operativo.
+No se modifico ningun archivo versionado para esto.
