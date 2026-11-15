@@ -147,3 +147,78 @@ ratelimitd Up 44 minutes (healthy)
 redis-ratelimit Up 7 seconds (health: starting)
 traefik Up 44 minutes (healthy)
 fin=2026-11-15T15:39:45Z
+
+--- Post-merge verification (2026-11-15T22:35:38Z a 2026-11-15T22:37:51Z) ---
+infra main: cb00558 | platform-services main: e76bba2 | doc-service: doc-service:local con patch de PR #77
+Contenedores recreados: 2026-11-15T22:34:45Z. k6 ejecutado desde platform-services main (e76bba2).
+
+$ docker compose ... exec -T ratelimitd wget -qO- http://127.0.0.1:8090/metrics   # antes del drill
+ratelimit_requests_total{decision="allowed"} 7
+ratelimit_requests_total{decision="denied"} 0
+ratelimit_requests_total{decision="degraded"} 0
+# HELP ratelimit_redis_up 1 when the last Redis check succeeded, 0 when the wrapper served fail-open.
+# TYPE ratelimit_redis_up gauge
+ratelimit_redis_up 1
+
+$ docker compose ... stop redis-ratelimit   # 2026-11-15T22:35:38Z
+$ curl -sk -D - -o /dev/null -H 'Host: api.localhost' https://127.0.0.1:8543/api/v2/documents
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 22:35:40 GMT
+x-correlation-id: 7a49ce5e-4d27-44fb-892e-20020b9d9425
+x-ratelimit-degraded: true
+
+$ docker compose ... exec -T ratelimitd wget -qO- http://127.0.0.1:8090/metrics   # durante la degradacion
+ratelimit_requests_total{decision="allowed"} 7
+ratelimit_requests_total{decision="denied"} 0
+ratelimit_requests_total{decision="degraded"} 11
+# HELP ratelimit_redis_up 1 when the last Redis check succeeded, 0 when the wrapper served fail-open.
+# TYPE ratelimit_redis_up gauge
+ratelimit_redis_up 0
+
+Alerta RateLimitDegraded: activeAt=2026-11-15T22:35:46.771976804Z, firing confirmado 2026-11-15T22:36:49Z.
+
+$ docker compose ... start redis-ratelimit   # 2026-11-15T22:36:54Z
+$ docker compose ... exec -T redis-ratelimit sh -c 'REDISCLI_AUTH="$(cat /run/secrets/redis_ratelimit_password)" redis-cli --no-auth-warning PING'
+PONG
+
+$ curl -sk -D - -o /dev/null -H 'Host: api.localhost' https://127.0.0.1:8543/api/v2/documents
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 22:37:00 GMT
+x-correlation-id: b69d60ba-8ac1-488d-8621-48a3c7c18ff8
+x-ratelimit-remaining: 19
+
+$ for i in $(seq 1 40); do curl ... /api/v2/documents; done ; curl -sk -D -
+HTTP/2 429 
+content-type: application/json
+date: Sun, 15 Nov 2026 22:37:00 GMT
+retry-after: 1
+x-ratelimit-remaining: 0
+x-ratelimit-retry-after: 1
+content-length: 48
+
+$ docker compose ... exec -T ratelimitd wget -qO- http://127.0.0.1:8090/metrics   # despues
+ratelimit_requests_total{decision="allowed"} 31
+ratelimit_requests_total{decision="denied"} 18
+ratelimit_requests_total{decision="degraded"} 11
+# HELP ratelimit_redis_up 1 when the last Redis check succeeded, 0 when the wrapper served fail-open.
+# TYPE ratelimit_redis_up gauge
+ratelimit_redis_up 1
+
+Alerta resuelta: 2026-11-15T22:37:51Z (alertas de rate limit activas: []).
+
+--- k6 gateway (post-merge, platform-services main e76bba2) ---
+$ cd platform-services && ./tests/k6/ratelimit/run-gateway.sh
+    ✓ 'rate==1' rate=100.00%
+    denied_total
+    ✓ 'count>0' count=39
+    server_error_total
+    ✓ 'count==0' count=0
+    checks_succeeded...: 100.00% 240 out of 240
+    checks_failed......: 0.00%   0 out of 240
+    denied_total...................: 39     238.654589/s
+    server_error_total.............: 0      0/s
+
+Resultado: PASS. Reintento completo sobre el stack redeployado desde main; header de degradacion
+visible en el cliente porque el deploy local usa doc-service:local con el patch de PR #77 (aun abierto).
