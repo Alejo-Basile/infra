@@ -1,0 +1,149 @@
+# S7-P1-05 fail-open — 2026-11-15T15:20:35Z
+## Preflight
+NAME                      IMAGE                                                                                          COMMAND                  SERVICE           CREATED        STATUS                    PORTS
+infra-doc-service-1       ghcr.io/alejo-basile/doc-service:s5p1-pull                                                     "/bin/sh /entrypoint…"   doc-service       19 hours ago   Up 25 minutes (healthy)   8080/tcp
+infra-ratelimitd-1        sha256:572b723c6f185486dc5ac10be45db87d0530046043cf181b734a82bc812c6659                        "/usr/local/bin/rate…"   ratelimitd        4 days ago     Up 25 minutes (healthy)   8090/tcp
+infra-redis-ratelimit-1   redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a   "/bin/sh -c 'export …"   redis-ratelimit   4 days ago     Up 25 minutes (healthy)   6379/tcp
+infra-traefik-1           traefik:v3.7                                                                                   "/entrypoint.sh trae…"   traefik           9 hours ago    Up 25 minutes (healthy)   0.0.0.0:8088->80/tcp, [::]:8088->80/tcp, 0.0.0.0:8543->443/tcp, [::]:8543->443/tcp
+## Baseline 2026-11-15T15:20:37Z
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 15:20:37 GMT
+x-correlation-id: 57263d58-3a6f-485b-9256-8bdf05be7caf
+
+## Caida: 2026-11-15T15:20:39Z
+ Container infra-redis-ratelimit-1 Stopping 
+ Container infra-redis-ratelimit-1 Stopped 
+NAME                 IMAGE                                                                     COMMAND                  SERVICE      CREATED       STATUS                    PORTS
+infra-ratelimitd-1   sha256:572b723c6f185486dc5ac10be45db87d0530046043cf181b734a82bc812c6659   "/usr/local/bin/rate…"   ratelimitd   4 days ago    Up 25 minutes (healthy)   8090/tcp
+infra-traefik-1      traefik:v3.7                                                              "/entrypoint.sh trae…"   traefik      9 hours ago   Up 25 minutes (healthy)   0.0.0.0:8088->80/tcp, [::]:8088->80/tcp, 0.0.0.0:8543->443/tcp, [::]:8543->443/tcp
+## Fail-open por gateway 2026-11-15T15:20:44Z
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 15:20:44 GMT
+x-correlation-id: 9b840ee7-0803-41ad-8f42-2835887f4115
+
+## Fail-open directo en ratelimitd
+Connecting to localhost:8090 ([::1]:8090)
+  HTTP/1.1 200 OK
+  Content-Type: application/json
+  X-Ratelimit-Degraded: true
+  Date: Sun, 15 Nov 2026 15:20:46 GMT
+  Content-Length: 33
+  Connection: close
+  
+writing to stdout
+{"allowed":true,"degraded":true}
+-                    100% |********************************|    33  0:00:00 ETA
+written to stdout
+--- healthz ---
+wget: server returned error: HTTP/1.1 503 Service Unavailable
+## Ventana de degradacion 2026-11-15T15:21:03Z
+# SUPERSEDIDA: esta corrida es anterior al fix de propagacion. El header no llegaba al cliente
+# porque Traefik forwardAuth (2xx) copia authResponseHeaders al request reenviado, no a la
+# respuesta. La corrida valida es la seccion final "Reintento post-fix".
+intento=1 code=200 degraded=<ausente> ts=2026-11-15T15:21:03Z
+intento=2 code=200 degraded=<ausente> ts=2026-11-15T15:21:06Z
+intento=3 code=200 degraded=<ausente> ts=2026-11-15T15:21:08Z
+intento=4 code=200 degraded=<ausente> ts=2026-11-15T15:21:10Z
+intento=5 code=200 degraded=<ausente> ts=2026-11-15T15:21:12Z
+## Restauracion: 2026-11-15T15:21:17Z
+ Container infra-redis-ratelimit-1 Starting 
+ Container infra-redis-ratelimit-1 Started 
+## PING autenticado 2026-11-15T15:21:20Z
+PONG
+## Sin reinicios
+/infra-ratelimitd-1 started=2026-11-15T14:55:00.14653333Z restarts=0
+/infra-traefik-1 started=2026-11-15T14:55:00.244178993Z restarts=0
+## Recuperacion 2026-11-15T15:21:30Z
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 15:21:30 GMT
+x-correlation-id: 8d6079ad-5eab-4740-b6ec-ed251de3e0c7
+
+## Limite efectivo tras recuperacion
+     22 200
+      3 429
+## Cierre
+caida=2026-11-15T15:20:39Z
+restauracion=2026-11-15T15:21:17Z
+fin=2026-11-15T15:21:33Z
+decision=fail-open ratificado; fail-closed solo flag P4 por ruta
+NAME                      IMAGE                                                                                          COMMAND                  SERVICE           CREATED        STATUS                    PORTS
+infra-doc-service-1       ghcr.io/alejo-basile/doc-service:s5p1-pull                                                     "/bin/sh /entrypoint…"   doc-service       19 hours ago   Up 26 minutes (healthy)   8080/tcp
+infra-ratelimitd-1        sha256:572b723c6f185486dc5ac10be45db87d0530046043cf181b734a82bc812c6659                        "/usr/local/bin/rate…"   ratelimitd        4 days ago     Up 26 minutes (healthy)   8090/tcp
+infra-redis-ratelimit-1   redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a   "/bin/sh -c 'export …"   redis-ratelimit   4 days ago     Up 16 seconds (healthy)   6379/tcp
+infra-traefik-1           traefik:v3.7                                                                                   "/entrypoint.sh trae…"   traefik           9 hours ago    Up 26 minutes (healthy)   0.0.0.0:8088->80/tcp, [::]:8088->80/tcp, 0.0.0.0:8543->443/tcp, [::]:8543->443/tcp
+
+
+# Reintento post-fix (propagacion por doc-service) — 2026-11-15T15:39:22Z
+image_doc_service=doc-service:local  commit_infra=58415bc  commit_doc_service=f67c266
+
+## 1. Baseline (Redis sano)
+$ curl -D - /api/v2/documents
+HTTP/2 200 
+x-ratelimit-remaining: 19
+
+## 2. Spoof con Redis sano (X-RateLimit-Degraded: false inyectado por el cliente)
+$ curl -H 'X-RateLimit-Degraded: false' -D - /api/v2/documents
+HTTP/2 200 
+x-ratelimit-remaining: 18
+esperado: NO aparece x-ratelimit-degraded (Traefik lo descarta)
+
+## 3. Caida: stop redis-ratelimit 2026-11-15T15:39:22Z
+ Container infra-redis-ratelimit-1 Stopping 
+ Container infra-redis-ratelimit-1 Stopped 
+ratelimitd Up 44 minutes (healthy)
+traefik Up 44 minutes (healthy)
+
+## 4. Fail-open por gateway
+$ curl -D - /api/v2/documents
+HTTP/2 200 
+content-type: application/json; charset=utf-8
+date: Sun, 15 Nov 2026 15:39:25 GMT
+x-correlation-id: 264dfb3f-1c24-46c3-adfe-501e24bdff41
+x-ratelimit-degraded: true
+
+
+## 5. Ventana de degradacion (5 iteraciones, 2s)
+intento=1 code=200 degraded=true ts=2026-11-15T15:39:25Z
+intento=2 code=200 degraded=true ts=2026-11-15T15:39:27Z
+intento=3 code=200 degraded=true ts=2026-11-15T15:39:30Z
+intento=4 code=200 degraded=true ts=2026-11-15T15:39:32Z
+intento=5 code=200 degraded=true ts=2026-11-15T15:39:34Z
+
+## 6. Spoof con Redis caido (X-RateLimit-Degraded: false inyectado)
+HTTP/2 200 
+x-ratelimit-degraded: true
+HTTP/2 200 
+x-ratelimit-degraded: true
+esperado: x-ratelimit-degraded: true (gana el valor de ratelimitd, no el del cliente)
+
+## 7. Directo a ratelimitd (comparacion)
+{"allowed":true,"degraded":true}
+  HTTP/1.1 200 OK
+  X-Ratelimit-Degraded: true
+$ /healthz (503 esperado)
+wget: server returned error: HTTP/1.1 503 Service Unavailable
+
+## 8. Restauracion 2026-11-15T15:39:37Z
+ Container infra-redis-ratelimit-1 Starting 
+ Container infra-redis-ratelimit-1 Started 
+PONG
+
+## 9. Sin reinicios de traefik/ratelimitd
+/infra-ratelimitd-1 started=2026-11-15T14:55:00.14653333Z restarts=0
+/infra-traefik-1 started=2026-11-15T14:55:00.244178993Z restarts=0
+
+## 10. Recuperacion (sin header de degradacion)
+HTTP/2 200 
+x-ratelimit-remaining: 19
+$ 25 requests
+     22 200
+      3 429
+## 11. Estado final
+doc-service Up 39 seconds (healthy)
+ratelimitd Up 44 minutes (healthy)
+redis-ratelimit Up 7 seconds (health: starting)
+traefik Up 44 minutes (healthy)
+fin=2026-11-15T15:39:45Z
