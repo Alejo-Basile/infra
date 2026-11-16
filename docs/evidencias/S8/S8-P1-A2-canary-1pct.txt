@@ -1,0 +1,90 @@
+# S8-P1-A2 — primer peso de canary 1 % (evidencia)
+
+Fecha UTC: 2026-11-16T02:34:01Z
+Commit infra: 396a327
+Entorno: stack local infra (Traefik, api.localhost:8543)
+Alcance: r-api-v2-weighted (docv2 / docv2-canary). Canary de migracion (r-inv-*) sin tocar.
+
+=== 1. PREFLIGHT ===
+UTC: 2026-11-16T02:34:01Z
+infra commit: 396a327
+infra-doc-service-1 health=healthy
+infra-doc-service-canary-1 health=healthy
+infra-traefik-1 health=healthy
+pesos actuales: 100/0
+Traefik StartedAt=2026-11-15T22:34:46.389736195Z
+--- baseline de alertas (justificacion: preexistentes, no originadas por el canary) ---
+DLQNotEmpty,MinioDiskHigh
+MinioDiskHigh warning 2026-11-15T22:40:11.665Z
+DLQNotEmpty critical 2026-11-15T18:06:13.273Z
+--- baseline de Mongo (docs no terminales > 10 min) ---
+nonterminal_docs=0
+--- baseline de Redis (stream y PEL) ---
+XLEN=2127 XPENDING_count=0
+--- baseline de 15 min (access log, por ServiceName) ---
+docv2-canary@file_n=8
+docv2-canary@file_err=0
+docv2-canary@file_p95_ms=7
+docv2@file_n=3068
+docv2@file_err=0
+docv2@file_p95_ms=14
+referencia p95: docv2=14 monolito=NA
+=== 2. CAMBIO DE PESO 100/0 -> 99/1 ===
+comando: /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/scripts/set-canary-weight.sh 99 1
+pesos actuales: 100/0
+pesos solicitados: 99/1
+aplicado: 99/1
+StartedAt before=2026-11-15T22:34:46.389736195Z after=2026-11-15T22:34:46.389736195Z
+grep errores de configuracion: <vacio>
+traefik healthcheck: OK: http://:8080/ping
+healthz api.localhost: 200
+=== 3. VALIDACION DE DISTRIBUCION (N=10000) ===
+log offset antes de medir=9349
+pesos configurados: 99/1 — N=10000 rate=9/s
+observado docv2@file: 9900
+observado docv2-canary@file: 100
+peticiones contabilizadas: 10000/10000 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 1.00%
+esperado canary: 1.00% — banda ±3σ: [70.15, 129.85] sobre 10000
+OK: distribucion dentro de la banda ±3σ
+docv2-canary@file_n=100
+docv2-canary@file_err=0
+docv2-canary@file_p95_ms=14
+docv2@file_n=9900
+docv2@file_err=0
+docv2@file_p95_ms=11
+medicion: canary=100 canary_5xx=0 exit_measure=0
+Go: distribucion dentro de la banda y cero 5xx en la muestra.
+=== 4. OBSERVACION (samples=8 interval=900s probe=4rps) ===
+| # | UTC | canary_n | canary_5xx | canary_err% | p95_canary_ms | p95_docv2_ms | nonterminal | XLEN | alertas | readyz | resultado |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-11-16T03:11:23Z | 31 | 0 | 0.00 | 9 | 10 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 2 | 2026-11-16T03:31:31Z | 34 | 0 | 0.00 | 5 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 3 | 2026-11-16T03:46:33Z | 34 | 0 | 0.00 | 6 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 4 | 2026-11-16T04:01:35Z | 33 | 0 | 0.00 | 10 | 10 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 5 | 2026-11-16T04:16:37Z | 34 | 0 | 0.00 | 5 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 6 | 2026-11-16T04:31:39Z | 34 | 0 | 0.00 | 6 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 7 | 2026-11-16T05:06:40Z | 33 | 0 | 0.00 | 4 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+| 8 | 2026-11-16T05:21:42Z | 33 | 0 | 0.00 | 4 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh | ready | OK |
+cumulative: canary_n=266 canary_5xx=0
+=== 5. ROLLBACK DRILL (99/1 -> 100/0) ===
+pesos actuales: 99/1
+pesos solicitados: 100/0
+aplicado: 100/0
+rollback_seconds=17
+StartedAt before=2026-11-15T22:34:46.389736195Z after=2026-11-15T22:34:46.389736195Z
+traefik healthcheck: OK: http://:8080/ping
+docv2@file_n=1000
+docv2@file_err=0
+docv2@file_p95_ms=14
+distribucion post-rollback: docv2=1000 canary=0
+rollback OK (<60s, 100 % al estable, sin reinicio).
+=== 6. DECISION FINAL ===
+DECISION: Go
+pesos finales: 100/0
+A3 (10 %) habilitado: Go en todas las muestras + rollback <60s + sin alertas de integridad nuevas.
+
+=== 7. DESVIACIONES RESPECTO DE docs/S8/tasks/task-5.md ===
+1. El comando literal del runbook (set-canary-weight.sh r-api-v2-weighted docv2 99 docv2-canary 1) no coincide con la interfaz real del script; se usa: set-canary-weight.sh 99 1.
+2. Las metricas por backend se toman del access log/service metrics de Traefik (RouterName=r-api-v2@file, ServiceName docv2@file|docv2-canary@file) porque http_requests_total{service="doc-service-canary"} no existe: Prometheus solo scrapea el servicio doc-service.
+3. La comparacion de p95 usa docv2 estable como referencia principal; el monolito se registra si tiene trafico en la ventana de baseline (en este laboratorio puede ser NA).
