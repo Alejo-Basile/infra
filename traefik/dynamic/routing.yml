@@ -1,0 +1,176 @@
+# Ruteo final (S8-P1-02). Una sola fuente de verdad del gateway.
+# Reemplaza los routers que vivian en labels Docker (compose).
+# Desviacion deliberada: los 11 routers del inventario conservan
+# middlewares: [rate-limit@file] porque el router `legacy` que reemplazan
+# aplicaba rate-limit@file (labels del monolito en docker-compose.yml). No se
+# agrega body-limit-1mb@file (nunca aplico alli). r-doc-healthz y s3-api sin
+# middlewares.
+http:
+  routers:
+    # --- Inventario v1 (S0-P4-01): regla explicita por ruta -----------------
+    r-inv-health:
+      rule: "Host(`api.localhost`) && Path(`/health`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-health-ready:
+      rule: "Host(`api.localhost`) && Path(`/health/ready`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-pdf-process:
+      rule: "Host(`api.localhost`) && Path(`/pdf/process`) && Method(`POST`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-inv-pdf-process-weighted
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-registros:
+      rule: "Host(`api.localhost`) && Path(`/registros`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-inv-registros-weighted
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-registros-hash:
+      rule: "Host(`api.localhost`) && PathRegexp(`^/registros/hash/[0-9a-fA-F]{64}$`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 210
+      middlewares: [rate-limit@file]
+
+    r-inv-registros-id:
+      rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-inv-registros-id-weighted
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-registros-put:
+      rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`PUT`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-registros-delete:
+      rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`DELETE`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-docs:
+      rule: "Host(`api.localhost`) && Path(`/docs`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-redoc:
+      rule: "Host(`api.localhost`) && Path(`/redoc`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    r-inv-openapi:
+      rule: "Host(`api.localhost`) && Path(`/openapi.json`) && Method(`GET`)"
+      entryPoints: [websecure]
+      tls: true
+      service: legacy-monolito
+      priority: 200
+      middlewares: [rate-limit@file]
+
+    # --- Camino nuevo (v2) ------------------------------------------------
+    r-api-v2:
+      rule: "Host(`api.localhost`) && PathPrefix(`/api/v2`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-api-v2-weighted
+      priority: 300
+      middlewares: [rate-limit@file, body-limit-1mb@file]
+
+    r-doc-healthz:
+      rule: "Host(`api.localhost`) && Path(`/healthz`)"
+      entryPoints: [websecure]
+      tls: true
+      service: docv2
+      priority: 300
+
+    # --- Host S3 (S1-P1-16) ----------------------------------------------
+    s3-api:
+      rule: "Host(`s3.localhost`)"
+      entryPoints: [websecure]
+      tls: true
+      service: minio-s3
+      priority: 100
+
+  services:
+    legacy-monolito:
+      loadBalancer:
+        servers:
+          - url: "http://monolito:8000"
+
+    docv2:
+      loadBalancer:
+        servers:
+          - url: "http://doc-service:8080"
+
+    # docv2-canary declarado con peso 0: P4 lo provisiona; intencionalmente
+    # ausente en S8 (no existe el servicio doc-service-canary).
+    docv2-canary:
+      loadBalancer:
+        servers:
+          - url: "http://doc-service-canary:8080"
+
+    minio-s3:
+      loadBalancer:
+        servers:
+          - url: "http://minio:9000"
+
+    r-inv-pdf-process-weighted:
+      weighted:
+        services:
+          - name: legacy-monolito
+            weight: 100
+          - name: docv2
+            weight: 0
+
+    r-inv-registros-weighted:
+      weighted:
+        services:
+          - name: legacy-monolito
+            weight: 100
+          - name: docv2
+            weight: 0
+
+    r-inv-registros-id-weighted:
+      weighted:
+        services:
+          - name: legacy-monolito
+            weight: 100
+          - name: docv2
+            weight: 0
+
+    r-api-v2-weighted:
+      weighted:
+        services:
+          - name: docv2
+            weight: 100
+          - name: docv2-canary
+            weight: 0

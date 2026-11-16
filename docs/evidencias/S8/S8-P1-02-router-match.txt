@@ -1,0 +1,20 @@
+# S8-P1-02 — RouterName observado por ruta (test-routing-table.sh)
+# Capturado: 2026-11-16T00:41:40Z
+
+OK   GET /health -> r-inv-health@file (HTTP 200)
+OK   GET /health/ready -> r-inv-health-ready@file (HTTP 200)
+OK   POST /pdf/process -> r-inv-pdf-process@file (HTTP 422)
+OK   GET /registros -> r-inv-registros@file (HTTP 200)
+OK   GET /registros/hash/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> r-inv-registros-hash@file (HTTP 404)
+OK   GET /registros/11111111-2222-4333-8444-555555555555 -> r-inv-registros-id@file (HTTP 404)
+OK   PUT /registros/11111111-2222-4333-8444-555555555555 -> r-inv-registros-put@file (HTTP 422)
+OK   DELETE /registros/11111111-2222-4333-8444-555555555555 -> r-inv-registros-delete@file (HTTP 404)
+OK   GET /docs -> r-inv-docs@file (HTTP 200)
+OK   GET /redoc -> r-inv-redoc@file (HTTP 200)
+OK   GET /openapi.json -> r-inv-openapi@file (HTTP 200)
+OK   GET /healthz -> r-doc-healthz@file (HTTP 200)
+OK   GET /api/v2/documents?page_size=1 -> r-api-v2@file (HTTP 200)
+OK   GET /no-existe -> 404 (sin catch-all)
+OK   GET /minio/health/live (s3.localhost) -> s3-api@file (HTTP 200)
+
+exit_code=0
