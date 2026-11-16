@@ -131,8 +131,8 @@ http:
         servers:
           - url: "http://doc-service:8080"
 
-    # docv2-canary declarado con peso 0: P4 lo provisiona; intencionalmente
-    # ausente en S8 (no existe el servicio doc-service-canary).
+    # docv2-canary: servicio canary ahora declarado en compose (weight 0 por
+    # defecto). Promocion via set-canary-weight.sh.
     docv2-canary:
       loadBalancer:
         servers:

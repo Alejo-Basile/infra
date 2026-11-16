@@ -32,3 +32,9 @@ secrets/*
 # y los fixtures e2e son prometheus.test.yml / alert.rules.test.yml: ninguno matchea.
 compose/prometheus/test*.yml
 compose/prometheus/debug*.yml
+
+traefik/dynamic/*.bak
+traefik/dynamic/*.tmp
+
+# Entorno de replay (S8-P1-01): nunca commitear
+.env.replay
