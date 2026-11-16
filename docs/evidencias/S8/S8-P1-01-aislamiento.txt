@@ -1,0 +1,55 @@
+=== check-isolation ===
+OK: aislamiento verificado
+
+=== compose ps ===
+NAME                         IMAGE                                                 COMMAND                  SERVICE             CREATED          STATUS                    PORTS
+replay-doc-service-1         doc-service:local                                     "/bin/sh /entrypoint…"   doc-service         41 seconds ago   Up 28 seconds (healthy)   0.0.0.0:9080->8080/tcp, [::]:9080->8080/tcp
+replay-extraction-worker-1   ghcr.io/alejo-basile/extraction-worker:s5p1-closure   "/entrypoint.sh /usr…"   extraction-worker   41 seconds ago   Up 28 seconds (healthy)   8081/tcp
+replay-minio-1               bitnamilegacy/minio:2025.7.23-debian-12-r5            "/opt/bitnami/script…"   minio               41 seconds ago   Up 40 seconds (healthy)   9001/tcp, 0.0.0.0:9100->9000/tcp, [::]:9100->9000/tcp
+replay-mongo-1               mongo:7.0                                             "docker-entrypoint.s…"   mongo               42 seconds ago   Up 40 seconds (healthy)   27017/tcp
+replay-monolito-1            monolito:latest                                       "uvicorn src.interfa…"   monolito            41 seconds ago   Up 29 seconds (healthy)   0.0.0.0:9081->8000/tcp, [::]:9081->8000/tcp
+replay-redis-streams-1       redis:7.2                                             "/bin/sh -c 'export …"   redis-streams       42 seconds ago   Up 39 seconds (healthy)   6379/tcp
+
+=== healthz 9080 ===
+{"status":"healthy","timestamp":"2026-11-16T01:26:45Z","service":"doc-service"}
+=== health 9081 ===
+{"status":"healthy","timestamp":"2026-11-16T01:26:45.102281+00:00Z","version":"0.1.0"}
+=== published ports ===
+0.0.0.0:9080->8080/tcp, [::]:9080->8080/tcp
+8081/tcp
+9001/tcp, 0.0.0.0:9100->9000/tcp, [::]:9100->9000/tcp
+27017/tcp
+0.0.0.0:9081->8000/tcp, [::]:9081->8000/tcp
+6379/tcp
+
+=== networks/volumes ===
+data
+edge
+internal
+replay-minio-data
+replay-mongo-data
+replay-redis-data
+
+=== smoke output ===
+1. POST /api/v2/documents
+   document_id=replay-smoke-20261116T012557Z
+2. Upload to MinIO
+   upload http=204
+3. Poll status
+   COMPLETED
+4. Download txt
+   download http=200
+   bytes=529
+5. v1 health
+   OK
+6. Cleanup
+PASS: smoke v2 + v1
+
+=== diff fp1/fp2 ===
+(empty)
+=== diff fp1/fp3 ===
+(empty)
+
+=== real before/after diff ===
+
+differences: none

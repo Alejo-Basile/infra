@@ -1,0 +1,21 @@
+REPLAY_API_BASE=http://localhost:9080
+REPLAY_MONOLITO_BASE=http://localhost:9081
+REPLAY_MINIO_ENDPOINT=http://localhost:9100
+FINGERPRINT=$(infra/scripts/replay-env.sh fingerprint)
+Initial fingerprint:
+{
+  "config_hash": "sha256:10462e4dec459962b397375f92ddb4619f256a4d399dbd2f840e138aae9c8513",
+  "dlq_len": 0,
+  "documents_by_status": {},
+  "documents_total": 0,
+  "objects": {
+    "extracted-txt": 0,
+    "raw-pdfs": 0
+  },
+  "pending": 0,
+  "project": "replay",
+  "sha256": "sha256:bad4b4d0ab0c16f4ebcd1ce51428e5f9c72259ff7779786a94208aff6e49c54f",
+  "stream_len": 0
+}
+
+Credentials are replay-only fictitious values.
