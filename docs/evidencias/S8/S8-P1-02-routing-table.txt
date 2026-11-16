@@ -1,0 +1,157 @@
+# S8-P1-02 — Tabla de ruteo final (evidencia)
+# Capturado: 2026-11-16T00:41:13Z
+
+== 1. Validacion YAML ==
+routing.yml: YAML OK
+middlewares.yml: YAML OK
+
+== 2. Compose valido ==
+docker compose config --quiet: OK
+
+== 3. Routers y servicios declarados en routing.yml ==
+router  r-inv-health               prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && Path(`/health`) && Method(`GET`)
+router  r-inv-health-ready         prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && Path(`/health/ready`) && Method(`GET`)
+router  r-inv-pdf-process          prio= 200 service=r-inv-pdf-process-weighted       rule=Host(`api.localhost`) && Path(`/pdf/process`) && Method(`POST`)
+router  r-inv-registros            prio= 200 service=r-inv-registros-weighted         rule=Host(`api.localhost`) && Path(`/registros`) && Method(`GET`)
+router  r-inv-registros-hash       prio= 210 service=legacy-monolito                  rule=Host(`api.localhost`) && PathRegexp(`^/registros/hash/[0-9a-fA-F]{64}$`) && Method(`GET`)
+router  r-inv-registros-id         prio= 200 service=r-inv-registros-id-weighted      rule=Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`GET`)
+router  r-inv-registros-put        prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`PUT`)
+router  r-inv-registros-delete     prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`DELETE`)
+router  r-inv-docs                 prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && Path(`/docs`) && Method(`GET`)
+router  r-inv-redoc                prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && Path(`/redoc`) && Method(`GET`)
+router  r-inv-openapi              prio= 200 service=legacy-monolito                  rule=Host(`api.localhost`) && Path(`/openapi.json`) && Method(`GET`)
+router  r-api-v2                   prio= 300 service=r-api-v2-weighted                rule=Host(`api.localhost`) && PathPrefix(`/api/v2`)
+router  r-doc-healthz              prio= 300 service=docv2                            rule=Host(`api.localhost`) && Path(`/healthz`)
+router  s3-api                     prio= 100 service=minio-s3                         rule=Host(`s3.localhost`)
+service legacy-monolito            loadBalancer: http://monolito:8000
+service docv2                      loadBalancer: http://doc-service:8080
+service docv2-canary               loadBalancer: http://doc-service-canary:8080
+service minio-s3                   loadBalancer: http://minio:9000
+service r-inv-pdf-process-weighted weighted: legacy-monolito=100, docv2=0
+service r-inv-registros-weighted   weighted: legacy-monolito=100, docv2=0
+service r-inv-registros-id-weighted weighted: legacy-monolito=100, docv2=0
+service r-api-v2-weighted          weighted: docv2=100, docv2-canary=0
+
+== 4. Cambios en el repo infra ==
+ M compose/docker-compose.yml
+ M traefik/dynamic/middlewares.yml
+?? docs/evidencias/S8/S8-P1-02-routing-table.txt
+?? scripts/test-routing-table.sh
+?? traefik/dynamic/routing.yml
+--- diff compose (solo labels de routers) ---
+diff --git a/compose/docker-compose.yml b/compose/docker-compose.yml
+index ff5c2e5..e56d37a 100644
+--- a/compose/docker-compose.yml
++++ b/compose/docker-compose.yml
+@@ -516,22 +516,6 @@ services:
+     mem_limit: 512m
+     cpus: 1.0
+     pids_limit: 200
+-    labels:
+-      - "traefik.enable=true"
+-      - "traefik.docker.network=infra_internal"
+-      # El catch-all publico NUNCA debe matchear /internal: ese path es
+-      # container-to-container (MinIO -> doc-service por la red `data`).
+-      # Router legacy (baja prioridad): TODO lo que no sea /api/v2/documents.
+-      # NOTA: NO lleva body-limit-1mb — el monolito recibe PDFs por el body
+-      # (contrato v1). El buffering de 1MB es SOLO para las rutas JSON del
+-      # contrato v2 (SPEC §3.1 / ADR-0011); se aplica en las labels del futuro
+-      # doc-service, no aqui.
+-      - "traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)"
+-      - "traefik.http.routers.legacy.priority=1"
+-      - "traefik.http.routers.legacy.entrypoints=websecure"
+-      - "traefik.http.routers.legacy.tls=true"
+-      - "traefik.http.routers.legacy.middlewares=rate-limit@file"
+-      - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
+ 
+   # --- doc-service (Go): contrato v2 + webhook de MinIO + reconciliador.
+   # Sin puerto publicado al host: la API entra por Traefik (router /api/v2) y
+@@ -601,24 +585,6 @@ services:
+       timeout: 3s
+       retries: 6
+       start_period: 20s
+-    labels:
+-      - "traefik.enable=true"
+-      - "traefik.docker.network=infra_internal"
+-      # Router v2 (prioridad ALTA sobre `legacy`): SOLO /api/v2/documents (SPEC §3.1, §13 F4).
+-      - "traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2/documents`)"
+-      - "traefik.http.routers.docv2.priority=100"
+-      - "traefik.http.routers.docv2.entrypoints=websecure"
+-      - "traefik.http.routers.docv2.tls=true"
+-      # Buffering de 1 MB SOLO para el JSON del contrato v2; el PDF sube directo
+-      # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
+-      - "traefik.http.routers.docv2.middlewares=rate-limit@file,body-limit-1mb@file"
+-      - "traefik.http.services.docv2.loadbalancer.server.port=8080"
+-      # Healthcheck expuesto al edge (preflight de E2E-01): solo /healthz.
+-      - "traefik.http.routers.docv2health.rule=Host(`api.localhost`) && Path(`/healthz`)"
+-      - "traefik.http.routers.docv2health.priority=110"
+-      - "traefik.http.routers.docv2health.entrypoints=websecure"
+-      - "traefik.http.routers.docv2health.tls=true"
+-      - "traefik.http.routers.docv2health.service=docv2"
+ 
+   # --- extraction-worker (SPEC 3.3): consumidor de Redis Streams ------------
+   # S5-P4-01 publica la imagen; S5-P1-01 pone los limites. El PDF hostil se
+--- diff middlewares (s3-api movido a routing.yml) ---
+diff --git a/traefik/dynamic/middlewares.yml b/traefik/dynamic/middlewares.yml
+index 72f88e7..a007b0a 100644
+--- a/traefik/dynamic/middlewares.yml
++++ b/traefik/dynamic/middlewares.yml
+@@ -1,4 +1,4 @@
+-# Middlewares y routers declarativos (file provider) — S0-P1-03 / S1-P1-16
++# Middlewares (file provider) — S0-P1-03 / S1-P1-16. Ruteo en routing.yml.
+ http:
+   middlewares:
+     # P1-05: version minima con clave estatica; el bucket es global.
+@@ -21,30 +21,3 @@ http:
+     body-limit-1mb:
+       buffering:
+         maxRequestBodyBytes: 1048576   # 1 MB
+-
+-  routers:
+-    # --- Exposicion publica de S3 (S1-P1-16, adelantada a semana 0) ---------
+-    # Host dedicado: la firma SigV4 depende del host (SPEC §5.1, ADR-0016).
+-    # Se enruta UNICAMENTE al puerto S3 (9000). La consola (9001) NUNCA.
+-    s3-api:
+-      rule: "Host(`s3.localhost`)"
+-      entrypoints: [websecure]
+-      tls: true
+-      service: minio-s3
+-      priority: 100
+-
+-    # --- Stub del contrato nuevo (Strangler, Fase 4) ------------------------
+-    # Cuando exista doc-service, su servicio se declara por labels Docker con
+-    # prioridad ALTA sobre el router legacy. Este stub documenta la regla.
+-    # (Sin service activo todavia: el monolito sigue recibiendo el 100%.)
+-
+-  services:
+-    minio-s3:
+-      loadBalancer:
+-        servers:
+-          - url: "http://minio:9000"
+-        # MinIO atiende el healthcheck S3
+-        healthCheck:
+-          path: /minio/health/live
+-          interval: 10s
+-          timeout: 3s
+
+== 5. Traefik sin reinicio (StartedAt constante) ==
+antes:  2026-11-15T22:34:46.389736195Z  (capturado antes de aplicar el cambio)
+despues: 2026-11-15T22:34:46.389736195Z
+
+== 6. Traefik sano y recarga sin errores (desde el ultimo guardado, 00:37Z) ==
+OK: http://:8080/ping
+errores de configuracion desde 2026-11-16T00:37:00Z: 0
+(los intentos intermedios de guardado entre 00:33Z y 00:36Z dejaron errores transitorios: healthCheck mal anidado y un comentario inline sobre weight; se corrigieron y la configuracion final carga sin errores)
+
+== 7. Labels de ruteo retirados de los contenedores ==
+/infra-doc-service-1
+/infra-monolito-1
+0
+0 labels traefik (esperado)
+
+== 8. Servicios recreados sanos ==
+infra-doc-service-1	running	Up 7 minutes (healthy)
+infra-monolito-1	running	Up 7 minutes (healthy)
+
+== 9. Desviacion deliberada de task-2 §5.1 ==
+Los 11 routers del inventario conservan middlewares: [rate-limit@file]: el router legacy que reemplazan ya aplicaba rate-limit@file (labels del monolito). Quitarlo habria sido una regresion de comportamiento no pedida. body-limit-1mb@file sigue solo en r-api-v2.

@@ -516,22 +516,6 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 200
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=infra_internal"
-      # El catch-all publico NUNCA debe matchear /internal: ese path es
-      # container-to-container (MinIO -> doc-service por la red `data`).
-      # Router legacy (baja prioridad): TODO lo que no sea /api/v2/documents.
-      # NOTA: NO lleva body-limit-1mb — el monolito recibe PDFs por el body
-      # (contrato v1). El buffering de 1MB es SOLO para las rutas JSON del
-      # contrato v2 (SPEC §3.1 / ADR-0011); se aplica en las labels del futuro
-      # doc-service, no aqui.
-      - "traefik.http.routers.legacy.rule=Host(`api.localhost`) && !PathPrefix(`/internal/`) && !Path(`/internal`)"
-      - "traefik.http.routers.legacy.priority=1"
-      - "traefik.http.routers.legacy.entrypoints=websecure"
-      - "traefik.http.routers.legacy.tls=true"
-      - "traefik.http.routers.legacy.middlewares=rate-limit@file"
-      - "traefik.http.services.legacy.loadbalancer.server.port=${MONOLITO_PORT:-8000}"
 
   # --- doc-service (Go): contrato v2 + webhook de MinIO + reconciliador.
   # Sin puerto publicado al host: la API entra por Traefik (router /api/v2) y
@@ -601,24 +585,6 @@ services:
       timeout: 3s
       retries: 6
       start_period: 20s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=infra_internal"
-      # Router v2 (prioridad ALTA sobre `legacy`): SOLO /api/v2/documents (SPEC §3.1, §13 F4).
-      - "traefik.http.routers.docv2.rule=Host(`api.localhost`) && PathPrefix(`/api/v2/documents`)"
-      - "traefik.http.routers.docv2.priority=100"
-      - "traefik.http.routers.docv2.entrypoints=websecure"
-      - "traefik.http.routers.docv2.tls=true"
-      # Buffering de 1 MB SOLO para el JSON del contrato v2; el PDF sube directo
-      # a MinIO por la URL prefirmada y NO pasa por el gateway (ADR-0011).
-      - "traefik.http.routers.docv2.middlewares=rate-limit@file,body-limit-1mb@file"
-      - "traefik.http.services.docv2.loadbalancer.server.port=8080"
-      # Healthcheck expuesto al edge (preflight de E2E-01): solo /healthz.
-      - "traefik.http.routers.docv2health.rule=Host(`api.localhost`) && Path(`/healthz`)"
-      - "traefik.http.routers.docv2health.priority=110"
-      - "traefik.http.routers.docv2health.entrypoints=websecure"
-      - "traefik.http.routers.docv2health.tls=true"
-      - "traefik.http.routers.docv2health.service=docv2"
 
   # --- extraction-worker (SPEC 3.3): consumidor de Redis Streams ------------
   # S5-P4-01 publica la imagen; S5-P1-01 pone los limites. El PDF hostil se
