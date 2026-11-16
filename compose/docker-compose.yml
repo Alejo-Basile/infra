@@ -586,6 +586,64 @@ services:
       retries: 6
       start_period: 20s
 
+  # --- doc-service canary: destino del weighted r-api-v2 con peso 0 por defecto.
+  # Duplicado seguro: el relay deduplica y las transiciones Mongo son
+  # condicionales (evidencia S4 horizontal-scaling).
+  doc-service-canary:
+    image: ${DOC_SERVICE_CANARY_IMAGE:-ghcr.io/alejo-basile/doc-service}:${DOC_SERVICE_CANARY_TAG:-latest}
+    profiles: ["full"]
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    secrets:
+      - mongo_app_password
+      - svc_docservice_access_key
+      - svc_docservice_secret_key
+      - redis_streams_password
+      - minio_webhook_secret
+      - internal_token
+    volumes:
+      - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["/usr/local/bin/api"]
+    environment:
+      HTTP_PORT: "8080"
+      DEBUG: "false"
+      MONGO_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/${MONGO_DATABASE:-documents}?replicaSet=rs0
+      MONGO_DATABASE: ${MONGO_DATABASE:-documents}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
+      MINIO_BUCKET_RAW: raw-pdfs
+      MINIO_BUCKET_TXT: extracted-txt
+      MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
+      REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: myprimary
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password_json
+      REDIS_STREAM_KEY: ${REDIS_STREAM_KEY:-stream:pdf-processing}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?definir en .env}
+      MAX_PDF_BYTES: "26214400"
+      RECONCILE_INTERVAL_MIN: "10"
+      DOC_UPLOAD_GRACE_MIN: "30"
+      MIN_SAFETY_AGE_MIN: "15"
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 300
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+
   # --- extraction-worker (SPEC 3.3): consumidor de Redis Streams ------------
   # S5-P4-01 publica la imagen; S5-P1-01 pone los limites. El PDF hostil se
   # contiene con tres capas distintas, no con una: timeout duro por trabajo
