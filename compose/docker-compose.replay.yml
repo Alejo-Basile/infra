@@ -1,0 +1,345 @@
+name: replay
+
+x-hardening: &hardening
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+x-hardening-data: &hardening-data
+  cap_drop: ["ALL"]
+  cap_add: ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE"]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+networks:
+  edge:
+    name: replay_edge
+  internal:
+    name: replay_internal
+    internal: true
+  data:
+    name: replay_data
+    internal: true
+
+volumes:
+  replay-mongo-data:
+  replay-minio-data:
+  replay-redis-data:
+
+secrets:
+  mongo_initdb_root_password: { file: ../secrets/replay_mongo_initdb_root_password.txt }
+  mongo_app_password: { file: ../secrets/replay_mongo_app_password.txt }
+  mongo_worker_password: { file: ../secrets/replay_mongo_worker_password.txt }
+  redis_streams_password: { file: ../secrets/replay_redis_streams_password.txt }
+  redis_streams_password_json: { file: ../secrets/replay_redis_streams_password.json }
+  minio_root_password: { file: ../secrets/replay_minio_root_password.txt }
+  minio_webhook_secret: { file: ../secrets/replay_minio_webhook_secret.txt }
+  internal_token: { file: ../secrets/replay_internal_token.txt }
+  svc_docservice_access_key: { file: ../secrets/replay_svc_docservice_access_key.txt }
+  svc_docservice_secret_key: { file: ../secrets/replay_svc_docservice_secret_key.txt }
+  svc_worker_access_key: { file: ../secrets/replay_svc_worker_access_key.txt }
+  svc_worker_secret_key: { file: ../secrets/replay_svc_worker_secret_key.txt }
+
+services:
+  mongo:
+    image: mongo:7.0
+    <<: *hardening-data
+    command: ["--replSet", "rs0", "--bind_ip", "0.0.0.0", "--keyFile", "/etc/mongo/keyfile"]
+    secrets: [mongo_initdb_root_password]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${REPLAY_MONGO_INITDB_ROOT_USERNAME:?}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_initdb_root_password
+    volumes:
+      - replay-mongo-data:/data/db
+      - ../secrets/replay_mongo_keyfile:/etc/mongo/keyfile:ro
+    networks: [data]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u $${MONGO_INITDB_ROOT_USERNAME} -p $$(cat /run/secrets/mongo_initdb_root_password) --authenticationDatabase admin --eval 'db.hello().isWritablePrimary'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  mongo-init:
+    image: mongo:7.0
+    <<: *hardening-data
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${REPLAY_MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${REPLAY_MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_APP_USER: ${REPLAY_MONGO_APP_USER}
+      MONGO_APP_PASSWORD: ${REPLAY_MONGO_APP_PASSWORD}
+      MONGO_WORKER_USER: ${REPLAY_MONGO_WORKER_USER}
+      MONGO_WORKER_PASSWORD: ${REPLAY_MONGO_WORKER_PASSWORD}
+      MONGO_DATABASE: ${REPLAY_MONGO_DATABASE:-documents}
+      MONOLITO_MONGO_USER: ${REPLAY_MONOLITO_MONGO_USER}
+      MONOLITO_MONGO_PASSWORD: ${REPLAY_MONOLITO_MONGO_PASSWORD}
+      MONOLITO_MONGO_DB: ${REPLAY_MONOLITO_MONGO_DB:-pdf-extractext}
+    volumes:
+      - ./mongo/init.js:/init.js:ro
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - >
+        until mongosh --host mongo:27017 --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1; do sleep 2; done;
+        exec mongosh --host mongo:27017 --quiet /init.js
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    restart: "no"
+
+  redis-streams:
+    image: redis:7.2
+    <<: *hardening-data
+    secrets: [redis_streams_password, redis_streams_password_json]
+    entrypoint: ["/bin/sh", "-c", "export REDIS_STREAMS_PASSWORD=$$(cat /run/secrets/redis_streams_password); exec redis-server /usr/local/etc/redis/redis.conf --requirepass $$REDIS_STREAMS_PASSWORD --masterauth $$REDIS_STREAMS_PASSWORD --replica-announce-ip redis-streams"]
+    volumes:
+      - ./redis/streams.conf:/usr/local/etc/redis/redis.conf:ro
+      - replay-redis-data:/data
+    networks: [data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_streams_password)\" --no-auth-warning ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  minio:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    <<: *hardening-data
+    secrets: [minio_root_password]
+    environment:
+      HOME: /tmp
+      MINIO_CLIENT_CONF_DIR: /tmp/.mc
+      MINIO_ROOT_USER: ${REPLAY_MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      MINIO_REGION: ${REPLAY_MINIO_REGION:-us-east-1}
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+      MINIO_NOTIFY_WEBHOOK_ENABLE_DOCSERVICE: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_DOCSERVICE: ${REPLAY_DOC_SERVICE_WEBHOOK_URL}
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DOCSERVICE: ${REPLAY_MINIO_WEBHOOK_SECRET:?}
+    volumes:
+      - replay-minio-data:/bitnami/minio/data
+    networks: [edge, data]
+    ports:
+      - "9100:9000"
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  minio-init:
+    image: bitnamilegacy/minio-client:2025.7.21
+    depends_on:
+      minio:
+        condition: service_healthy
+    secrets:
+      - minio_root_password
+      - svc_docservice_access_key
+      - svc_docservice_secret_key
+      - svc_worker_access_key
+      - svc_worker_secret_key
+    environment:
+      MINIO_ROOT_USER: ${REPLAY_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      SVC_DOCSERVICE_ACCESS_KEY_FILE: /run/secrets/svc_docservice_access_key
+      SVC_DOCSERVICE_SECRET_KEY_FILE: /run/secrets/svc_docservice_secret_key
+      SVC_WORKER_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
+      SVC_WORKER_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
+      RAW_PDFS_EXPIRE_DAYS: 7
+      EXTRACTED_TXT_EXPIRE_DAYS: 30
+    volumes:
+      - ./minio/init-buckets.sh:/init-buckets.sh:ro
+      - ./minio/lifecycle-buckets.sh:/lifecycle-buckets.sh:ro
+      - ./minio/init-all.sh:/init-all.sh:ro
+    entrypoint: ["/bin/sh", "/init-all.sh"]
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    restart: "no"
+
+  minio-notify-init:
+    image: bitnamilegacy/minio-client:2025.7.21
+    depends_on:
+      minio:
+        condition: service_healthy
+      doc-service:
+        condition: service_started
+    secrets:
+      - minio_root_password
+    environment:
+      MINIO_ROOT_USER: ${REPLAY_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${REPLAY_MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      MINIO_WEBHOOK_SECRET: ${REPLAY_MINIO_WEBHOOK_SECRET:?}
+      DOC_SERVICE_WEBHOOK_URL: ${REPLAY_DOC_SERVICE_WEBHOOK_URL}
+    volumes:
+      - ./minio/init-notifications.sh:/init-notifications.sh:ro
+    entrypoint: ["/bin/sh", "/init-notifications.sh"]
+    networks: [data]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    restart: "no"
+
+  doc-service:
+    image: ${REPLAY_DOC_SERVICE_IMAGE}:${REPLAY_DOC_SERVICE_TAG}
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    secrets:
+      - mongo_app_password
+      - svc_docservice_access_key
+      - svc_docservice_secret_key
+      - redis_streams_password
+      - minio_webhook_secret
+      - internal_token
+    volumes:
+      - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["/usr/local/bin/api"]
+    environment:
+      HTTP_PORT: "8080"
+      DEBUG: "false"
+      MONGO_URI: mongodb://${REPLAY_MONGO_APP_USER}:${REPLAY_MONGO_APP_PASSWORD}@mongo:27017/${REPLAY_MONGO_DATABASE:-documents}?replicaSet=rs0
+      MONGO_DATABASE: ${REPLAY_MONGO_DATABASE:-documents}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${REPLAY_MINIO_PUBLIC_ENDPOINT}
+      MINIO_BUCKET_RAW: raw-pdfs
+      MINIO_BUCKET_TXT: extracted-txt
+      MINIO_WEBHOOK_SECRET: ${REPLAY_MINIO_WEBHOOK_SECRET:?}
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
+      REDIS_ADDR: redis-streams:6379
+      REDIS_STREAM_KEY: ${REPLAY_REDIS_STREAM_KEY:-stream:pdf-processing}
+      INTERNAL_TOKEN: ${REPLAY_DOC_SERVICE_INTERNAL_TOKEN:?}
+      MAX_PDF_BYTES: "26214400"
+      RECONCILE_INTERVAL_MIN: "10"
+      DOC_UPLOAD_GRACE_MIN: "30"
+      MIN_SAFETY_AGE_MIN: "15"
+    networks: [edge, internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "9080:8080"
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 300
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+
+  extraction-worker:
+    image: ${REPLAY_EXTRACTION_WORKER_IMAGE}:${REPLAY_EXTRACTION_WORKER_TAG}
+    <<: *hardening
+    read_only: true
+    secrets:
+      - redis_streams_password
+      - mongo_worker_password
+      - svc_worker_access_key
+      - svc_worker_secret_key
+    environment:
+      HTTP_PORT: "8081"
+      REDIS_HOST: redis-streams
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
+      REDIS_STREAM: ${REPLAY_REDIS_STREAM_KEY:-stream:pdf-processing}
+      REDIS_GROUP: ${REPLAY_REDIS_GROUP:-extraction-workers}
+      REDIS_DLQ_STREAM: ${REPLAY_REDIS_DLQ_KEY:-stream:pdf-processing-dlq}
+      MONGO_HOST: mongo
+      MONGO_WORKER_USER: ${REPLAY_MONGO_WORKER_USER}
+      MONGO_WORKER_PASSWORD_FILE: /run/secrets/mongo_worker_password
+      MONGO_DB: ${REPLAY_MONGO_DATABASE:-documents}
+      MONGO_TIMEOUT_MS: "3000"
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_RAW: raw-pdfs
+      S3_BUCKET_TXT: extracted-txt
+      S3_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
+      S3_OP_TIMEOUT_MS: "60000"
+      WORKER_JOB_TIMEOUT_SECS: "300"
+      WORKER_MAX_CONCURRENCY: "4"
+      WORKER_MIN_IDLE_MS: "600001"
+      WORKER_DEAD_CONSUMER_MS: "600001"
+      WORKER_MAX_ATTEMPTS: "5"
+      WORKER_MAX_PAGES: "2000"
+      WORKER_MAX_PDF_BYTES: "31457280"
+      WORKER_MAX_OUTPUT_BYTES: "52428800"
+      WORKER_BLOCK_MS: "5000"
+      WORKER_XAUTOCLAIM_INTERVAL_SECS: "30"
+      WORKER_METRICS_INTERVAL_SECS: "15"
+      WORKER_SHUTDOWN_DRAIN_SECS: "4"
+      RUST_LOG: info
+      LOG_FORMAT: json
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 200
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+  monolito:
+    image: ${REPLAY_MONOLITO_IMAGE:-monolito:latest}
+    build:
+      context: ${REPLAY_MONOLITO_BUILD_CONTEXT:-../../../pdf-extractext}
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    environment:
+      MONGO_USER: ${REPLAY_MONOLITO_MONGO_USER}
+      MONGO_PASS: ${REPLAY_MONOLITO_MONGO_PASSWORD}
+      MONGO_HOST: mongo
+      MONGO_PORT: "27017"
+      MONGO_DB: ${REPLAY_MONOLITO_MONGO_DB:-pdf-extractext}
+      max_size: "26214400"
+      min_size: "1"
+    networks: [edge, internal, data]
+    ports:
+      - "9081:8000"
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

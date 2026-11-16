@@ -1,0 +1,74 @@
+=== fp1 ===
+{
+  "project": "replay",
+  "images": {
+    "doc-service": "doc-service:local",
+    "extraction-worker": "ghcr.io/alejo-basile/extraction-worker:s5p1-closure",
+    "minio": "bitnamilegacy/minio:2025.7.23-debian-12-r5",
+    "minio-init": "bitnamilegacy/minio-client:2025.7.21",
+    "minio-notify-init": "bitnamilegacy/minio-client:2025.7.21",
+    "mongo": "mongo:7.0",
+    "mongo-init": "mongo:7.0",
+    "monolito": "monolito:latest",
+    "redis-streams": "redis:7.2"
+  },
+  "config_hash": "sha256:219d25e75561a98bea07ab84945a7c2f331ae39acd8dc322676356b63a12ade3",
+  "volumes": [
+    "replay-minio-data",
+    "replay-mongo-data",
+    "replay-redis-data"
+  ],
+  "networks": [
+    "data",
+    "edge",
+    "internal"
+  ]
+}
+=== fp2 ===
+{
+  "project": "replay",
+  "images": {
+    "doc-service": "doc-service:local",
+    "extraction-worker": "ghcr.io/alejo-basile/extraction-worker:s5p1-closure",
+    "minio": "bitnamilegacy/minio:2025.7.23-debian-12-r5",
+    "minio-init": "bitnamilegacy/minio-client:2025.7.21",
+    "minio-notify-init": "bitnamilegacy/minio-client:2025.7.21",
+    "mongo": "mongo:7.0",
+    "mongo-init": "mongo:7.0",
+    "monolito": "monolito:latest",
+    "redis-streams": "redis:7.2"
+  },
+  "config_hash": "sha256:219d25e75561a98bea07ab84945a7c2f331ae39acd8dc322676356b63a12ade3",
+  "volumes": [
+    "replay-minio-data",
+    "replay-mongo-data",
+    "replay-redis-data"
+  ],
+  "networks": [
+    "data",
+    "edge",
+    "internal"
+  ]
+}
+=== diff ===
+=== fpr1 ===
+{
+  "project": "infra",
+  "documents": [{"_id":"COMPLETED","n":1425}],
+  "minio": { "raw-pdfs": 
+300, "extracted-txt": 
+3138 },
+  "streams": { "stream:pdf-processing": 2127, "stream:pdf-processing-dlq": 9 },
+  "xpending": "0    "
+}
+=== fpr2 ===
+{
+  "project": "infra",
+  "documents": [{"_id":"COMPLETED","n":1425}],
+  "minio": { "raw-pdfs": 
+300, "extracted-txt": 
+3138 },
+  "streams": { "stream:pdf-processing": 2127, "stream:pdf-processing-dlq": 9 },
+  "xpending": "0    "
+}
+=== diff real ===
