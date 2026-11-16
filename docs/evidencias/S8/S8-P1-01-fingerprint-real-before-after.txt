@@ -1,0 +1,36 @@
+=== before ===
+{
+  "config_hash": "sha256:3e7f5ca40628bc31908a4abf557a66d34750ead8b8abe21b48b45e6e1a067a25",
+  "dlq_len": 9,
+  "documents_by_status": {
+    "COMPLETED": 1425
+  },
+  "documents_total": 1425,
+  "objects": {
+    "extracted-txt": 3138,
+    "raw-pdfs": 300
+  },
+  "pending": 0,
+  "project": "infra",
+  "sha256": "sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9",
+  "stream_len": 2127
+}
+=== after ===
+{
+  "config_hash": "sha256:3e7f5ca40628bc31908a4abf557a66d34750ead8b8abe21b48b45e6e1a067a25",
+  "dlq_len": 9,
+  "documents_by_status": {
+    "COMPLETED": 1425
+  },
+  "documents_total": 1425,
+  "objects": {
+    "extracted-txt": 3138,
+    "raw-pdfs": 300
+  },
+  "pending": 0,
+  "project": "infra",
+  "sha256": "sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9",
+  "stream_len": 2127
+}
+=== diff ===
+differences: none
