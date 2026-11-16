@@ -328,11 +328,15 @@ services:
     <<: *hardening
     user: "10001:10001"
     read_only: true
-    secrets: [redis_ratelimit_password]
+    secrets: [redis_ratelimit_password, minio_webhook_secret]
     environment:
       LISTEN_ADDR: ":8090"
       REDIS_ADDR: redis-ratelimit:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_ratelimit_password
+      # S7-P4-05: el webhook interno queda exento solo si presenta el token
+      # que MinIO inyecta como `Authorization: Bearer <secreto>`.
+      RL_WEBHOOK_TOKEN_FILE: /run/secrets/minio_webhook_secret
+      RL_WEBHOOK_PATH: ${DOC_SERVICE_WEBHOOK_PATH:-/internal/storage/events}
     networks: [internal, data]
     depends_on:
       redis-ratelimit:
