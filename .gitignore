@@ -1,6 +1,8 @@
 # Secretos y entornos locales — NUNCA commitear (repo publico)
 *.env
 !.env.example
+!.env.replay.example
+.env.replay
 *.pem
 *.key
 *.crt
