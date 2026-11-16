@@ -1,0 +1,534 @@
+#!/usr/bin/env bash
+# canary-a2.sh — runbook S8-P1-A2 (primer escalon de canary: 1 %).
+# Automatiza preflight, cambio de peso 99/1, validacion de distribucion,
+# ventana de observacion, rollback drill y generacion de evidencia.
+#
+# Uso:
+#   canary-a2.sh preflight
+#   canary-a2.sh apply
+#   canary-a2.sh measure [N]
+#   canary-a2.sh observe
+#   canary-a2.sh rollback
+#   canary-a2.sh run [--fast]
+#
+# Variables: MEASURE_N, MEASURE_RPS, OBSERVE_SAMPLES, OBSERVE_INTERVAL_SECONDS,
+# PROBE_RPS, EVIDENCE_PATH, TRAEFIK_HTTPS_PORT.
+#
+# Codigos de salida: 0 ok | 2 uso | 10 preflight | 20 apply | 30 distribucion
+# | 31 5xx en canary | 32 umbral de observacion | 40 rollback.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INFRA="$REPO_ROOT/infra"
+SET_WEIGHT="$INFRA/scripts/set-canary-weight.sh"
+EVIDENCE_PATH="${EVIDENCE_PATH:-$INFRA/docs/evidencias/S8/S8-P1-A2-canary-1pct.txt}"
+COMPOSE=(docker compose -p infra --env-file "$INFRA/.env" -f "$INFRA/compose/docker-compose.yml")
+
+TRAEFIK_HTTPS_PORT="${TRAEFIK_HTTPS_PORT:-8543}"
+if [[ -f "$INFRA/.env" ]]; then
+  val=$(grep -E '^TRAEFIK_HTTPS_PORT=' "$INFRA/.env" | tail -1 | cut -d= -f2-)
+  [[ -n "$val" ]] && TRAEFIK_HTTPS_PORT="$val"
+fi
+
+MEASURE_N="${MEASURE_N:-10000}"
+MEASURE_RPS="${MEASURE_RPS:-9}"
+OBSERVE_SAMPLES="${OBSERVE_SAMPLES:-8}"
+OBSERVE_INTERVAL_SECONDS="${OBSERVE_INTERVAL_SECONDS:-900}"
+PROBE_RPS="${PROBE_RPS:-4}"
+
+FAIL_CODE=0
+CURRENT_PHASE=""
+PROBE_PID=""
+TRAEFIK_CID=""
+
+ev(){ printf '%s\n' "$*" >>"$EVIDENCE_PATH"; }
+say(){ printf '%s\n' "$*" | tee -a "$EVIDENCE_PATH"; }
+
+traefik_cid(){
+  if [[ -z "$TRAEFIK_CID" ]]; then
+    TRAEFIK_CID=$(docker ps --filter name=infra-traefik-1 --format '{{.ID}}' | head -1)
+  fi
+  printf '%s\n' "$TRAEFIK_CID"
+}
+started_at(){ docker inspect -f '{{.State.StartedAt}}' "$1" 2>/dev/null || true; }
+health_of(){ docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null || echo missing; }
+
+current_weights(){
+  python3 - "$INFRA/traefik/dynamic/routing.yml" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+children = d["http"]["services"]["r-api-v2-weighted"]["weighted"]["services"]
+w = {c["name"]: c["weight"] for c in children}
+print(w["docv2"], w["docv2-canary"])
+PY
+}
+
+alerts_json(){
+  docker exec infra-alertmanager-1 wget -qO- \
+    'http://localhost:9093/api/v2/alerts?active=true&silenced=false&inhibited=false&unprocessed=false' 2>/dev/null
+}
+
+alerts_names(){
+  alerts_json | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+names = sorted({a["labels"].get("alertname", "?") for a in data
+                if a.get("status", {}).get("state", "active") == "active"})
+print(",".join(names))
+'
+}
+
+new_integrity_alerts(){ # <baseline_names> <current_names>
+  python3 - "$1" "$2" <<'PY'
+import sys
+baseline = set(filter(None, sys.argv[1].split(",")))
+current = set(filter(None, sys.argv[2].split(",")))
+integrity = {"DocsStuck", "DocsAccumulating", "DLQNotEmpty",
+             "QueueDepthHigh", "PELBacklog", "ExtractionErrors"}
+print(",".join(sorted((current - baseline) & integrity)))
+PY
+}
+
+xlen(){
+  docker exec infra-redis-streams-1 sh -c \
+    'redis-cli -a "$(cat /run/secrets/redis_streams_password)" --no-auth-warning --json XLEN stream:pdf-processing' 2>/dev/null
+}
+
+xpending_count(){
+  docker exec infra-redis-streams-1 sh -c \
+    'redis-cli -a "$(cat /run/secrets/redis_streams_password)" --no-auth-warning --json XPENDING stream:pdf-processing extraction-workers' 2>/dev/null \
+  | python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin)
+    print(v[0] if isinstance(v, list) and v else 0)
+except Exception:
+    print("NA")
+'
+}
+
+readyz(){
+  docker exec infra-doc-service-1 wget -qO- http://localhost:8080/readyz 2>/dev/null || true
+}
+
+nonterminal_docs(){
+  docker exec infra-mongo-1 sh -c \
+    'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /run/secrets/mongo_initdb_root_password)" --authenticationDatabase admin documents --eval "db.documents.countDocuments({status:{\$nin:[\"COMPLETED\",\"FAILED\",\"REJECTED\",\"UPLOAD_EXPIRED\"]},updated_at:{\$lt:new Date(Date.now()-600000)}})"' 2>/dev/null \
+  | tail -1
+}
+
+# Parsea un fragmento del access log de Traefik y emite K=V para el router v2.
+log_stats(){ # <fragment>
+  python3 - "$1" <<'PY'
+import json, sys
+
+def p95(values):
+    if not values:
+        return None
+    values = sorted(values)
+    idx = max(0, min(len(values) - 1, int(round(0.95 * (len(values) - 1)))))
+    return values[idx]
+
+rows = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if e.get("RouterName") != "r-api-v2@file":
+        continue
+    name = e.get("ServiceName") or "unknown"
+    r = rows.setdefault(name, {"n": 0, "err": 0, "dur": []})
+    r["n"] += 1
+    try:
+        if int(e.get("DownstreamStatus", 0)) >= 500:
+            r["err"] += 1
+    except Exception:
+        pass
+    try:
+        r["dur"].append(int(e.get("Duration", 0)))
+    except Exception:
+        pass
+
+for name, r in sorted(rows.items()):
+    p = p95(r["dur"])
+    print(f'{name}_n={r["n"]}')
+    print(f'{name}_err={r["err"]}')
+    print(f'{name}_p95_ms={"NA" if p is None else round(p / 1_000_000)}')
+PY
+}
+
+# Parsea el access log completo desde un corte temporal (ventana de baseline).
+log_stats_since(){ # <full-log> <cutoff ISO>
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+
+def p95(values):
+    if not values:
+        return None
+    values = sorted(values)
+    idx = max(0, min(len(values) - 1, int(round(0.95 * (len(values) - 1)))))
+    return values[idx]
+
+rows = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if e.get("RouterName") != "r-api-v2@file":
+        continue
+    if (e.get("StartUTC") or "") < sys.argv[2]:
+        continue
+    name = e.get("ServiceName") or "unknown"
+    r = rows.setdefault(name, {"n": 0, "err": 0, "dur": []})
+    r["n"] += 1
+    try:
+        if int(e.get("DownstreamStatus", 0)) >= 500:
+            r["err"] += 1
+    except Exception:
+        pass
+    try:
+        r["dur"].append(int(e.get("Duration", 0)))
+    except Exception:
+        pass
+
+for name, r in sorted(rows.items()):
+    p = p95(r["dur"])
+    print(f'{name}_n={r["n"]}')
+    print(f'{name}_err={r["err"]}')
+    print(f'{name}_p95_ms={"NA" if p is None else round(p / 1_000_000)}')
+PY
+}
+
+kv(){ # <file> <key> -> valor o vacio
+  sed -n "s/^$2=//p" "$1" | tail -1
+}
+
+preflight(){
+  CURRENT_PHASE=preflight
+  say "=== 1. PREFLIGHT ==="
+  say "UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  say "infra commit: $(git -C "$INFRA" rev-parse --short HEAD)"
+
+  for c in infra-doc-service-1 infra-doc-service-canary-1 infra-traefik-1; do
+    st=$(health_of "$c")
+    say "$c health=$st"
+    [[ "$st" == "healthy" ]] || { say "FAIL preflight: $c no healthy ($st)"; exit 10; }
+  done
+
+  "$SET_WEIGHT" --check 99 1 >/dev/null
+  "$SET_WEIGHT" --check 100 0 >/dev/null
+  read -r cw1 cw2 <<<"$(current_weights)"
+  say "pesos actuales: $cw1/$cw2"
+  [[ "$cw1/$cw2" == "100/0" ]] || { say "FAIL preflight: pesos iniciales $cw1/$cw2 != 100/0"; exit 10; }
+
+  TRAEFIK_CID=$(traefik_cid)
+  [[ -n "$TRAEFIK_CID" ]] || { say "FAIL preflight: traefik no corriendo"; exit 10; }
+  sa=$(started_at "$TRAEFIK_CID")
+  say "Traefik StartedAt=$sa"
+  printf '%s' "$sa" >/tmp/a2-traefik-startedat.before
+
+  say "--- baseline de alertas (justificacion: preexistentes, no originadas por el canary) ---"
+  alerts_names | tee -a "$EVIDENCE_PATH" >/tmp/a2-baseline-alerts.txt
+  alerts_json | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+for a in data:
+    print(a["labels"].get("alertname"), a["labels"].get("severity"), a.get("startsAt"))
+' | tee -a "$EVIDENCE_PATH"
+
+  say "--- baseline de Mongo (docs no terminales > 10 min) ---"
+  nt=$(nonterminal_docs)
+  nt="${nt:-NA}"
+  say "nonterminal_docs=$nt"
+  printf '%s' "$nt" >/tmp/a2-baseline-nonterminal.txt
+
+  say "--- baseline de Redis (stream y PEL) ---"
+  xl=$(xlen); xp=$(xpending_count)
+  say "XLEN=$xl XPENDING_count=$xp"
+  printf '%s' "$xl" >/tmp/a2-baseline-xlen.txt
+
+  say "--- baseline de 15 min (access log, por ServiceName) ---"
+  cutoff=$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%S.%NZ)
+  docker logs "$TRAEFIK_CID" >/tmp/a2-baseline.log 2>&1 || true
+  log_stats_since /tmp/a2-baseline.log "$cutoff" | tee -a "$EVIDENCE_PATH" >/tmp/a2-baseline-stats.txt
+  # Referencias: docv2 estable y monolito. Si no hay trafico, se registra NA.
+  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@file_p95_ms)
+  base_mono=$(kv /tmp/a2-baseline-stats.txt legacy-monolito@file_p95_ms)
+  say "referencia p95: docv2=${base_stable:-NA} monolito=${base_mono:-NA}"
+}
+
+apply(){
+  CURRENT_PHASE=apply
+  say "=== 2. CAMBIO DE PESO 100/0 -> 99/1 ==="
+  say "comando: $SET_WEIGHT 99 1"
+  cid=$(traefik_cid)
+  before=$(started_at "$cid")
+  echo "$before" >/tmp/a2-traefik-startedat.apply.before
+  "$SET_WEIGHT" 99 1 2>&1 | tee -a "$EVIDENCE_PATH" || { say "FAIL apply: set-canary-weight.sh fallo"; exit 20; }
+  after=$(started_at "$cid")
+  say "StartedAt before=$before after=$after"
+  [[ "$before" == "$after" ]] || { say "FAIL apply: Traefik se reinicio"; exit 20; }
+
+  errs=$("${COMPOSE[@]}" logs --since 2m traefik 2>/dev/null | grep -iE 'error|invalid|cannot|failed' || true)
+  say "grep errores de configuracion: ${errs:-<vacio>}"
+  [[ -z "$errs" ]] || { say "FAIL apply: errores de configuracion en Traefik"; exit 20; }
+
+  hc=$("${COMPOSE[@]}" exec -T traefik traefik healthcheck --ping 2>&1 || true)
+  say "traefik healthcheck: ${hc:-<sin salida>}"
+
+  for host in api.localhost; do
+    code=$(curl -sk --resolve "${host}:${TRAEFIK_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
+      "https://${host}:${TRAEFIK_HTTPS_PORT}/healthz")
+    say "healthz ${host}: $code"
+    [[ "$code" == "200" ]] || { say "FAIL apply: /healthz devolvio $code"; exit 20; }
+  done
+}
+
+measure(){
+  CURRENT_PHASE=measure
+  say "=== 3. VALIDACION DE DISTRIBUCION (N=$MEASURE_N) ==="
+  cid=$(traefik_cid)
+  before=$(docker logs "$cid" 2>&1 | wc -l)
+  say "log offset antes de medir=$before"
+
+  set +e
+  MEASURE_RPS="$MEASURE_RPS" "$SET_WEIGHT" --measure "$MEASURE_N" 2>&1 | tee -a "$EVIDENCE_PATH"
+  measure_rc=${PIPESTATUS[0]}
+  set -e
+
+  sleep 2
+  docker logs "$cid" 2>&1 | tail -n +$((before + 1)) >/tmp/a2-measure.log
+  log_stats /tmp/a2-measure.log | tee -a "$EVIDENCE_PATH" >/tmp/a2-measure-stats.txt
+  canary=$(kv /tmp/a2-measure-stats.txt docv2-canary@file_n); canary="${canary:-0}"
+  c5xx=$(kv /tmp/a2-measure-stats.txt docv2-canary@file_err); c5xx="${c5xx:-0}"
+  say "medicion: canary=$canary canary_5xx=$c5xx exit_measure=$measure_rc"
+
+  if (( c5xx > 0 )); then
+    say "No-Go por errores: $c5xx respuestas 5xx en el canary. Rollback inmediato."
+    "$SET_WEIGHT" 100 0 >/dev/null 2>&1 || true
+    exit 31
+  fi
+  if (( measure_rc != 0 )); then
+    say "No-Go por distribucion: --measure salio $measure_rc."
+    "$SET_WEIGHT" 100 0 >/dev/null 2>&1 || true
+    exit 30
+  fi
+  say "Go: distribucion dentro de la banda y cero 5xx en la muestra."
+}
+
+probe_loop(){
+  while true; do
+    for ((i = 0; i < PROBE_RPS; i++)); do
+      curl -sk --resolve "api.localhost:${TRAEFIK_HTTPS_PORT}:127.0.0.1" -o /dev/null \
+        "https://api.localhost:${TRAEFIK_HTTPS_PORT}/api/v2/documents?page_size=1" || true
+    done
+    sleep 1
+  done
+}
+
+observe(){
+  CURRENT_PHASE=observe
+  say "=== 4. OBSERVACION (samples=$OBSERVE_SAMPLES interval=${OBSERVE_INTERVAL_SECONDS}s probe=${PROBE_RPS}rps) ==="
+
+  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@file_p95_ms)
+  base_mono=$(kv /tmp/a2-baseline-stats.txt legacy-monolito@file_p95_ms)
+  base_nt=$(cat /tmp/a2-baseline-nonterminal.txt 2>/dev/null || echo NA)
+  base_alerts=$(cat /tmp/a2-baseline-alerts.txt 2>/dev/null || echo "")
+  base_xlen=$(cat /tmp/a2-baseline-xlen.txt 2>/dev/null || echo NA)
+
+  say "| # | UTC | canary_n | canary_5xx | canary_err% | p95_canary_ms | p95_docv2_ms | nonterminal | XLEN | alertas | readyz | resultado |"
+  say "|---|---|---|---|---|---|---|---|---|---|---|---|"
+
+  probe_loop &
+  PROBE_PID=$!
+
+  cid=$(traefik_cid)
+  offset=$(docker logs "$cid" 2>&1 | wc -l)
+  cum_n=0; cum_err=0; failed=0; new_integrity_seen=""
+
+  for ((s = 1; s <= OBSERVE_SAMPLES; s++)); do
+    sleep "$OBSERVE_INTERVAL_SECONDS"
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    docker logs "$cid" 2>&1 | tail -n +$((offset + 1)) >/tmp/a2-sample.log
+    offset=$(docker logs "$cid" 2>&1 | wc -l)
+    log_stats /tmp/a2-sample.log >/tmp/a2-sample-stats.txt
+
+    canary=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_n); canary="${canary:-0}"
+    c5xx=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_err); c5xx="${c5xx:-0}"
+    p95c=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_p95_ms); p95c="${p95c:-NA}"
+    p95s=$(kv /tmp/a2-sample-stats.txt docv2@file_p95_ms); p95s="${p95s:-NA}"
+    cum_n=$((cum_n + canary)); cum_err=$((cum_err + c5xx))
+
+    nt=$(nonterminal_docs); nt="${nt:-NA}"
+    xl=$(xlen); xp=$(xpending_count)
+    cur_alerts=$(alerts_names)
+    new_int=$(new_integrity_alerts "$base_alerts" "$cur_alerts")
+    if [[ -n "$new_int" ]]; then new_integrity_seen="${new_integrity_seen:+$new_integrity_seen,}$new_int"; fi
+    rz=$(readyz)
+
+    verdict="OK"; reason=""
+    if (( c5xx > 0 )); then verdict="FAIL"; reason="5xx_canary=$c5xx"; fi
+    if [[ "$verdict" == "OK" && "$rz" != *'"ready"'* ]]; then verdict="FAIL"; reason="readyz"; fi
+    if [[ "$verdict" == "OK" && "$nt" != "NA" && "$base_nt" != "NA" ]] && (( nt > base_nt )); then
+      verdict="FAIL"; reason="docs_no_terminales=$nt>baseline=$base_nt"
+    fi
+    if [[ "$verdict" == "OK" && -n "$new_int" ]]; then verdict="FAIL"; reason="alertas_nuevas=$new_int"; fi
+    if [[ "$verdict" == "OK" && "$p95c" != "NA" && "$p95s" != "NA" ]] && (( p95c > 2 * p95s )); then
+      verdict="FAIL"; reason="p95_canary=${p95c}ms>2x_docv2=${p95s}ms"
+    fi
+    if [[ "$verdict" == "OK" && "$p95c" != "NA" && "$base_mono" != "" && "$base_mono" != "NA" ]] && (( p95c > 2 * base_mono )); then
+      verdict="FAIL"; reason="p95_canary=${p95c}ms>2x_monolito=${base_mono}ms"
+    fi
+
+    err_pct="NA"; (( cum_n > 0 )) && err_pct=$(awk -v e="$cum_err" -v n="$cum_n" 'BEGIN{printf "%.2f", 100*e/n}')
+    rz_state="FAIL"; [[ "$rz" == *'"ready"'* ]] && rz_state="ready"
+    say "| $s | $ts | $canary | $c5xx | $err_pct | $p95c | $p95s | $nt | $xl/$xp | ${cur_alerts:-none} | $rz_state | $verdict${reason:+ ($reason)} |"
+
+    if [[ "$verdict" == "FAIL" ]]; then
+      failed=1
+      say "Umbral superado en la muestra $s ($reason). Rollback inmediato."
+      break
+    fi
+  done
+
+  kill "$PROBE_PID" 2>/dev/null || true
+  wait "$PROBE_PID" 2>/dev/null || true
+  PROBE_PID=""
+
+  say "cumulative: canary_n=$cum_n canary_5xx=$cum_err"
+  [[ "$failed" == "0" ]] || FAIL_CODE=1
+  return 0
+}
+
+rollback(){
+  CURRENT_PHASE=rollback
+  say "=== 5. ROLLBACK DRILL (99/1 -> 100/0) ==="
+  T0=$(date +%s)
+  "$SET_WEIGHT" 100 0 2>&1 | tee -a "$EVIDENCE_PATH" || { say "FAIL rollback: set-canary-weight.sh fallo"; exit 40; }
+  T1=$(date +%s)
+  rs=$((T1 - T0))
+  say "rollback_seconds=$rs"
+
+  cid=$(traefik_cid)
+  before_started=$(cat /tmp/a2-traefik-startedat.before)
+  sa=$(started_at "$cid")
+  say "StartedAt before=$before_started after=$sa"
+  [[ "$before_started" == "$sa" ]] || { say "FAIL rollback: Traefik se reinicio"; exit 40; }
+
+  hc=$("${COMPOSE[@]}" exec -T traefik traefik healthcheck --ping 2>&1 || true)
+  say "traefik healthcheck: ${hc:-<sin salida>}"
+
+  cbefore=$(docker logs "$cid" 2>&1 | wc -l)
+  for ((i = 1; i <= 1000; i++)); do
+    curl -sk --resolve "api.localhost:${TRAEFIK_HTTPS_PORT}:127.0.0.1" -o /dev/null \
+      "https://api.localhost:${TRAEFIK_HTTPS_PORT}/api/v2/documents?page_size=1" || true
+    if (( i % 9 == 0 )); then sleep 1; fi
+  done
+  sleep 2
+  docker logs "$cid" 2>&1 | tail -n +$((cbefore + 1)) >/tmp/a2-rollback.log
+  log_stats /tmp/a2-rollback.log | tee -a "$EVIDENCE_PATH" >/tmp/a2-rollback-stats.txt
+  rcanary=$(kv /tmp/a2-rollback-stats.txt docv2-canary@file_n); rcanary="${rcanary:-0}"
+  rstable=$(kv /tmp/a2-rollback-stats.txt docv2@file_n); rstable="${rstable:-0}"
+  say "distribucion post-rollback: docv2=$rstable canary=$rcanary"
+
+  if (( rs >= 60 )); then say "FAIL rollback: ${rs}s >= 60s"; exit 40; fi
+  if (( rcanary > 0 )); then say "FAIL rollback: el canary sigue recibiendo $rcanary peticiones"; exit 40; fi
+  if (( rstable < 950 )); then say "FAIL rollback: muestra insuficiente ($rstable/1000)"; exit 40; fi
+  say "rollback OK (<60s, 100 % al estable, sin reinicio)."
+}
+
+evidence(){
+  CURRENT_PHASE=evidence
+  read -r w1 w2 <<<"$(current_weights)"
+  final="No-Go"
+  if [[ "$FAIL_CODE" == "0" && "$w1/$w2" == "100/0" ]]; then final="Go"; fi
+  say "=== 6. DECISION FINAL ==="
+  say "DECISION: $final"
+  say "pesos finales: $w1/$w2"
+  if [[ "$final" == "Go" ]]; then
+    say "A3 (10 %) habilitado: Go en todas las muestras + rollback <60s + sin alertas de integridad nuevas."
+  else
+    say "A3 (10 %) BLOQUEADO: alguna muestra fallo, hubo 5xx, o el rollback no cumplio. Registrar la causa."
+  fi
+  say ""
+  say "=== 7. DESVIACIONES RESPECTO DE docs/S8/tasks/task-5.md ==="
+  say "1. El comando literal del runbook (set-canary-weight.sh r-api-v2-weighted docv2 99 docv2-canary 1) no coincide con la interfaz real del script; se usa: set-canary-weight.sh 99 1."
+  say "2. Las metricas por backend se toman del access log/service metrics de Traefik (RouterName=r-api-v2@file, ServiceName docv2@file|docv2-canary@file) porque http_requests_total{service=\"doc-service-canary\"} no existe: Prometheus solo scrapea el servicio doc-service."
+  say "3. La comparacion de p95 usa docv2 estable como referencia principal; el monolito se registra si tiene trafico en la ventana de baseline (en este laboratorio puede ser NA)."
+}
+
+cleanup(){
+  if [[ -n "$PROBE_PID" ]]; then kill "$PROBE_PID" 2>/dev/null || true; fi
+  if [[ -f "$INFRA/traefik/dynamic/routing.yml" ]]; then
+    read -r w1 w2 <<<"$(current_weights 2>/dev/null || echo '100 0')"
+    if [[ "$w1/$w2" != "100/0" ]]; then
+      "$SET_WEIGHT" 100 0 >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+run(){
+  local fast="${1:-0}"
+  if [[ "$fast" == "1" ]]; then
+    MEASURE_N=200
+    OBSERVE_SAMPLES=2
+    OBSERVE_INTERVAL_SECONDS=20
+    EVIDENCE_PATH="/tmp/a2-selftest.txt"
+  fi
+  : >"$EVIDENCE_PATH"
+  trap cleanup EXIT
+
+  say "# S8-P1-A2 — primer peso de canary 1 % (evidencia)"
+  say ""
+  say "Fecha UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  say "Commit infra: $(git -C "$INFRA" rev-parse --short HEAD)"
+  say "Entorno: stack local infra (Traefik, api.localhost:${TRAEFIK_HTTPS_PORT})"
+  say "Alcance: r-api-v2-weighted (docv2 / docv2-canary). Canary de migracion (r-inv-*) sin tocar."
+  say ""
+
+  preflight
+  apply
+  measure
+  observe
+  rollback
+  evidence
+
+  trap - EXIT
+  if [[ "$FAIL_CODE" != "0" ]]; then exit 32; fi
+}
+
+CMD=""
+FAST=0
+for a in "$@"; do
+  case "$a" in
+    --fast) FAST=1 ;;
+    run|preflight|apply|measure|observe|rollback) CMD="$a" ;;
+    *) echo "ERROR: argumento desconocido: $a"; exit 2 ;;
+  esac
+done
+
+case "$CMD" in
+  preflight) preflight ;;
+  apply) apply ;;
+  measure) measure ;;
+  observe) observe ;;
+  rollback) rollback ;;
+  run) run "$FAST" ;;
+  *) echo "usage: $0 {preflight|apply|measure|observe|rollback|run [--fast]}"; exit 2 ;;
+esac
+echo "PHASE_OK: $CURRENT_PHASE"
