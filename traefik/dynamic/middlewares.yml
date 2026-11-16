@@ -13,6 +13,8 @@ http:
           - X-RateLimit-Reset
           - X-RateLimit-Retry-After
           - X-RateLimit-Degraded
+          # S7-P4-05: expone la decisión de exención para el webhook interno.
+          - X-RateLimit-Exempt
 
     # Limite de tamano SOLO para endpoints JSON (SPEC §3.1 / ADR-0011):
     # el PDF NO pasa por el gateway (subida directa a MinIO via URL
