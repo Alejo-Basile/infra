@@ -1,0 +1,17 @@
+# Host crontab reference template for the MinIO backup (S9-X-01-B0).
+# This is a HOST cron, NOT a container cron.
+#
+# Supported install path: infra/scripts/install-minio-backup-cron.sh
+#   e.g. infra/scripts/install-minio-backup-cron.sh --dest "$HOME/minio-backups" --mode exec
+#
+# Destinations:
+#   - default: $HOME/minio-backups (works without sudo)
+#   - optional: /srv/backups/minio (requires sudo mkdir + chown; see runbook)
+#
+# MODE=exec is REQUIRED on this host: the `minio/mc` image cannot be pulled
+# ("pull access denied"), so the script runs `mc` inside `infra-minio-1`.
+# With a mounted destination and the image available, omit MODE (default docker).
+#
+# Retention is automatic via RETENTION_DAYS (default 14); no manual prune needed.
+MAILTO=""
+# 17 3 * * * MODE=exec MINIO_BACKUP_DIR=/home/alejobasilesoca/minio-backups /path/to/infra/scripts/minio-backup.sh >> /home/alejobasilesoca/minio-backups/backup.log 2>&1
