@@ -77,6 +77,10 @@ secrets:
   consul_server_key: { file: ../secrets/consul_server_key.pem }
   consul_ca_cert: { file: ../secrets/consul_ca_cert.pem }
   consul_operator_token: { file: ../secrets/consul_operator_token.txt }
+  consul_doc_service_token: { file: ../secrets/consul_doc_service_token.txt }
+  consul_ratelimitd_token: { file: ../secrets/consul_ratelimitd_token.txt }
+  consul_worker_token: { file: ../secrets/consul_worker_token.txt }
+  consul_prometheus_token: { file: ../secrets/consul_prometheus_token.txt }
 
 services:
   # ===========================================================================
@@ -336,9 +340,18 @@ services:
     <<: *hardening
     user: "10001:10001"
     read_only: true
-    secrets: [redis_ratelimit_password, minio_webhook_secret]
+    secrets:
+      - redis_ratelimit_password
+      - minio_webhook_secret
+      # S11-P1-C06: Consul KV de solo lectura (config/rate-limiter/ + config/meta/).
+      - consul_ratelimitd_token
+      - consul_ca_cert
     environment:
       LISTEN_ADDR: ":8090"
+      # S11-P1-C06: cliente KV de Consul; secretos siempre por archivo.
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_TOKEN_FILE: /run/secrets/consul_ratelimitd_token
       REDIS_ADDR: redis-ratelimit:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_ratelimit_password
       # S7-P4-05: el webhook interno queda exento solo si presenta el token
@@ -581,6 +594,9 @@ services:
       - redis_streams_password
       - minio_webhook_secret
       - internal_token
+      # S11-P1-C06: Consul KV de solo lectura (config/doc-service/ + config/meta/).
+      - consul_doc_service_token
+      - consul_ca_cert
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
@@ -614,6 +630,10 @@ services:
       RECONCILE_INTERVAL_MIN: "10"
       DOC_UPLOAD_GRACE_MIN: "30"
       MIN_SAFETY_AGE_MIN: "15"
+      # S11-P1-C06: cliente KV de Consul (lectura de su prefijo + config/meta).
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
     networks: [internal, data]
     depends_on:
       mongo:
@@ -722,8 +742,15 @@ services:
       - mongo_worker_password
       - svc_worker_access_key
       - svc_worker_secret_key
+      # S11-P1-C06: Consul KV de solo lectura (config/extraction-worker/ + config/meta/).
+      - consul_worker_token
+      - consul_ca_cert
     environment:
       HTTP_PORT: "8081"
+      # S11-P1-C06: cliente KV de Consul; secretos siempre por archivo.
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_TOKEN_FILE: /run/secrets/consul_worker_token
       # Redis Streams: la password llega por archivo y el entrypoint de la
       # imagen arma REDIS_URL. Nunca en texto plano en este compose (SPEC 9).
       REDIS_HOST: redis-streams
@@ -806,6 +833,8 @@ services:
     <<: *hardening
     ports:
       - "9090:9090"
+    # S11-P1-C06: token de lectura de servicios/nodos para consul_sd (C08).
+    secrets: [consul_prometheus_token, consul_ca_cert]
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro

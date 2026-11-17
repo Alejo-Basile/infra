@@ -1,0 +1,70 @@
+S11-P1-C06 — ACL por prefijo + tokens por servicio
+UTC/local date: 2026-11-17T23:08:12Z
+
+Estado previo observado (RED):
+- acl { enabled = true, default_policy = "deny" } ya activo, con el token
+  initial_management de dev como unica credencial (prefijo 978de4e4).
+- Solo politicas built-in (global-management, global-read-only); cero
+  politicas por servicio, cero tokens por servicio y KV vacio.
+
+Archivos creados/modificados:
+- infra/compose/consul/config/server.hcl (enable_token_persistence)
+- infra/compose/consul/acl/{consul-operator,prometheus-read,svc-doc-service,svc-ratelimitd,svc-extraction-worker}.hcl
+- infra/scripts/consul-bootstrap-acl.sh
+- infra/compose/docker-compose.yml (secrets + env CONSUL_* en doc-service, ratelimitd,
+  extraction-worker y prometheus)
+- infra/secrets/consul_{doc_service,ratelimitd,worker,prometheus}_token.txt (0600, no versionados)
+
+Comandos ejecutados (desde infra/):
+  docker compose --env-file .env -f compose/docker-compose.yml --profile discovery config --quiet
+  docker compose --env-file .env -f compose/docker-compose.yml --profile discovery up -d --force-recreate consul
+  bash scripts/consul-bootstrap-acl.sh
+  bash scripts/consul-bootstrap-acl.sh   # segunda corrida: idempotencia
+  bash scripts/consul-bootstrap-acl.sh --verify
+
+Tokens (solo prefijo de 8 caracteres):
+  consul-operator: 978de4e4 (initial_management de dev; conservado)
+  svc-doc-service: f2bf1286
+  svc-ratelimitd: af1ded34
+  svc-extraction-worker: 357de61d
+  prometheus-read: 520d8d49
+
+Nota de nomenclatura: plan §3.2 y kv/rate-limiter.json usan config/rate-limiter/;
+task-6 §4.2 menciona config/ratelimitd/. La politica svc-ratelimitd concede
+lectura sobre ambos prefijos para no romper ninguna de las dos fuentes.
+
+Matriz token x prefijo (GET de una clave sonda; sonda creada con el token de
+operador y eliminada al terminar):
+  anon config/doc-service/__acl_probe: 403 (esperado 403) OK
+  anon config/rate-limiter/__acl_probe: 403 (esperado 403) OK
+  anon config/ratelimitd/__acl_probe: 403 (esperado 403) OK
+  anon config/extraction-worker/__acl_probe: 403 (esperado 403) OK
+  anon config/meta/__acl_probe: 403 (esperado 403) OK
+  doc-service doc-service: 200 (esperado 200) OK
+  doc-service meta: 200 (esperado 200) OK
+  doc-service rate-limiter: 403 (esperado 403) OK
+  doc-service ratelimitd: 403 (esperado 403) OK
+  doc-service extraction-worker: 403 (esperado 403) OK
+  ratelimitd rate-limiter: 200 (esperado 200) OK
+  ratelimitd ratelimitd: 200 (esperado 200) OK
+  ratelimitd meta: 200 (esperado 200) OK
+  ratelimitd doc-service: 403 (esperado 403) OK
+  ratelimitd extraction-worker: 403 (esperado 403) OK
+  worker extraction-worker: 200 (esperado 200) OK
+  worker meta: 200 (esperado 200) OK
+  worker doc-service: 403 (esperado 403) OK
+  worker rate-limiter: 403 (esperado 403) OK
+  prometheus config/doc-service/__acl_probe: 403 (esperado 403) OK
+  prometheus config/rate-limiter/__acl_probe: 403 (esperado 403) OK
+  prometheus config/ratelimitd/__acl_probe: 403 (esperado 403) OK
+  prometheus config/extraction-worker/__acl_probe: 403 (esperado 403) OK
+  prometheus config/meta/__acl_probe: 403 (esperado 403) OK
+  operator doc-service: 200 (esperado 200) OK
+  operator rate-limiter: 200 (esperado 200) OK
+  operator ratelimitd: 200 (esperado 200) OK
+  operator extraction-worker: 200 (esperado 200) OK
+  operator meta: 200 (esperado 200) OK
+
+Sondas eliminadas tras la medicion: config/{doc-service,meta,extraction-worker,rate-limiter,ratelimitd}/__acl_probe
+Resultado: FAIL=0
+VEREDICTO: PASS — matriz token x prefijo en verde.
