@@ -21,3 +21,12 @@ http:
     body-limit-1mb:
       buffering:
         maxRequestBodyBytes: 1048576   # 1 MB
+
+    # SPEC §9: cabeceras de seguridad en todo el borde publico (S9-X-04).
+    sec-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        referrerPolicy: "strict-origin-when-cross-origin"

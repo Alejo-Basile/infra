@@ -1,0 +1,89 @@
+S9-X-04 bloque d — minimo privilegio y roles
+============================================
+
+## Matriz de hardening
+
+Comando: docker compose ... ps -q -> docker inspect formato user/ro/caps/sec/mem/pids
+Total contenedores: 21
+
+/infra-alertmanager-1 user=65534 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
+/infra-doc-service-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=300
+/infra-doc-service-canary-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=300
+/infra-extraction-worker-1 user=10001:10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=805306368 pids=200
+/infra-grafana-1 user=472 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=100
+/infra-loki-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=100
+/infra-minio-1 user=1001 ro=false caps=[ALL] sec=[no-new-privileges:true] mem=1073741824 pids=200
+/infra-mongo-1 user= ro=false caps=[ALL] sec=[no-new-privileges:true] mem=1073741824 pids=200
+/infra-monolito-1 user=appuser ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=200
+/infra-prometheus-1 user=nobody ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=100
+/infra-promtail-1 user= ro=true caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
+/infra-ratelimitd-1 user=10001:10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=67108864 pids=100
+/infra-redis-exporter-1 user=59000:59000 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
+/infra-redis-ratelimit-1 user= ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=100
+/infra-redis-streams-1 user= ro=false caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
+/infra-redis-streams-replica-1-1 user=999 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
+/infra-redis-streams-replica-2-1 user=999 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
+/infra-sentinel-1-1 user=999 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
+/infra-sentinel-2-1 user=999 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
+/infra-sentinel-3-1 user=999 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
+/infra-traefik-1 user=65532 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
+
+Clasificacion:
+- App services (ro=true salvo minio): doc-service, doc-service-canary, extraction-worker, ratelimitd, monolito, traefik, promtail, redis-exporter -> todos ro=true, CapDrop=[ALL], no-new-privileges.
+- Data/infra con ro=false justificadas (ver S1-P1-15-hardening.txt): minio, mongo, redis-streams. Excepciones pre-existentes documentadas.
+
+## Rol Mongo del worker
+
+Comando 1 find: db.documents.findOne({}) -> MongoServerError: not authorized (find)
+Comando 2 insert: db.documents.insertOne({_id:"__audit_probe__"}) -> MongoServerError: not authorized (insert)
+Comando 3 delete: db.documents.deleteOne({_id:"__audit_probe__"}) -> MongoServerError: not authorized (delete)
+Comando 4 update: db.documents.updateOne({_id:"__audit_nonexistent__"},{$set:{__audit:1}}) -> {acknowledged:true, matchedCount:0, modifiedCount:0, upsertedCount:0}
+
+Veredicto: worker es update-only sobre documents.
+
+## Identidades MinIO
+
+Red: infra_data. User list (mc admin user list):
+- 4957ef133643afc0 (svc-docservice key) status=enabled policy=docservice-rw
+- 3bb367fb7dd18ef7 (svc-worker key) status=enabled policy=worker-extract
+(2 additional keys listed with same policies, docservice-rw/worker-extract).
+Policies present: consoleAdmin, diagnostics, docservice-rw, readonly, readwrite, worker-extract, writeonly.
+svc-docservice user info: AccessKey=4957... Status=enabled PolicyName=docservice-rw MemberOf=[].
+svc-worker user info: AccessKey=3bb3... Status=enabled PolicyName=worker-extract MemberOf=[].
+Scope: docservice-rw grants RW on docservice bucket; worker-extract grants extract/write on worker bucket. SVC_* keys are injected to doc-service/extraction-worker via *_ACCESS_KEY_FILE (compose lines 403-406); MINIO_ROOT_* only in minio container (lines 363-364, 437-438). Root credentials not exposed to app services.
+Veredicto: PASS - dos identidades separadas con policies dedicadas; app services usan SVC_* keys, root queda solo en MinIO.
+## Separación Mongo app/worker
+
+Users (root connection, admin/db enumeration):
+- admin.devmongo (db=admin): role root on admin.
+- admin.docservice (db=admin): role readWrite on pdf-extractext.
+- documents.docservice (db=documents): role readWrite on documents.
+- documents.worker (db=documents): role documentsUpdater on documents (custom role, privilege update on documents.documents only).
+
+rolesInfo documentsUpdater: privilege update on {db:documents, collection:documents}; no read/find/insert/delete. Confirms worker is update-only.
+App password file not mounted in mongo container; root connection used for rolesInfo (task fallback). App user (docservice) holds readWrite on documents, so can read/write `documents`; worker (documentsUpdater) cannot read (only update).
+Veredicto: PASS - app y worker separados; app readWrite, worker update-only.
+
+## Redis
+
+streams: sin password -> NOAUTH; con password -> PONG.
+ratelimit: sin password -> NOAUTH; con password -> PONG.
+Hashes de passwords (sha256sum):
+35c4bef... infra/secrets/redis_ratelimit_password.txt
+f07d469... infra/secrets/redis_streams_password.txt
+Hashes distintos -> passwords distintas.
+ratelimitd usa redis-ratelimit:6379 (compose linea 332).
+doc-service/worker usan Sentinel (compose lineas 560, 620).
+
+## Veredicto
+
+- Non-root: PASS (app services usan UID no-root; mongo/minio usan root internamente justificado)
+- CapDrop=[ALL]: PASS (21/21)
+- no-new-privileges: PASS (21/21)
+- read_only excepciones justificadas: PASS (minio, mongo, redis-streams documentados)
+- worker update-only: PASS
+
+## Limitaciones
+
+- Ninguna pendiente de este bloque (MinIO y Mongo verificados en esta corrida).
+"

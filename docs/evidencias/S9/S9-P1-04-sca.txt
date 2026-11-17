@@ -1,0 +1,43 @@
+## Herramientas
+- govulncheck@v1.9.0 (go1.26.11 scanner, DB 2026-11-11). go install: OK. go env GOPATH bin added to PATH.
+- cargo-audit: cargo install --locked falló por cuota de disco en /tmp ("Disk quota exceeded" al compilar aws-lc-sys). No disponible.
+- cargo-deny: cargo install --locked falló por la misma cuota de disco. No disponible.
+
+## govulncheck
+### doc-service
+- Comando: `govulncheck ./...` (exit code 3)
+- Hallazgos: 1 vulnerabilidad del stdlib (GO-2026-6859, net/http MaxBytesReader header race; Found in net/http@go1.26.10, Fixed in go1.26.11), reachable (trazas en minio/mongo/gin). 0 en paquetes importados, 1 en módulos requeridos no llamado.
+
+### platform-services
+- Comando: `govulncheck ./...` (exit code 1)
+- Resultado: no go.mod en platform-services (no es módulo Go). No se pudo escanear.
+
+### platform-services/rate-limiter
+- Comando: `govulncheck ./...` (exit code 3)
+- Hallazgos: 32 vulnerabilidades del stdlib reachable (net/http, crypto/tls, crypto/x509, encoding/asn1, net/url, net/textproto, net, os, encoding/pem). 13 en paquetes importados y 17 en módulos requeridos no llamados por el código.
+
+## cargo audit
+- No se pudo ejecutar: cargo-audit no instalado (fallo de instalación por cuota de disco). LIMITATION.
+
+## cargo deny
+- No se pudo ejecutar: cargo-deny no instalado (fallo de instalación por cuota de disco). LIMITATION.
+
+## deny.toml
+- Archivo: extraction-worker/deny.toml
+- Entradas ignore: 4
+  1. RUSTSEC-2026-0258 (h2 0.3.27 via actix-http 3.x, DoS baja severidad aceptado; retirar al actualizar actix-http).
+  2. RUSTSEC-2025-0012 (backoff 0.4 unmaintained; reemplazar por backon).
+  3. RUSTSEC-2024-0384 (instant 0.1.13 transitivo de backoff).
+  4. RUSTSEC-2026-0192 (ttf-parser via lopdf/pdf-extract, unmaintained).
+
+## Veredicto
+- doc-service: FINDINGS (1 reachable stdlib vuln GO-2026-6859; requiere bump de Go a 1.26.11).
+- platform-services: LIMITATION (no go.mod; no escaneable).
+- platform-services/rate-limiter: FINDINGS (32 reachable stdlib vulns; requiere bump de Go a >=1.26.11).
+- extraction-worker: LIMITATION (cargo-audit/cargo-deny no instalables por cuota de disco; deny.toml declara 4 ignores justificados).
+
+## Limitaciones
+- platform-services no es módulo Go (sin go.mod), govulncheck no aplicable.
+- cargo-audit y cargo-deny no pudieron instalarse por cuota de disco en /tmp (error fatal "Disk quota exceeded" en aws-lc-sys). No se ejecutaron cargo audit ni cargo deny check advisories.
+- El verdict de Rust se basa solo en deny.toml (4 ignores) sin ejecución real de cargo audit/deny.
+
