@@ -1,0 +1,227 @@
+# S8-P1-03 — Pesos de canary configurables (evidencia)
+
+Fecha de captura: 2026-11-16
+Entorno: stack local `infra` (Traefik v3.7.13, `api.localhost:8543`)
+Alcance: `r-api-v2-weighted` (`docv2` estable / `docv2-canary` candidato). Canary de
+migracion (`r-inv-*`) permanece en 0 % y no se toca en esta evidencia.
+Archivos: `infra/scripts/set-canary-weight.sh`, `infra/compose/docker-compose.yml`,
+`infra/traefik/dynamic/routing.yml`.
+
+## 1. Estado inicial
+
+```
+$ infra/scripts/set-canary-weight.sh --check 100 0
+pesos actuales: 100/0
+pesos solicitados: 100/0
+exit=0
+```
+
+```
+== before
+infra-traefik-1 StartedAt=2026-11-15T22:34:46.389736195Z health=healthy
+infra-monolito-1 StartedAt=2026-11-16T00:34:10.809575038Z health=healthy
+infra-doc-service-1 Up 24 minutes (healthy)
+infra-doc-service-canary-1 Up 15 seconds (healthy)
+infra-monolito-1 Up 24 minutes (healthy)
+infra-traefik-1 Up 2 hours (healthy)
+```
+
+Alta del destino canary (imagen `DOC_SERVICE_CANARY_IMAGE:DOC_SERVICE_CANARY_TAG`,
+por defecto la misma que `doc-service`):
+
+```
+$ docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml \
+    --profile full up -d doc-service-canary
+ Container infra-doc-service-canary-1 Started
+# health: starting -> healthy a los ~10 s
+```
+
+## 2. Validacion de argumentos y precondiciones
+
+```
+$ ./infra/scripts/set-canary-weight.sh --check 90 10
+pesos actuales: 100/0
+pesos solicitados: 90/10
+exit=0
+
+$ ./infra/scripts/set-canary-weight.sh --check 100 0
+pesos actuales: 100/0
+pesos solicitados: 100/0
+exit=0
+
+$ ./infra/scripts/set-canary-weight.sh 101 0
+ERROR: la suma debe ser 100
+exit=2
+
+$ ./infra/scripts/set-canary-weight.sh 40 40
+ERROR: la suma debe ser 100
+exit=2
+```
+
+## 3. Escalon 99/1
+
+```
+$ ./infra/scripts/set-canary-weight.sh 99 1
+pesos actuales: 100/0
+pesos solicitados: 99/1
+aplicado: 99/1
+exit=0
+```
+
+La recarga se verifico por comportamiento (primer `docv2-canary@file` en el access
+log antes del limite de 10 s), sin reiniciar Traefik.
+
+```
+$ ./infra/scripts/set-canary-weight.sh --measure 1000
+pesos configurados: 99/1 — N=1000 rate=9/s
+observado docv2@file: 990
+observado docv2-canary@file: 10
+peticiones contabilizadas: 1000/1000 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 1.00%
+esperado canary: 1.00% — banda ±3σ: [0.56, 19.44] sobre 1000
+OK: distribucion dentro de la banda ±3σ
+exit=0
+```
+
+## 4. Escalon 90/10 (criterio de aceptacion)
+
+```
+$ ./infra/scripts/set-canary-weight.sh 90 10
+pesos actuales: 99/1
+pesos solicitados: 90/10
+aplicado: 90/10
+exit=0
+
+$ ./infra/scripts/set-canary-weight.sh --measure 1000
+pesos configurados: 90/10 — N=1000 rate=9/s
+observado docv2@file: 900
+observado docv2-canary@file: 100
+peticiones contabilizadas: 1000/1000 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 10.00%
+esperado canary: 10.00% — banda ±3σ: [71.54, 128.46] sobre 1000
+OK: distribucion dentro de la banda ±3σ
+exit=0
+```
+
+Criterio de aceptacion (proporcion doc-service-canary entre 8,7 % y 11,3 %):
+**10,00 % — cumple.**
+
+## 5. Extremo 0/100
+
+```
+$ ./infra/scripts/set-canary-weight.sh 0 100
+pesos actuales: 90/10
+pesos solicitados: 0/100
+aplicado: 0/100
+exit=0
+
+$ ./infra/scripts/set-canary-weight.sh --measure 200
+pesos configurados: 0/100 — N=200 rate=9/s
+observado docv2@file: 0
+observado docv2-canary@file: 200
+peticiones contabilizadas: 200/200 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 100.00%
+esperado canary: 100.00% — banda ±3σ: [200.00, 200.00] sobre 200
+OK: distribucion dentro de la banda ±3σ
+exit=0
+```
+
+## 6. Reversion a 100/0
+
+```
+$ ./infra/scripts/set-canary-weight.sh 100 0
+pesos actuales: 0/100
+pesos solicitados: 100/0
+aplicado: 100/0
+exit=0
+
+$ ./infra/scripts/set-canary-weight.sh --measure 200
+pesos configurados: 100/0 — N=200 rate=9/s
+observado docv2@file: 200
+observado docv2-canary@file: 0
+peticiones contabilizadas: 200/200 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 0.00%
+esperado canary: 0.00% — banda ±3σ: [0.00, 0.00] sobre 200
+OK: distribucion dentro de la banda ±3σ
+exit=0
+```
+
+## 7. Rollback drill (modo `--rollback`)
+
+```
+$ ls -la infra/traefik/dynamic/routing.yml.bak
+-rw-r--r--. 1 alejobasilesoca alejobasilesoca 5118 ... infra/traefik/dynamic/routing.yml.bak
+
+$ ./infra/scripts/set-canary-weight.sh --rollback
+rollback ok
+exit=0
+# pesos restaurados: 0/100 (estado previo al ultimo cambio)
+
+$ ./infra/scripts/set-canary-weight.sh 100 0
+pesos actuales: 0/100
+pesos solicitados: 100/0
+aplicado: 100/0
+exit=0
+```
+
+Rollback de pesos a 100/0 sin reinicio, en menos de 1 minuto; el archivo `.bak`
+queda git-ignorado.
+
+## 8. Estado final (sin reinicio)
+
+```
+== after final
+infra-traefik-1 StartedAt=2026-11-15T22:34:46.389736195Z health=healthy
+infra-monolito-1 StartedAt=2026-11-16T00:34:10.809575038Z health=healthy
+infra-doc-service-canary-1 StartedAt=2026-11-16T00:58:19.604030345Z health=healthy
+infra-doc-service-1 Up 32 minutes (healthy)
+infra-doc-service-canary-1 Up 8 minutes (healthy)
+infra-monolito-1 Up 32 minutes (healthy)
+infra-traefik-1 Up 3 hours (healthy)
+```
+
+`StartedAt` de Traefik y del monolito identico antes y despues de todo el ciclo:
+2026-11-15T22:34:46.389736195Z y 2026-11-16T00:34:10.809575038Z.
+
+```
+$ docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml \
+    --profile full config --quiet
+exit=0
+
+$ python3 -c 'import yaml; d=yaml.safe_load(open("infra/traefik/dynamic/routing.yml")); \
+    print(d["http"]["services"]["r-api-v2-weighted"]["weighted"]["services"])'
+[{'name': 'docv2', 'weight': 100}, {'name': 'docv2-canary', 'weight': 0}]
+```
+
+No quedan archivos `.tmp` en `infra/traefik/dynamic/`; solo `routing.yml.bak`
+(git-ignorado). Pesos finales: `100/0`.
+
+## 9. DoD
+
+| Criterio | Resultado |
+|---|---|
+| `set-canary-weight.sh` existe y es ejecutable | OK (487 lineas, `chmod +x`) |
+| `--check 90 10` exit 0 | OK |
+| Cambio de peso sin reiniciar Traefik | OK (`StartedAt` constante) |
+| 90/10 entre 8,7 % y 11,3 % | OK (10,00 %) |
+| 99/1 dentro de ±3σ | OK (10/1000, banda [0,56, 19,44]) |
+| Extremos 0/100 y 100/0 | OK (100 % y 0 %) |
+| Reversion a 100/0 en < 1 min | OK (aplicacion + recarga en segundos) |
+| Rollback con backup | OK (`exit 0`, `ERROR: sin backup` reservado `exit 6`) |
+
+## 10. Desviaciones respecto de `docs/S8/tasks/task-3.md`
+
+1. El archivo de pesos es `infra/traefik/dynamic/routing.yml`, no
+   `middlewares.yml`: S8-P1-02 movio el ruteo al file provider como fuente unica
+   y `middlewares.yml` conserva solo middlewares. Editar `middlewares.yml`
+   duplicaria `http.services` entre archivos del mismo provider.
+2. Los hijos del `weighted` son `docv2` (estable) y `docv2-canary` (candidato),
+   no `monolito@docker`/`doc-service@docker`: son servicios del file provider,
+   no labels Docker, y el canary de despliegue no envia trafico v1 al monolito.
+3. La medicion usa N=1000, el tamano de muestra que la propia tabla §7 fija para
+   10 %. Para 1 % ese N sigue dando una banda ±3σ decisiva ([0,56, 19,44]) y
+   permite distinguir 0 % de 1 %. El N=10000 es un recorrido de ~17 minutos por
+   el rate limit (10 req/s); `--measure 10000` queda disponible.
+4. La recarga se verifica por comportamiento en el access log (no hay API de
+   Traefik expuesta: `/api/*` responde 404). El primer `docv2-canary@file` con
+   peso 1 % aparece en la peticion 51, dentro de la ventana de 10 s.
