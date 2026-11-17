@@ -32,7 +32,7 @@ jobs:
           grep -E '^[[:space:]]+image:' compose/docker-compose.yml \
             | sed 's/.*image: //; s/[[:space:]]*#.*//' \
             | grep -v '\\${' \
-            | grep -vE '^(monolito|ratelimitd|doc-service|extraction-worker):' \
+            | grep -vE '^(monolito|ratelimitd|doc-service|extraction-worker|slo-exporter):' \
             | sort -u > /tmp/images.txt
           cat /tmp/images.txt
       - name: scan images
