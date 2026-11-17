@@ -1,0 +1,115 @@
+# S8-P1-A3 — segundo peso de canary 10 % (evidencia)
+
+Fecha UTC: 2026-11-16T21:41:00Z
+Commit infra: 78b77b8
+Entorno: stack local infra (Traefik, api.localhost:8543)
+Alcance: r-api-v2-weighted (docv2 / docv2-canary). Canary de migracion (r-inv-*) sin tocar.
+
+=== 1. PREFLIGHT ===
+UTC: 2026-11-16T21:41:00Z
+infra commit: 78b77b8
+infra-doc-service-1 health=healthy
+infra-doc-service-canary-1 health=healthy
+infra-traefik-1 health=healthy
+pesos actuales: 100/0
+Traefik StartedAt=2026-11-16T19:37:06.943537919Z
+--- baseline de alertas (justificacion: preexistentes, no originadas por el canary) ---
+DLQNotEmpty,MinioDiskHigh,QueueDepthHigh
+QueueDepthHigh warning 2026-11-16T19:42:26.869Z
+MinioDiskHigh warning 2026-11-16T19:42:41.665Z
+DLQNotEmpty critical 2026-11-16T19:37:43.273Z
+--- baseline de Mongo (docs no terminales > 10 min) ---
+nonterminal_docs=0
+--- baseline de Redis (stream y PEL) ---
+XLEN=2127 XPENDING_count=0
+--- baseline de 15 min (access log, por ServiceName) ---
+referencia p95: docv2=NA monolito=NA
+=== 2. CAMBIO DE PESO 100/0 -> 90/10 ===
+comando: /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/scripts/set-canary-weight.sh 90 10
+pesos actuales: 100/0
+pesos solicitados: 90/10
+aplicado: 90/10
+StartedAt before=2026-11-16T19:37:06.943537919Z after=2026-11-16T19:37:06.943537919Z
+grep errores de configuracion: <vacio>
+traefik healthcheck: OK: http://:8080/ping
+healthz api.localhost: 200
+=== 3. VALIDACION DE DISTRIBUCION (N=1000) ===
+log offset antes de medir=51566
+pesos configurados: 90/10 — N=1000 rate=9/s
+observado docv2@file: 900
+observado docv2-canary@file: 100
+peticiones contabilizadas: 1000/1000 (ignoradas sin ServiceName: 0)
+proporcion canary observada: 10.00%
+esperado canary: 10.00% — banda ±3σ: [71.54, 128.46] sobre 1000
+OK: distribucion dentro de la banda ±3σ
+docv2-canary@file_n=100
+docv2-canary@file_err=0
+docv2-canary@file_p95_ms=8
+docv2@file_n=900
+docv2@file_err=0
+docv2@file_p95_ms=7
+medicion: canary=100 canary_5xx=0 exit_measure=0
+Go: distribucion dentro de la banda y cero 5xx en la muestra.
+=== 4. OBSERVACION (samples=8 interval=900s probe=4rps) ===
+| # | UTC | canary_n | canary_5xx | canary_err% | p95_canary_ms | p95_docv2_ms | nonterminal | XLEN | alertas | readyz | resultado |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-11-16T21:58:27Z | 336 | 0 | 0.00 | 8 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 2 | 2026-11-16T22:13:30Z | 337 | 0 | 0.00 | 8 | 7 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 3 | 2026-11-16T22:28:33Z | 337 | 0 | 0.00 | 9 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 4 | 2026-11-16T22:43:36Z | 337 | 0 | 0.00 | 9 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 5 | 2026-11-16T22:58:39Z | 337 | 0 | 0.00 | 10 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 6 | 2026-11-16T23:13:44Z | 337 | 0 | 0.00 | 9 | 8 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+| 7 | 2026-11-17T01:54:27Z | 333 | 0 | 0.00 | 10 | 10 | 0 | 2127/0 | DLQNotEmpty | ready | OK |
+| 8 | 2026-11-17T02:09:31Z | 319 | 0 | 0.00 | 15 | 15 | 0 | 2127/0 | DLQNotEmpty,MinioDiskHigh,QueueDepthHigh | ready | OK |
+cumulative: canary_n=2673 canary_5xx=0
+=== 5. ROLLBACK DRILL (90/10 -> 100/0) ===
+pesos actuales: 90/10
+pesos solicitados: 100/0
+aplicado: 100/0
+rollback_seconds=23
+StartedAt before=2026-11-16T19:37:06.943537919Z after=2026-11-16T19:37:06.943537919Z
+traefik healthcheck: OK: http://:8080/ping
+docv2@file_n=1000
+docv2@file_err=0
+docv2@file_p95_ms=14
+distribucion post-rollback: docv2=1000 canary=0
+rollback OK (<60s, 100 % al estable, sin reinicio).
+=== 6. REVERSION AUTOMATICA (§8.2) ===
+pesos en 100/0; re-aplicando 90/10 para la prueba.
+pesos actuales: 100/0
+pesos solicitados: 90/10
+aplicado: 90/10
+injection_ts=2026-11-17T02:12:44Z
+signal: DownstreamStatus>=500 con ServiceName=docv2-canary@file en access log de Traefik
+ Container infra-doc-service-canary-1 Stopping 
+ Container infra-doc-service-canary-1 Stopped 
+canary_5xx_observados=5
+detection_ts=2026-11-17T02:13:03Z
+pesos actuales: 90/10
+pesos solicitados: 100/0
+aplicado: 100/0
+reversion_ts=2026-11-17T02:13:27Z reversion_seconds=24
+ Container infra-mongo-1 Waiting 
+ Container infra-redis-streams-1 Waiting 
+ Container infra-minio-1 Waiting 
+ Container infra-minio-1 Healthy 
+ Container infra-mongo-1 Healthy 
+ Container infra-redis-streams-1 Healthy 
+ Container infra-doc-service-canary-1 Starting 
+ Container infra-doc-service-canary-1 Started 
+canary health after restore=healthy
+StartedAt before=2026-11-16T19:37:06.943537919Z after=2026-11-16T19:37:06.943537919Z
+pesos post-reversion: 100 0
+Gap declarado: no existe alerta canary-error-especifica (HighErrorRate/DocServiceNotReady son genericas); la deteccion se hace por access log. Owner P1/P4.
+reversion OK: deteccion dentro de la ventana de 5 min, rollback <60 s, sin reinicio, canary restaurado healthy.
+=== 7. DECISION ===
+DECISION: Go
+pesos finales: 100/0
+observacion_fail=0 rollback_ok=1 reversion_ok=1
+A3 (10 %) sostenido: muestras sin umbral §9.5, rollback drill <60 s, reversion automatica probada, canary de migracion en 0 %.
+
+=== 8. DESVIACIONES RESPECTO DE docs/S8/tasks/task-6.md ===
+1. El comando literal del runbook (set-canary-weight.sh r-api-v2-weighted docv2 90 docv2-canary 10) no coincide con la interfaz real del script; se usa: set-canary-weight.sh 90 10.
+2. Las metricas por backend se toman del access log de Traefik (RouterName=r-api-v2@file, ServiceName docv2@file|docv2-canary@file) porque http_requests_total{service="doc-service-canary"} no existe: Prometheus solo scrapea doc-service.
+3. La comparacion de p95 usa docv2 estable como referencia principal; el monolito se registra si tiene trafico en la ventana de baseline (en este laboratorio puede ser NA).
+4. Orden ejecutado: preflight -> apply -> measure -> observe -> rollback drill -> reversion. La prueba de reversion (§8.2) re-aplica 90/10 si los pesos ya estan en 100/0 y termina en 100/0.
