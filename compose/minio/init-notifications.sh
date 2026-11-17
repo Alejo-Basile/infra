@@ -10,7 +10,15 @@ BUCKET="raw-pdfs"
 ARN="arn:minio:sqs:us-east-1:${TARGET}:webhook"
 
 : "${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}"
+if [ -z "${MINIO_ROOT_PASSWORD:-}" ] && [ -r /run/secrets/minio_root_password ]; then
+  MINIO_ROOT_PASSWORD="$(cat /run/secrets/minio_root_password)"
+  export MINIO_ROOT_PASSWORD
+fi
 : "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}"
+if [ -z "${MINIO_WEBHOOK_SECRET:-}" ] && [ -r /run/secrets/minio_webhook_secret ]; then
+  MINIO_WEBHOOK_SECRET="$(cat /run/secrets/minio_webhook_secret)"
+  export MINIO_WEBHOOK_SECRET
+fi
 : "${MINIO_WEBHOOK_SECRET:?MINIO_WEBHOOK_SECRET requerido}"
 : "${DOC_SERVICE_WEBHOOK_URL:?DOC_SERVICE_WEBHOOK_URL requerido}"
 
