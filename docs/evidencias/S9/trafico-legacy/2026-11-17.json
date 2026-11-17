@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-17",
+  "business_total": 2,
+  "technical_total": 5,
+  "by_route": [
+    {
+      "classification": "business",
+      "method": "GET",
+      "path": "/registros",
+      "count": 1
+    },
+    {
+      "classification": "business",
+      "method": "POST",
+      "path": "/pdf/process",
+      "count": 1
+    },
+    {
+      "classification": "technical",
+      "method": "GET",
+      "path": "/docs",
+      "count": 1
+    },
+    {
+      "classification": "technical",
+      "method": "GET",
+      "path": "/health",
+      "count": 3
+    },
+    {
+      "classification": "technical",
+      "method": "GET",
+      "path": "/health/ready",
+      "count": 1
+    }
+  ],
+  "generated_at": "2026-11-17T19:44:30Z"
+}

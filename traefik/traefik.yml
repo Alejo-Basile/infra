@@ -56,6 +56,7 @@ metrics:
     addRoutersLabels: true
 
 accessLog:
+  filePath: /var/log/traefik/access.log
   format: json
   fields:
     headers:
@@ -64,3 +65,5 @@ accessLog:
         # doc-service generates one when the client omits X-Correlation-Id
         # (SPEC §10); this field only preserves an inbound value in the log.
         X-Correlation-Id: keep
+        # S9-X-05: preserve User-Agent for client attribution in legacy traffic reports.
+        User-Agent: keep

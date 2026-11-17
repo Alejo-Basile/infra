@@ -1,0 +1,1 @@
+47 3 * * * /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/scripts/traefik-log-rotate.sh >> /home/alejobasilesoca/traefik-logs-archive/rotate.log 2>&1

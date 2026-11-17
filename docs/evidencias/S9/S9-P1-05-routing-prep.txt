@@ -1,0 +1,23 @@
+curl healthz:
+200
+curl s3:
+403
+rollback.yml absent:
+ls: cannot access 'infra/traefik/dynamic/rollback.yml': No such file or directory
+
+11 r-inv-* routers (from routing.yml):
+| router | path | class | backup service |
+|---|---|---|---|
+| r-inv-health | /health | technical | legacy-monolito@file |
+| r-inv-health-ready | /health/ready | technical | legacy-monolito@file |
+| r-inv-pdf-process | /pdf/process | business | weighted |
+| r-inv-registros | /registros | business | weighted |
+| r-inv-registros-hash | /registros/hash/{hash} | business | legacy-monolito@file |
+| r-inv-registros-id | /registros/{id} | business | weighted |
+| r-inv-registros-put | /registros/{id} | business | legacy-monolito@file |
+| r-inv-registros-delete | /registros/{id} | business | legacy-monolito@file |
+| r-inv-docs | /docs | technical | legacy-monolito@file |
+| r-inv-redoc | /redoc | technical | legacy-monolito@file |
+| r-inv-openapi | /openapi.json | technical | legacy-monolito@file |
+
+platform-services/docs/clientes.md remains PARCIAL and is P4-owned (not edited).

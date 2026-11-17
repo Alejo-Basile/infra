@@ -32,3 +32,10 @@ http:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         referrerPolicy: "strict-origin-when-cross-origin"
+
+    # S9-X-05: modo deprecado del camino v1 (SPEC Fase 6).
+    deprecation-legacy:
+      headers:
+        customResponseHeaders:
+          Deprecation: "true"
+          Sunset: "Sat, 31 Dec 2026 23:59:59 GMT"

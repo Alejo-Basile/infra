@@ -53,6 +53,7 @@ volumes:
   grafana-data:
   loki-data:
   promtail-positions:
+  traefik-logs:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -460,6 +461,14 @@ services:
 
   # --- Traefik v3: entrypoint UNICO. Hoy enruta el 100% al monolito y el S3.
   # Cuando exista doc-service se activa el router /api/v2/documents (labels).
+  traefik-log-init:
+    image: alpine:3.20
+    profiles: ["full"]
+    volumes:
+      - traefik-logs:/data
+    command: ["sh", "-c", "chown -R 65532:65532 /data && chmod 755 /data"]
+    restart: "no"
+
   traefik:
     image: traefik:v3.7
     user: "65532"
@@ -468,6 +477,9 @@ services:
     # leer labels, los routers de los servicios no se crean y todo responde 404.
     group_add: ["${DOCKER_GID:?definir en .env}"]
     profiles: ["full"]
+    depends_on:
+      traefik-log-init:
+        condition: service_completed_successfully
     <<: *hardening
     read_only: true
     tmpfs:
@@ -484,6 +496,8 @@ services:
       - ../traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ../traefik/dynamic:/etc/traefik/dynamic:ro
       - ../traefik/certs:/etc/traefik/certs:ro
+      # S9-X-05: persistent access logs (Traefik writes as UID 65532).
+      - traefik-logs:/var/log/traefik
     networks: [edge, internal, data]
     mem_limit: 256m
     cpus: 0.5

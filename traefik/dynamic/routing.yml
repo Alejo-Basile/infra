@@ -1,7 +1,7 @@
 # Ruteo final (S8-P1-02). Una sola fuente de verdad del gateway.
 # Reemplaza los routers que vivian en labels Docker (compose).
 # Desviacion deliberada: los 11 routers del inventario conservan
-# middlewares: [rate-limit@file, sec-headers@file] porque el router `legacy` que reemplazan
+# middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file] porque el router `legacy` que reemplazan
 # aplicaba rate-limit@file (labels del monolito en docker-compose.yml). No se
 # agrega body-limit-1mb@file (nunca aplico alli). r-doc-healthz y s3-api sin
 # middlewares.
@@ -14,7 +14,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-health-ready:
       rule: "Host(`api.localhost`) && Path(`/health/ready`) && Method(`GET`)"
@@ -22,7 +22,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-pdf-process:
       rule: "Host(`api.localhost`) && Path(`/pdf/process`) && Method(`POST`)"
@@ -30,7 +30,7 @@ http:
       tls: true
       service: r-inv-pdf-process-weighted
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-registros:
       rule: "Host(`api.localhost`) && Path(`/registros`) && Method(`GET`)"
@@ -38,7 +38,7 @@ http:
       tls: true
       service: r-inv-registros-weighted
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-registros-hash:
       rule: "Host(`api.localhost`) && PathRegexp(`^/registros/hash/[0-9a-fA-F]{64}$`) && Method(`GET`)"
@@ -46,7 +46,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 210
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-registros-id:
       rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`GET`)"
@@ -54,7 +54,7 @@ http:
       tls: true
       service: r-inv-registros-id-weighted
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-registros-put:
       rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`PUT`)"
@@ -62,7 +62,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-registros-delete:
       rule: "Host(`api.localhost`) && PathRegexp(`^/registros/[0-9a-fA-F-]{36}$`) && Method(`DELETE`)"
@@ -70,7 +70,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-docs:
       rule: "Host(`api.localhost`) && Path(`/docs`) && Method(`GET`)"
@@ -78,7 +78,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-redoc:
       rule: "Host(`api.localhost`) && Path(`/redoc`) && Method(`GET`)"
@@ -86,7 +86,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     r-inv-openapi:
       rule: "Host(`api.localhost`) && Path(`/openapi.json`) && Method(`GET`)"
@@ -94,7 +94,7 @@ http:
       tls: true
       service: legacy-monolito
       priority: 200
-      middlewares: [rate-limit@file, sec-headers@file]
+      middlewares: [rate-limit@file, sec-headers@file, deprecation-legacy@file]
 
     # --- Camino nuevo (v2) ------------------------------------------------
     r-api-v2:

@@ -1,0 +1,14 @@
+archived /home/alejobasilesoca/traefik-logs-archive/access-2026-11-17.log.gz (retention 14 days)
+---crontab---
+# >>> traefik-log-retention (S9-X-05) >>>
+MAILTO=""
+47 3 * * * '/home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/infra/scripts/traefik-log-rotate.sh' >> "${HOME}/traefik-logs-archive/rotate.log" 2>&1
+# <<< traefik-log-retention (S9-X-05) <<<
+---check---
+OK: installed block matches desired
+exit=0
+---ls---
+total 4
+drwxr-xr-x. 1 alejobasilesoca alejobasilesoca   48 Nov 17 16:43 .
+drwx------. 1 alejobasilesoca alejobasilesoca 1306 Nov 17 16:43 ..
+-rw-r--r--. 1 alejobasilesoca alejobasilesoca 1473 Nov 17 16:43 access-2026-11-17.log.gz
