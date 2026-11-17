@@ -1,0 +1,51 @@
+S9-P1-01 backup destino — evidencia
+====================================
+
+Mode used: exec (minio/mc image could not be pulled: "pull access denied").
+Command:
+  MODE=exec MINIO_BACKUP_DIR=/tmp/opencode/minio-backup-smoke infra/scripts/minio-backup.sh
+Dry run:
+  MINIO_BACKUP_DIR=/tmp/opencode/minio-backup-smoke DRY_RUN=1 infra/scripts/minio-backup.sh  (prints, no exec)
+
+Duration (one full backup): 17 s
+
+Parity (mc ls --recursive --summarize):
+  raw-pdfs:      source=300  snapshot=300  PASS
+  extracted-txt: source=3138 snapshot=3138 PASS
+
+Still NOT done (SUPERSEDED — see closing section below):
+  - cron documented but not installed on any production host.  [SUPERSEDED: installed & active 2026-11-17]
+  - restore trial S9-X-01-B3 pending; restore RTO unmeasured. [SUPERSEDED: measured, see S9-P1-01-restore-datos.txt]
+--- Instalación real (2026-11-17T13:14Z..13:15Z) ---
+Destino: /home/alejobasilesoca/minio-backups (el home, porque /srv requiere sudo y
+  no habia sesion root; /srv/backups/minio NO provisionado).
+Cron: instalado en el crontab del usuario alejobasilesoca.
+  17 3 * * * MODE=exec MINIO_BACKUP_DIR=/home/alejobasilesoca/minio-backups <repo>/infra/scripts/minio-backup.sh >> .../backup.log 2>&1
+  crond: active.
+Intento con MODE=docker (default): FALLO -> "pull access denied for minio/mc".
+  Por eso el cron instalado fija MODE=exec.
+Corrida real con MODE=exec:
+  duration: 6 s
+  snapshot: 2026-11-17/  1.4 GB  300 PDFs
+  raw-pdfs:      source=300  snapshot=300  PASS
+  extracted-txt: source=3138 snapshot=3138 PASS
+Retención: 14 snapshots diarios (~20 GB al volumen actual). Prune manual.
+
+Sigue pendiente: /srv/backups/minio (sudo), ensayo de RESTORE (S9-X-01-B3) y su RTO.
+
+--- Closing section (2026-11-17) ---
+Final destination decision: home directory (/home/alejobasilesoca/minio-backups) because
+  /srv/backups/minio requires interactive sudo (not available in this environment).
+Cron state: installed & active, daily 03:17 UTC, MODE=exec, destination home.
+  Verified via: crontab -l | grep minio-backup (see below).
+New installer: infra/scripts/install-minio-backup-cron.sh (idempotent, delimited block).
+Retention: automatic via RETENTION_DAYS (default 14); PRUNE_ONLY=1 for testing.
+Verification commands run:
+  bash -n infra/scripts/minio-backup.sh -> OK
+  bash -n infra/scripts/install-minio-backup-cron.sh -> OK
+  infra/scripts/install-minio-backup-cron.sh --help -> OK
+  infra/scripts/install-minio-backup-cron.sh --dry-run -> prints block, no changes
+  infra/scripts/install-minio-backup-cron.sh --check -> drift vs legacy installed line (expected)
+  crontab -l | grep -n minio-backup -> 17 3 * * * MODE=exec ... (installed)
+Remaining non-blocking item: /srv/backups/minio requires interactive sudo; home path is supported.
+Measured restore evidence: infra/docs/evidencias/S9/S9-P1-01-restore-datos.txt

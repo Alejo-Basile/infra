@@ -1,0 +1,378 @@
+=== meta ===
+fecha_ejecucion: 2026-11-17T04:36:07Z .. 2026-11-17T04:44:38Z (UTC)
+camino_ejecucion: worktree
+worktree: infra-worktrees/s8-p1-a1 (branch feat/s8-p1-a1-replay-handoff; NO mergeado a infra main)
+comando_replay_p4: python3 tests/parity/replay.py --manifest tests/parity/corpus/manifest.json --v1-base http://localhost:9081 --v2-base http://localhost:9080 --out /tmp/s8-parity-runN --threshold 99.9 --timeout 180 --id-prefix s8parrN   (cwd = platform-services; run 1: runN=run1/s8parr1, run 2: runN=run2/s8parr2)
+corpus: tests/parity/corpus/manifest.json (version s8-expanded-1, count 100, commit 8ecb57c)
+umbral: 99.9
+replay_worker_image: extraction-worker:s8-parity-trim
+replay_worker_image_id: sha256:10fecc7c85e0fc0ee5d292eba8f5a6d8f7525d0677c521a20463dfc9d90a894b
+extraction_worker_commit: ed954d9 (local main, clean antes del cambio) + fix sin commitear en crates/worker/src/extract.rs (recorte de whitespace de borde en PdfExtractor::extract)
+p4_commit: 8ecb57c (platform-services; corpus + runner sin commitear en el worktree de fase 1)
+nota_resultado: la paridad MEDIDA por el arnes P4 en estas dos corridas con la imagen corregida es 100.0 %
+  (100/100 MATCH) y el corpus_error_rate medido es 0.0 %. Este documento registra la medicion real, no la
+  interpreta: la decision de paridad y el Go/No-Go de G4 son de P4. Ver "nota de resultados medidos" y
+  "historial: corrida con imagen s5p1-closure (0,0 %)".
+
+=== check-isolation (inicio) ===
+(tras reset #1, con la imagen extraction-worker:s8-parity-trim ya desplegada)
+OK: aislamiento verificado
+(exit 0)
+
+=== real fingerprint (before) ===
+timestamp_utc: 2026-11-17T04:36:07Z
+comando: ./scripts/replay-env.sh fingerprint-real > /tmp/s8-parity-real-before.json
+{
+  "config_hash": "sha256:3e7f5ca40628bc31908a4abf557a66d34750ead8b8abe21b48b45e6e1a067a25",
+  "dlq_len": 9,
+  "documents_by_status": {
+    "COMPLETED": 1425
+  },
+  "documents_total": 1425,
+  "objects": {
+    "extracted-txt": 3138,
+    "raw-pdfs": 300
+  },
+  "pending": 0,
+  "project": "infra",
+  "sha256": "sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9",
+  "stream_len": 2127
+}
+
+=== run 1 ===
+--- reset previo / despliegue de imagen (2026-11-17T04:36:12Z) ---
+comando: ./scripts/replay-env.sh reset   (= docker compose -p replay down -v, luego up)
+exit=0
+comando: docker inspect -f '{{.Config.Image}} {{.Image}}' replay-extraction-worker-1
+  salida: extraction-worker:s8-parity-trim sha256:10fecc7c85e0fc0ee5d292eba8f5a6d8f7525d0677c521a20463dfc9d90a894b
+comando: docker logs --tail 30 replay-extraction-worker-1
+  salida (arranque sano, sin crash-loop):
+    {"timestamp":"2026-11-17T04:36:32.626398Z","level":"INFO","service":"extraction-worker","msg":"worker iniciado","port":8081,"stream":"stream:pdf-processing","consumer":"consumer-00a27aeb5b75-1",...}
+    {"timestamp":"2026-11-17T04:36:32.626531Z",... (actix) ... "starting service: \"actix-web-service-0.0.0.0:8081\", workers: 1, listening on: 0.0.0.0:8081"}
+6 servicios replay healthy tras reset+up:
+  replay-doc-service-1 (doc-service:local), replay-extraction-worker-1 (extraction-worker:s8-parity-trim),
+  replay-minio-1, replay-mongo-1, replay-monolito-1, replay-redis-streams-1
+
+--- start fingerprint ---
+timestamp_utc: 2026-11-17T04:36:50Z
+comando: ./scripts/replay-env.sh fingerprint > /tmp/s8-parity-start-run1.json
+{
+  "config_hash": "sha256:2f933ceba7173eb6ddcd80497a2140486e52477cbc5c58d1d089c7856b01b6a0",
+  "dlq_len": 0,
+  "documents_by_status": {},
+  "documents_total": 0,
+  "objects": {
+    "extracted-txt": 0,
+    "raw-pdfs": 0
+  },
+  "pending": 0,
+  "project": "replay",
+  "sha256": "sha256:a48bb54d35614567b208f28480011b0739e09a378745229d56ba90706479bcee",
+  "stream_len": 0
+}
+
+--- replay P4 (stdout/stderr resumido) ---
+comando: python3 tests/parity/replay.py --manifest tests/parity/corpus/manifest.json \
+  --v1-base http://localhost:9081 --v2-base http://localhost:9080 --out /tmp/s8-parity-run1 \
+  --threshold 99.9 --timeout 180 --id-prefix s8parr1   (cwd = platform-services)
+ventana UTC: 2026-11-17T04:36:56Z -> 2026-11-17T04:40:19Z
+exit=0
+(100 lineas por documento; todas verdict=MATCH. Primera y ultima:
+[0001/0100] baseline-0001.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0002/0100] baseline-0002.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0003/0100] baseline-0003.pdf v1=200 v2=COMPLETED verdict=MATCH
+... (lineas 0004..0097 con identico formato) ...
+[0098/0100] baseline-0098.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0099/0100] baseline-0099.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0100/0100] baseline-0100.pdf v1=200 v2=COMPLETED verdict=MATCH)
+==== replay summary ====
+run_id=20261117T043656Z-83dcef docs_total=100 docs_compared=100
+v1_ok=100 v1_errors=0 v2_ok=100 v2_errors=0
+parity_rate=100.0 threshold=99.9 parity_pass=True
+corpus_error_rate=0.0 error_rate_pass=True
+verdicts={'MATCH': 100, 'MATCH_WITH_DIFF': 0, 'MISMATCH': 0, 'ERROR': 0}
+artifacts=/tmp/s8-parity-run1
+exit_code=0
+artefactos archivados: S8-P1-A4-parity-run1.json, S8-P1-A4-run-summary-run1.json
+
+--- end fingerprint ---
+timestamp_utc: 2026-11-17T04:40:22Z
+comando: ./scripts/replay-env.sh fingerprint > /tmp/s8-parity-end-run1.json
+{
+  "config_hash": "sha256:2f933ceba7173eb6ddcd80497a2140486e52477cbc5c58d1d089c7856b01b6a0",
+  "dlq_len": 0,
+  "documents_by_status": {
+    "COMPLETED": 100
+  },
+  "documents_total": 100,
+  "objects": {
+    "extracted-txt": 100,
+    "raw-pdfs": 100
+  },
+  "pending": 0,
+  "project": "replay",
+  "sha256": "sha256:c3c10fe4f2b587ab6bb0cc6024c1a9a3a2d79a23a8b38dbe0b90e6936038395e",
+  "stream_len": 100
+}
+check-isolation (cierre run 1): OK: aislamiento verificado (exit 0)
+
+=== reset ===
+timestamp_utc: 2026-11-17T04:40:28Z
+comando: ./scripts/replay-env.sh reset   (= docker compose -p replay down -v, luego up)
+exit=0
+NAME                         IMAGE                             STATUS
+replay-doc-service-1         doc-service:local                 Up 12 seconds (healthy)
+replay-extraction-worker-1   extraction-worker:s8-parity-trim  Up 13 seconds (healthy)
+replay-minio-1               bitnamilegacy/minio:...           Up 24 seconds (healthy)
+replay-mongo-1               mongo:7.0                         Up 24 seconds (healthy)
+replay-monolito-1            monolito:latest                   Up 16 seconds (healthy)
+replay-redis-streams-1       redis:7.2                         Up 23 seconds (healthy)
+Efecto: 6 servicios replay recreados y healthy; volumenes replay borrados. El proyecto `infra` no se toca.
+
+=== check-isolation (run 2) ===
+OK: aislamiento verificado
+(exit 0)
+
+=== run 2 ===
+--- start fingerprint ---
+timestamp_utc: 2026-11-17T04:41:01Z
+comando: ./scripts/replay-env.sh fingerprint > /tmp/s8-parity-start-run2.json
+{
+  "config_hash": "sha256:2f933ceba7173eb6ddcd80497a2140486e52477cbc5c58d1d089c7856b01b6a0",
+  "dlq_len": 0,
+  "documents_by_status": {},
+  "documents_total": 0,
+  "objects": {
+    "extracted-txt": 0,
+    "raw-pdfs": 0
+  },
+  "pending": 0,
+  "project": "replay",
+  "sha256": "sha256:a48bb54d35614567b208f28480011b0739e09a378745229d56ba90706479bcee",
+  "stream_len": 0
+}
+
+--- replay P4 ---
+comando: python3 tests/parity/replay.py --manifest tests/parity/corpus/manifest.json \
+  --v1-base http://localhost:9081 --v2-base http://localhost:9080 --out /tmp/s8-parity-run2 \
+  --threshold 99.9 --timeout 180 --id-prefix s8parr2   (cwd = platform-services)
+ventana UTC: 2026-11-17T04:41:06Z -> 2026-11-17T04:44:30Z
+exit=0
+(100 lineas por documento; todas verdict=MATCH. Primera y ultima:
+[0001/0100] baseline-0001.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0002/0100] baseline-0002.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0003/0100] baseline-0003.pdf v1=200 v2=COMPLETED verdict=MATCH
+... (lineas 0004..0097 con identico formato) ...
+[0098/0100] baseline-0098.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0099/0100] baseline-0099.pdf v1=200 v2=COMPLETED verdict=MATCH
+[0100/0100] baseline-0100.pdf v1=200 v2=COMPLETED verdict=MATCH)
+==== replay summary ====
+run_id=20261117T044106Z-9bc37c docs_total=100 docs_compared=100
+v1_ok=100 v1_errors=0 v2_ok=100 v2_errors=0
+parity_rate=100.0 threshold=99.9 parity_pass=True
+corpus_error_rate=0.0 error_rate_pass=True
+verdicts={'MATCH': 100, 'MATCH_WITH_DIFF': 0, 'MISMATCH': 0, 'ERROR': 0}
+artifacts=/tmp/s8-parity-run2
+exit_code=0
+artefactos archivados: S8-P1-A4-parity-run2.json, S8-P1-A4-run-summary-run2.json
+
+--- end fingerprint ---
+timestamp_utc: 2026-11-17T04:44:34Z
+comando: ./scripts/replay-env.sh fingerprint > /tmp/s8-parity-end-run2.json
+{
+  "config_hash": "sha256:2f933ceba7173eb6ddcd80497a2140486e52477cbc5c58d1d089c7856b01b6a0",
+  "dlq_len": 0,
+  "documents_by_status": {
+    "COMPLETED": 100
+  },
+  "documents_total": 100,
+  "objects": {
+    "extracted-txt": 100,
+    "raw-pdfs": 100
+  },
+  "pending": 0,
+  "project": "replay",
+  "sha256": "sha256:c3c10fe4f2b587ab6bb0cc6024c1a9a3a2d79a23a8b38dbe0b90e6936038395e",
+  "stream_len": 100
+}
+check-isolation (cierre run 2): OK: aislamiento verificado (exit 0)
+
+=== diffs ===
+--- start-run1 vs start-run2 ---
+comando: diff -u /tmp/s8-parity-start-run1.json /tmp/s8-parity-start-run2.json
+(vacio, exit=0) — ambos arranques parten del mismo estado inicial (sha256 a48bb54...479bcee)
+Nota: el config_hash inicial cambio respecto de la corrida historica (2f933ce... vs 10462e4...) porque la
+imagen del extraction-worker cambio a extraction-worker:s8-parity-trim; es el mismo valor en ambos arranques.
+
+--- real before vs after ---
+before timestamp_utc: 2026-11-17T04:36:07Z
+after  timestamp_utc: 2026-11-17T04:44:38Z
+comando: ./scripts/replay-env.sh fingerprint-real > /tmp/s8-parity-real-after.json
+comando: diff -u /tmp/s8-parity-real-before.json /tmp/s8-parity-real-after.json
+(vacio, exit=0)
+sha256 antes:  sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9
+sha256 despues: sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9
+El entorno real no cambio durante las dos corridas de replay.
+
+--- end-run1 vs end-run2 (informativo) ---
+comando: diff -u /tmp/s8-parity-end-run1.json /tmp/s8-parity-end-run2.json
+(vacio, exit=0)
+sha256 fin run 1 = sha256 fin run 2 = sha256:c3c10fe4f2b587ab6bb0cc6024c1a9a3a2d79a23a8b38dbe0b90e6936038395e
+(objects.extracted-txt=100, raw-pdfs=100; documents_total=100; stream_len=100; dlq_len=0; pending=0)
+
+=== cleanup ===
+Stack replay dejado UP y healthy (6/6 servicios healthy; v2 http://localhost:9080/healthz -> 200,
+v1 http://localhost:9081/health -> 200). Stack real (-p infra) intacto: 21 contenedores `infra-*`
+antes y despues. No se ejecuto `down` ni `reset` al cierre para dejar el entorno listo.
+
+=== nota de resultados medidos ===
+El arnes P4 midio, en ambas corridas con la imagen corregida, 100/100 documentos con veredicto MATCH:
+paridad 100.0 % (umbral 99.9 %) y corpus_error_rate 0.0 % (umbral < 0.1 %). v1 y v2 respondieron
+200/COMPLETED en los 100 documentos; no hubo errores de transporte ni de corpus.
+
+=== historial: corrida con imagen s5p1-closure (0,0 %) ===
+Registro historico conservado por trazabilidad. El 2026-11-17T03:51:48Z..04:04:50Z se ejecutaron dos
+corridas del mismo arnes P4 sobre el mismo corpus (s8-expanded-1, 100 PDFs) con la imagen
+REPLAY_EXTRACTION_WORKER_IMAGE=ghcr.io/alejo-basile/extraction-worker / TAG=s5p1-closure:
+  run_id 20261117T035355Z-65e255 y 20261117T040057Z-785e35
+  docs_total=100 docs_compared=100 parity_rate=0.0 % corpus_error_rate=0.0 %
+  verdicts={'MATCH':0,'MATCH_WITH_DIFF':0,'MISMATCH':100,'ERROR':0} exit=1 en ambas.
+Causa raiz verificada: el camino v2 escribia `<document_id>.md` (extension cambiada en P3-EXT-01, contenido
+texto plano) con la salida cruda de `pdf_extract::extract_text`, que para este corpus empieza con dos
+saltos de linea. `platform-services/tests/parity/normalize.py` implementa `docs/paridad.md` §2 al pie de la
+letra: colapsa secuencias de lineas vacias y hace `rstrip()` del fin (§2.6), pero §2 no elimina whitespace
+inicial, asi que el normalizador es conforme a la especificacion y la linea vacia inicial sobrevivia ->
+MISMATCH en 100/100 documentos (0.0 % de paridad).
+Correccion aplicada (no en el normalizador): en el adaptador de extraccion
+`extraction-worker/crates/worker/src/extract.rs`, `PdfExtractor::extract` conserva el error de negocio
+`text.trim().is_empty()` y ahora devuelve `Ok(text.trim().to_string())`. Tests: `texto_extraido_no_tiene_whitespace_de_borde`
+(lib) y `texto_extraido_no_conserva_whitespace_de_borde` (corpus). No se modifico `normalize.py`,
+`compare.py`, `report.py`, `replay.py`, los umbrales, `docs/paridad.md`, el compose de replay ni el stack real.
+
+=== anexo: corridas de entorno previas (smoke, sin replay P4) ===
+SUPERSEDIDAS por las corridas autoritativas de arriba. Fueron solo ejercicios de entorno (smoke v2+v1)
+del 2026-11-17T02:34Z-02:45Z, cuando el corpus/runner P4 aun no existian; NO miden paridad y NO cuentan
+como replay P4. Se conservan por trazabilidad historica.
+
+[anexo] === meta ===
+[anexo] fecha_ejecucion: 2026-11-17T02:34:00-03:00
+[anexo] camino_ejecucion: worktree
+[anexo] worktree: infra-worktrees/s8-p1-a1 (branch feat/s8-p1-a1-replay-handoff)
+[anexo] comando_replay_p4: NO DISPONIBLE — corpus/runner P4 ausentes (S8-P4-01/S8-P4-02)
+
+[anexo] === check-isolation (inicio) ===
+[anexo] OK: aislamiento verificado
+
+[anexo] === run 1 ===
+[anexo] --- start fingerprint ---
+[anexo] {
+[anexo]   "config_hash": "sha256:10462e4dec459962b397375f92ddb4619f256a4d399dbd2f840e138aae9c8513",
+[anexo]   "dlq_len": 0,
+[anexo]   "documents_by_status": {},
+[anexo]   "documents_total": 0,
+[anexo]   "objects": { "extracted-txt": 0, "raw-pdfs": 0 },
+[anexo]   "pending": 0,
+[anexo]   "project": "replay",
+[anexo]   "sha256": "sha256:bad4b4d0ab0c16f4ebcd1ce51428e5f9c72259ff7779786a94208aff6e49c54f",
+[anexo]   "stream_len": 0
+[anexo] }
+[anexo]
+[anexo] --- replay P4 (stdout/stderr resumido) ---
+[anexo] NO DISPONIBLE: corpus/runner P4 ausentes. Ejercicio de entorno (smoke) como sustituto, NO evidencia de paridad.
+[anexo] 1. POST /api/v2/documents
+[anexo]    document_id=replay-smoke-20261117T023303Z
+[anexo] 2. Upload to MinIO
+[anexo]    upload http=204
+[anexo] 3. Poll status
+[anexo]    COMPLETED
+[anexo] 4. Download txt
+[anexo]    download http=200, bytes=529
+[anexo] 5. v1 health
+[anexo]    OK
+[anexo] 6. Cleanup
+[anexo] PASS: smoke v2 + v1
+[anexo] --- end fingerprint ---
+[anexo] {
+[anexo]   "config_hash": "sha256:10462e4dec459962b397375f92ddb4619f256a4d399dbd2f840e138aae9c8513",
+[anexo]   "dlq_len": 0,
+[anexo]   "documents_by_status": {},
+[anexo]   "documents_total": 0,
+[anexo]   "objects": { "extracted-txt": 0, "raw-pdfs": 1 },
+[anexo]   "pending": 0,
+[anexo]   "project": "replay",
+[anexo]   "sha256": "sha256:27c2e2581087d0b1f356bbfc8b81fcc6d963ae934caeb3bf6779ad521f3bd19f",
+[anexo]   "stream_len": 1
+[anexo] }
+
+[anexo] === reset ===
+[anexo] comando: ./scripts/replay-env.sh reset   (= docker compose -p replay down -v, y luego up)
+[anexo] exit=0
+[anexo] salida (cola real del log):
+[anexo]  Container replay-monolito-1 Started
+[anexo] Detalle: salida completa de `down -v` y del `up` posterior en /tmp/s8-reset-run3.log y
+[anexo] /tmp/s8-up-run3.log (ver "run 3 (correccion)").
+
+[anexo] === check-isolation (run 2) ===
+[anexo] OK: aislamiento verificado
+
+[anexo] === run 2 ===
+[anexo] --- start fingerprint ---
+[anexo] (identico a start-run1: sha256 bad4b4d0...e49c54f, objects 0/0, sha256 27c2... es solo el fin)
+[anexo] --- replay P4 ---
+[anexo] NO DISPONIBLE: corpus/runner P4 ausentes. Smoke como sustituto, NO evidencia de paridad.
+[anexo]    document_id=replay-smoke-20261117T023417Z
+[anexo]    upload http=204; COMPLETED; download http=200, bytes=529; v1 health OK; Cleanup
+[anexo] PASS: smoke v2 + v1
+[anexo] --- end fingerprint ---
+[anexo] {
+[anexo]   "sha256": "sha256:27c2e2581087d0b1f356bbfc8b81fcc6d963ae934caeb3bf6779ad521f3bd19f",
+[anexo]   "objects": { "extracted-txt": 0, "raw-pdfs": 1 }, "stream_len": 1,
+[anexo]   "documents_total": 0, "dlq_len": 0, "pending": 0, "project": "replay"
+[anexo] }
+
+[anexo] === run 3 (correccion: orden real before/after) ===
+[anexo] Motivo: la captura `fingerprint-real` de la primera pasada se tomo DESPUES de las corridas, por lo
+[anexo] que su diff contra otra captura posterior era vacio por construccion y no probaba que el replay no
+[anexo] afecto al entorno real. Se repitio el ciclo con orden correcto: real-before -> reset + smoke
+[anexo] (actividad de replay) -> real-after.
+[anexo] ts real-before: 2026-11-17T02:43:43Z
+[anexo] ts real-after:  2026-11-17T02:45:36Z
+[anexo] --- check-isolation (run 3) --- OK: aislamiento verificado (exit 0)
+[anexo] --- reset (run 3) --- exit=0; 6 servicios healthy tras reset+up:
+[anexo]   doc-service, extraction-worker, minio, mongo, monolito, redis-streams (todos healthy)
+[anexo] --- start fingerprint (run 3) --- sha256 bad4b4d0...e49c54f (objects 0/0)
+[anexo] --- ejercicio de entorno (smoke, NO replay P4) ---
+[anexo]   document_id=replay-smoke-20261117T024521Z; upload 204; COMPLETED; download 200 (529 bytes);
+[anexo]   v1 health OK; Cleanup; PASS: smoke v2 + v1; exit=0
+[anexo] --- end fingerprint (run 3) --- sha256 27c2e258...bd19f (raw-pdfs 1, stream_len 1)
+
+[anexo] === diffs ===
+[anexo] --- start-run1 vs start-run2 --- (vacio, exit=0)
+[anexo] --- start-run1 vs start-run3 --- (vacio, exit=0) — los tres arranques parten del mismo estado
+[anexo] --- real before vs after (orden correcto, run 3) ---
+[anexo]   dt entre capturas: 113 s (incluye reset + up + smoke)
+[anexo]   diff /tmp/s8-real-before-fixed.json /tmp/s8-real-after-fixed.json: (vacio, exit=0)
+[anexo]   sha256 antes:  sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9
+[anexo]   sha256 despues: sha256:777930798eecd2adbe98594180313bb6c6e6e9a2b048e9c9437429035ea73aa9
+[anexo] --- end-run1 vs end-run2 / end-run3 (informativo) --- (vacio, exit=0)
+
+[anexo] === cleanup ===
+[anexo] Stack replay dejado UP y healthy. Real stack (-p infra) no tocado (21 contenedores `infra-*`
+[anexo] antes y despues).
+
+[anexo] === artefactos P4 (A4.1 reevaluado 2026-11-17) ===
+[anexo] P4 commit: 8ecb57c7d8360a2f52b596bd155f382a23924500
+[anexo]   ("feat(p4): cierre T9, límites en vivo y benchmark; merge de main (#18)")
+[anexo] git -C platform-services rev-parse HEAD -> 8ecb57c7d8360a2f52b596bd155f382a23924500 (exit 0)
+[anexo] git -C platform-services status --short -> (vacio) (exit 0, en ese momento)
+[anexo] ls -la platform-services/tests/parity/ -> normalize.py compare.py report.py README.md test_*.py fixtures/
+[anexo] ls platform-services/tests/parity/fixtures/ -> error-encoding match-basico match-crlf match-espacios
+[anexo]   match-pagina match-sin-texto match-unicode-nfc mismatch-contenido mismatch-falta-texto (9 casos)
+[anexo] find . -maxdepth 4 -iname '*corpus*' -> extraction-worker/docs/pdf-corpus.md (sin manifest S8)
+[anexo] grep -rln '9080' platform-services --include='*.sh' --include='*.py' --include='*.yml' -> (sin coincidencias)
+[anexo] Disponibilidad sobre fixtures de autotest (NO paridad S8):
+[anexo]   cd platform-services && python3 -m unittest discover tests/parity -> exit 0
+[anexo]   python3 tests/parity/report.py --fixtures tests/parity/fixtures --report /tmp/parity-tool-check.json
+[anexo]     --threshold 99.9 -> exit 0; casos_totales:9, casos_corpus:6, match:5, match_with_diff:1,
+[anexo]     mismatch:0, parity_rate:100.0
+[anexo] replay P4 NO DISPONIBLE en ese momento: sin manifest de corpus S8 de PDFs ni runner de dos caminos.

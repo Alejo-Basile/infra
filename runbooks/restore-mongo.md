@@ -94,3 +94,11 @@ N/A. El restore es en un contenedor aparte. Si falla, se limpia el volumen y se 
 ## Evidencia
 
 Ver `docs/evidencias/S2/S1-P1-14-restore.txt` para un ejemplo verificado con conteos.
+
+## RTO medido (2026-11-17)
+
+- Dump (mongodump --oplog --gzip): 202 ms.
+- Container start (drill-mongo-restore): 260 ms.
+- Restore (mongorestore --gzip --oplogReplay): ~300 ms.
+- Verification: total 1425 y por estado COMPLETED=1425 en vivo y restaurado, coinciden.
+- Drill command: mongodump --config=/tmp/dump.yml --oplog --gzip --archive=/tmp/mongo-backup-drill.archive ; mongorestore --gzip --archive=/tmp/mongo-backup-drill.archive --oplogReplay (en contenedor drill-mongo-restore, volumen drill_mongo_restore).
