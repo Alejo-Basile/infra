@@ -1,0 +1,83 @@
+S11-P1-C03 — schema.json y valores iniciales
+
+UTC date: 2026-11-17
+
+Files created:
+- infra/compose/consul/config/schema.json
+- infra/compose/consul/kv/doc-service.json
+- infra/compose/consul/kv/rate-limiter.json
+- infra/compose/consul/kv/extraction-worker.json
+
+Verification output:
+
+a) Schema parses and spot-check:
+jq -e '.["doc-service"].max_pdf_bytes.default == 26214400' infra/compose/consul/config/schema.json
+=> true (PASS)
+
+b) Key sets match schema exactly (both directions) for each service:
+== doc-service => true (PASS)
+== rate-limiter => true (PASS)
+== extraction-worker => true (PASS)
+
+c) Types match the declared type:
+== doc-service => true (PASS)
+== rate-limiter => true (PASS)
+== extraction-worker => true (PASS)
+
+d) Values inside declared range:
+== doc-service => true (PASS)
+== rate-limiter => true (PASS)
+== extraction-worker => true (PASS)
+
+d.1) List keys are validated by entry count (min/max in the schema mean entries for `type: list`), not by numeric value range:
+jq -e --slurpfile kv infra/compose/consul/kv/rate-limiter.json '
+  .["rate-limiter"] as $sc
+  | $kv[0] | to_entries
+  | all(.[];
+      ($sc[.key]) as $d
+      | (.value | split(",") | map(select(length > 0)) | length) as $n
+      | ($n >= $d.min and $n <= $d.max))
+' infra/compose/consul/config/schema.json
+=> true (PASS)
+entry counts: sensitive_routes = 1, exempt_paths = 3 (both within 1..50)
+Note: the numeric range comparison (check d) only applies to int/float keys; for string list keys it would compare strings against numbers, so entry counting is the correct check.
+
+e) Coherence:
+jq -e '.["doc-service"] as $d | ($d.doc_upload_grace_minutes.default >= 2 * $d.reconcile_interval_minutes.default) and ($d.min_safety_age_minutes.default >= $d.reconcile_interval_minutes.default)' infra/compose/consul/config/schema.json
+=> true (PASS)
+
+f) KV defaults equal the schema defaults for every key:
+== doc-service => true (PASS)
+== rate-limiter => true (PASS)
+== extraction-worker => true (PASS)
+
+g) No secret-shaped keys or values:
+=> clean (PASS)
+
+Defaults-vs-source table (path:line from docs/S11/tasks/task-3.md §3):
+doc-service:
+  max_pdf_bytes = 26214400 (doc-service/internal/config/config.go:48,67,95)
+  presign_upload_ttl_seconds = 900 (doc-service/internal/api/documents.go:20,157)
+  presign_download_ttl_seconds = 300 (doc-service/internal/api/documents.go:248)
+  reconcile_interval_minutes = 10 (doc-service/internal/config/config.go:49,68,96)
+  reconcile_stuck_after_minutes = 30 (doc-service/internal/reconciler/reconciler.go:76-77)
+  reconcile_dry_run = false (doc-service/internal/config/config.go:74)
+  doc_upload_grace_minutes = 30 (doc-service/internal/config/config.go:50,69,97)
+  min_safety_age_minutes = 15 (doc-service/internal/config/config.go:53,70,98)
+rate-limiter:
+  sensitive_routes = "POST /api/v2/documents=5:10" (platform-services/rate-limiter/cmd/ratelimitd/main.go:124,252)
+  exempt_paths = "/internal,/healthz,/metrics" (platform-services/rate-limiter/cmd/ratelimitd/main.go:126,253)
+extraction-worker:
+  bulkhead_max_concurrency = 4 (extraction-worker/crates/worker/src/consumer/config.rs:30,157)
+  retry_max_elapsed_seconds = 30 (extraction-worker/crates/worker/src/consumer/resilience.rs:189)
+  retry_initial_interval_ms = 500 (backoff 0.4.0 default; resilience.rs:187)
+  retry_multiplier = 1.5 (backoff 0.4.0 default; resilience.rs:187)
+  retry_max_interval_ms = 60000 (backoff 0.4.0 default; resilience.rs:187)
+  retry_randomization_factor = 0.5 (backoff 0.4.0 default; resilience.rs:187)
+  breaker_failure_threshold = 5 (resilience.rs:73)
+  breaker_timeout_seconds = 30 (resilience.rs:73)
+  job_timeout_seconds = 300 (config.rs:24,134-135)
+  max_pages = 2000 (config.rs:44,170)
+  min_idle_ms = 601000 (config.rs:25,137)
+
+Note: the planned TODO-measured placeholder for the four worker retry defaults is resolved with real measured values from the backoff 0.4.0 crate (initial 500 ms, multiplier 1.5, max interval 60000 ms, randomization 0.5), as measured in ~/.cargo/registry/src/*/backoff-0.4.0/src/default.rs. The code at extraction-worker/crates/worker/src/consumer/resilience.rs:187 does not override them.

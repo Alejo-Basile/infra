@@ -1,0 +1,4 @@
+{
+  "sensitive_routes": "POST /api/v2/documents=5:10",
+  "exempt_paths": "/internal,/healthz,/metrics"
+}
