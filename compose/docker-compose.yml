@@ -1056,7 +1056,7 @@ services:
     volumes:
       - ./consul/kv:/kv:ro
       - ./consul/config/schema.json:/schema.json:ro
-      - ../../scripts/consul-kv-sync.sh:/consul-kv-sync.sh:ro
+      - ../scripts/consul-kv-sync.sh:/consul-kv-sync.sh:ro
     entrypoint: ["/bin/sh", "/consul-kv-sync.sh"]
     environment:
       CONSUL_HTTP_ADDR: https://consul:8501
@@ -1064,6 +1064,8 @@ services:
       CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_operator_token
       KV_DIR: /kv
       SCHEMA_FILE: /schema.json
+      # S11-P1-C07: short git SHA recorded in config/meta/revision.
+      CONSUL_KV_REVISION: ${CONSUL_KV_REVISION:-unknown}
     networks: [internal]
     mem_limit: 64m
     cpus: 0.1
