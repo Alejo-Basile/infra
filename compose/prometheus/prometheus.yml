@@ -55,3 +55,10 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["ratelimitd:8090"]
+
+  # Alimenta los SLO windowed del pipeline (p50/p95/p99, terminal rate).
+  # El target solo existe con el perfil `full`; sin el servicio figura `down`.
+  - job_name: slo-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["slo-exporter:9100"]

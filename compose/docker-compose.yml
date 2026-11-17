@@ -351,6 +351,36 @@ services:
       retries: 6
       start_period: 10s
 
+  # --- slo-exporter (S5-P4-03): exporta metricas de SLO windowed sobre Mongo.
+  # Servicio scrape-only: solo lectura sobre Mongo, no modifica datos.
+  slo-exporter:
+    build:
+      context: ../../platform-services/slo-exporter
+      dockerfile: Dockerfile
+    image: slo-exporter:s5-p4-03
+    profiles: ["full"]
+    <<: *hardening
+    user: "10001:10001"
+    read_only: true
+    environment:
+      LISTEN_ADDR: ":9100"
+      MONGO_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/${MONGO_DATABASE:-documents}?replicaSet=rs0
+      MONGO_DB: ${MONGO_DATABASE:-documents}
+      SLO_WINDOW_HOURS: "24"
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9100/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
   # --- MinIO (SPEC 3.4): API S3 interna; exposicion publica SOLO via Traefik -
   # NOTA: la imagen oficial minio/minio no esta accesible desde este entorno
   # (Docker Hub deniega el pull). Se usa la imagen legacy de Bitnami con tag
