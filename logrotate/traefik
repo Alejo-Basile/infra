@@ -1,0 +1,9 @@
+# Alternative variant when the traefik log volume is bind-mounted to the host (not the default named volume).
+/var/log/traefik/access.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
