@@ -40,3 +40,6 @@ traefik/dynamic/*.tmp
 
 # Entorno de replay (S8-P1-01): nunca commitear
 .env.replay
+
+# Consul dev generated config
+compose/consul/config/*.local.hcl

@@ -3,9 +3,10 @@
 # SPEC.md v2.1 · plan-S0-P1.md (S0-P1-03 / 05 / 06 / 07)
 #
 # Perfiles:
-#   core   -> MongoDB (RS) + Redis (streams y ratelimit) + MinIO + initers
-#   full   -> core + Traefik + monolito (Strangler) + Prometheus/Grafana/Loki
-#   chaos  -> utilidades para matar procesos (base del game day S9)
+#   core       -> MongoDB (RS) + Redis (streams y ratelimit) + MinIO + initers
+#   full       -> core + Traefik + monolito (Strangler) + Prometheus/Grafana/Loki
+#   chaos      -> utilidades para matar procesos (base del game day S9)
+#   discovery  -> Consul server + agent + kv-sync (incluido en full)
 #
 # Uso:
 #   docker compose --profile core up -d
@@ -53,6 +54,8 @@ volumes:
   grafana-data:
   loki-data:
   promtail-positions:
+  consul-data:
+  consul-agent-data:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -69,6 +72,11 @@ secrets:
   svc_docservice_secret_key: { file: ../secrets/svc_docservice_secret_key.txt }
   svc_worker_access_key: { file: ../secrets/svc_worker_access_key.txt }
   svc_worker_secret_key: { file: ../secrets/svc_worker_secret_key.txt }
+  consul_gossip_key: { file: ../secrets/consul_gossip_key.txt }
+  consul_server_cert: { file: ../secrets/consul_server_cert.pem }
+  consul_server_key: { file: ../secrets/consul_server_key.pem }
+  consul_ca_cert: { file: ../secrets/consul_ca_cert.pem }
+  consul_operator_token: { file: ../secrets/consul_operator_token.txt }
 
 services:
   # ===========================================================================
@@ -908,6 +916,103 @@ services:
     depends_on:
       - prometheus
       - loki
+
+  # ===========================================================================
+  # DISCOVERY — S11-P1-C04 (Consul)
+  # ===========================================================================
+  consul:
+    image: hashicorp/consul:${CONSUL_IMAGE_TAG:?definir en .env}
+    profiles: ["discovery", "full"]
+    <<: *hardening-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    command: ["agent", "-config-dir=/consul/config"]
+    volumes:
+      - consul-data:/consul/data
+      - ./consul/config/server.hcl:/consul/config/server.hcl:ro
+      - ./consul/config/dev-server.local.hcl:/consul/config/dev-server.local.hcl:ro
+    secrets:
+      - consul_gossip_key
+      - consul_server_cert
+      - consul_server_key
+      - consul_ca_cert
+      - consul_operator_token
+    environment:
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      CONSUL_NODE_NAME: consul
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD-SHELL", "consul operator raft list-peers -http-addr=https://127.0.0.1:8501 -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  consul-agent:
+    image: hashicorp/consul:${CONSUL_IMAGE_TAG:?definir en .env}
+    profiles: ["discovery", "full"]
+    <<: *hardening-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    command: ["agent", "-config-dir=/consul/config"]
+    volumes:
+      - consul-agent-data:/consul/data
+      - ./consul/config/agent.hcl:/consul/config/agent.hcl:ro
+      - ./consul/config/dev-agent.local.hcl:/consul/config/dev-agent.local.hcl:ro
+    secrets:
+      - consul_gossip_key
+      - consul_ca_cert
+      - consul_server_cert
+      - consul_server_key
+      - consul_operator_token
+    networks: [internal]
+    depends_on:
+      consul:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD-SHELL", "consul members -http-addr=https://127.0.0.1:8501 -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token | grep -q alive"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  consul-kv-sync:
+    image: curlimages/curl:${CURL_IMAGE_TAG:?definir en .env}
+    profiles: ["discovery", "full"]
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    secrets:
+      - consul_operator_token
+      - consul_ca_cert
+    volumes:
+      - ./consul/kv:/kv:ro
+      - ./consul/config/schema.json:/schema.json:ro
+      - ../../scripts/consul-kv-sync.sh:/consul-kv-sync.sh:ro
+    entrypoint: ["/bin/sh", "/consul-kv-sync.sh"]
+    environment:
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_operator_token
+      KV_DIR: /kv
+      SCHEMA_FILE: /schema.json
+    networks: [internal]
+    mem_limit: 64m
+    cpus: 0.1
+    pids_limit: 50
+    restart: "no"
+    depends_on:
+      consul:
+        condition: service_healthy
 
   # ===========================================================================
   # PERFIL CHAOS — utilidades para pruebas de fallo (game day S9)
