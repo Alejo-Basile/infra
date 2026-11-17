@@ -1,0 +1,46 @@
+# S9-P1-04 — Headers, TLS, MinIO console
+
+## Headers
+
+Verificacion con GET (`curl -sk -D- -o /dev/null`). Los routers legacy declaran
+`Method(GET)`; un `HEAD` (`curl -I`) no matchea esos routers y devuelve 404 sin
+pasar por `sec-headers@file`. Por eso la verificacion de headers usa GET.
+
+- GET https://api.localhost:8543/health → HTTP/2 200; strict-transport-security: max-age=31536000; includeSubDomains; x-content-type-options: nosniff; x-frame-options: DENY; referrer-policy: strict-origin-when-cross-origin (router r-inv-health@file)
+- GET https://api.localhost:8543/health/ready → HTTP/2 200; mismas cuatro cabeceras (router r-inv-health-ready@file)
+- GET https://api.localhost:8543/healthz → HTTP/2 200; mismas cuatro cabeceras (router r-doc-healthz@file)
+- GET https://s3.localhost:8543/ → HTTP/2 403 (MinIO sin credenciales, esperado); mismas cuatro cabeceras (router s3-api@file)
+
+Observacion: las respuestas cortocircuitadas por `rate-limit@file` corren antes
+que `sec-headers@file` en la cadena y pueden no llevar las cabeceras de
+seguridad. No afecta a las respuestas 2xx/4xx del servicio; se registra como
+observacion, sin cambio de configuracion.
+
+## Middleware
+
+Definicion en infra/traefik/dynamic/middlewares.yml:26 (sec-headers). Routers que lo aplican: 15 (grep -c "sec-headers@file").
+
+## TLS
+
+- TLS 1.1: http_code 000, exit=35 (rechazado)
+- TLS 1.2: http_code 200, exit=0 (aceptado)
+- TLS 1.3: http_code 200, exit=0 (aceptado)
+
+## Consola MinIO
+
+- docker port infra-minio-1: (vacio)
+- nc -zv -w2 api.localhost 9001: Connection refused (exit 1)
+- curl https://api.localhost:9001/: 000 (exit 7)
+- Sin router de consola en routing.yml (grep 9001/console sin resultados)
+
+## mTLS
+
+Deuda consciente per SPEC §9, no resuelta en este alcance.
+
+## Limitaciones
+
+openssl no esta instalado en el host; se uso curl en su lugar. Unica limitacion real.
+
+## Veredicto
+
+Headers: PASS (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy observados). TLS 1.1 rechazado: PASS. Consola MinIO no expuesta: PASS. mTLS: deuda (no bloqueante).

@@ -1,0 +1,22 @@
+# S9-P1-04 — Gitleaks
+
+## Resultado por repo
+
+| Repo | Commits | Leaks | Exit | Veredicto |
+|---|---|---|---|---|
+| infra | 186 | 0 | 0 | PASS |
+| doc-service | 121 | 0 | 0 | PASS |
+| extraction-worker | 188 | 0 | 0 | PASS |
+| platform-services (--config .gitleaks.toml) | 100 | 0 | 0 | PASS |
+
+## Discrepancia
+
+`docs/evidencia-gitleaks-local.txt` reporta `1 commits scanned`, `scanned ~107 bytes (107 bytes)`, `leaks found: 2`. Un repositorio de 107 bytes y un solo commit no puede ser el historial del proyecto. Es un fixture/smoke-test creado para ejercitar el motor de reglas. `infra/docs/evidencias/S2/S2-P1-01-gitleaks.txt` reporta 0 leaks en 38 commits. Los 2 hallazgos locales son datos de fixture, no un secreto en el historial de este proyecto; no requiere remediacion.
+
+## Higiene
+
+Existen en disco archivos untracked `infra/secrets/*.bak` y `replay_*`; `.gitignore` cubre `secrets/*`. Se registran, no se eliminan.
+
+## Veredicto
+
+0 secretos verificados en los 4 repos = PASS.

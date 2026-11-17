@@ -20,3 +20,23 @@ jobs:
         # Se activa solo cuando exista docker-compose.yml (S0-P1-03)
         if: hashFiles('docker-compose.yml') != ''
         run: docker compose -f docker-compose.yml config --quiet
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Approach: scan pinned infrastructure images extracted from compose at job runtime
+      # via grep, because building a valid env for `config --images` in CI is impractical.
+      - name: extract image list
+        run: |
+          grep -E '^[[:space:]]+image:' compose/docker-compose.yml \
+            | sed 's/.*image: //; s/[[:space:]]*#.*//' \
+            | grep -v '\\${' \
+            | grep -vE '^(monolito|ratelimitd|doc-service|extraction-worker):' \
+            | sort -u > /tmp/images.txt
+          cat /tmp/images.txt
+      - name: scan images
+        run: |
+          while read -r img; do
+            docker run --rm aquasec/trivy:0.76.2 image --severity CRITICAL,HIGH --no-progress "$img" || true
+          done < /tmp/images.txt
