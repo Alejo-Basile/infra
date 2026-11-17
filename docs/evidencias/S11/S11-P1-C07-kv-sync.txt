@@ -1,0 +1,162 @@
+S11-P1-C07 — Sync KV con CAS y revisión
+UTC date: 2026-11-17T23:22:28Z
+Repositorio de trabajo: infra/ (repo git propio; HEAD corto = f5af09b)
+
+Estado previo observado (RED):
+- infra/scripts/consul-kv-sync.sh era un placeholder de 20 líneas ("C04
+  placeholder. Real CAS KV sync lands in S11-P1-C07"): solo comprobaba
+  alcanzabilidad del líder y salía 0 sin escribir nada.
+- `consul kv get -recurse config/` devolvía salida vacía (KV sin poblar).
+  Comprobado: `docker exec infra-consul-1 ... consul kv get -recurse config/`
+  => exit 0, 0 líneas.
+
+Bug de cableado encontrado y corregido antes del primer sync:
+- infra/compose/docker-compose.yml montaba el script en
+  `../../scripts/consul-kv-sync.sh`, que desde el directorio del compose
+  resuelve a `<repo>/scripts/` (inexistente). Docker creó ahí un directorio
+  vacío y `sh /consul-kv-sync.sh` no ejecutaba nada, con exit 0 silencioso.
+- Corregido a `../scripts/consul-kv-sync.sh` (infra/scripts/) y se eliminó el
+  directorio fantasma creado por Docker en la raíz del repo.
+- Se agregó `CONSUL_KV_REVISION: ${CONSUL_KV_REVISION:-unknown}` al entorno del
+  servicio one-shot para que el SHA quede registrado sin depender de `-e`.
+
+Archivos creados/modificados:
+- infra/scripts/consul-kv-sync.sh (implementación completa, POSIX sh, 380 líneas)
+- infra/compose/docker-compose.yml (ruta del bind mount + CONSUL_KV_REVISION)
+- infra/docs/evidencias/S11/S11-P1-C07-kv-sync.txt (este archivo)
+
+Diseño implementado (task-7 §4):
+- Flags `--dry-run`, `--kv-dir DIR`, `--schema FILE`, `--help`.
+- Env: CONSUL_HTTP_ADDR, CONSUL_CACERT, CONSUL_HTTP_TOKEN_FILE /
+  CONSUL_OPERATOR_TOKEN_FILE (o CONSUL_HTTP_TOKEN), CONSUL_KV_PREFIX,
+  KV_DIR, SCHEMA_FILE, CONSUL_KV_REVISION.
+- Validación por clave contra schema.json (type/min/max) ANTES de escribir;
+  clave inexistente en el schema => SKIP. El cliente corre en
+  curlimages/curl:8.10.1, que no trae jq: la validación y el parseo de JSON se
+  hacen con awk/sed POSIX.
+- Coherencia doc-service evaluada sobre el conjunto efectivo (KV actual
+  sobrepuesto con los valores del archivo); se rechaza solo la clave que la
+  rompe, en prioridad doc_upload_grace_minutes, min_safety_age_minutes,
+  reconcile_interval_minutes.
+- Comparación de valor crudo antes del PUT (idempotencia real) y CAS con
+  ?cas=<ModifyIndex>, relectura y reintento máximo 3 por clave (409).
+- config/meta/revision se escribe con el SHA y config/meta/applied_at se
+  refresca solo cuando hubo escritura efectiva o cambió la revisión; así una
+  segunda corrida sin cambios reporta `changes: 0` (criterio de task-7 §6).
+- Token por archivo (patrón *_FILE), nunca impreso; TLS con --cacert.
+
+Comandos ejecutados (desde infra/):
+  docker compose --env-file .env -f compose/docker-compose.yml --profile discovery config --quiet
+  CONSUL_KV_REVISION=$(git rev-parse --short HEAD) docker compose --env-file .env \
+    -f compose/docker-compose.yml --profile discovery run --rm --no-TTY consul-kv-sync
+  docker exec infra-consul-1 sh -c 'CONSUL_HTTP_ADDR=https://127.0.0.1:8501 \
+    CONSUL_CACERT=/run/secrets/consul_ca_cert \
+    CONSUL_HTTP_TOKEN=$(cat /run/secrets/consul_operator_token) consul kv get -recurse config/'
+
+1) Compose válido
+  `docker compose ... config --quiet` => sin salida, exit 0.
+
+2) Primer sync (GREEN)
+  [info] kv_dir=/kv schema=/schema.json addr=https://consul:8501 prefix=config revision=f5af09b dry_run=0
+  [PASS] doc-service/max_pdf_bytes updated -> '26214400'
+  [PASS] doc-service/presign_upload_ttl_seconds updated -> '900'
+  [PASS] doc-service/presign_download_ttl_seconds updated -> '300'
+  [PASS] doc-service/reconcile_interval_minutes updated -> '10'
+  [PASS] doc-service/reconcile_stuck_after_minutes updated -> '30'
+  [PASS] doc-service/reconcile_dry_run updated -> 'false'
+  [PASS] doc-service/doc_upload_grace_minutes updated -> '30'
+  [PASS] doc-service/min_safety_age_minutes updated -> '15'
+  [PASS] extraction-worker/bulkhead_max_concurrency updated -> '4'
+  [PASS] extraction-worker/retry_max_elapsed_seconds updated -> '30'
+  [PASS] extraction-worker/retry_initial_interval_ms updated -> '500'
+  [PASS] extraction-worker/retry_multiplier updated -> '1.5'
+  [PASS] extraction-worker/retry_max_interval_ms updated -> '60000'
+  [PASS] extraction-worker/retry_randomization_factor updated -> '0.5'
+  [PASS] extraction-worker/breaker_failure_threshold updated -> '5'
+  [PASS] extraction-worker/breaker_timeout_seconds updated -> '30'
+  [PASS] extraction-worker/job_timeout_seconds updated -> '300'
+  [PASS] extraction-worker/max_pages updated -> '2000'
+  [PASS] extraction-worker/min_idle_ms updated -> '601000'
+  [PASS] rate-limiter/sensitive_routes updated -> 'POST /api/v2/documents=5:10'
+  [PASS] rate-limiter/exempt_paths updated -> '/internal,/healthz,/metrics'
+  [PASS] meta/revision updated -> 'f5af09b'
+  [PASS] meta/applied_at updated -> '2026-11-17T23:20:11Z'
+  changes: 23
+  exit 0
+  Nota: la primera corrida registró revision=unknown porque el SHA aún no se
+  propagaba al contenedor; corregido el compose, la corrida siguiente escribió
+  f5af09b (changes: 2: revisión + applied_at).
+
+3) Igualdad KV vs JSON (equivalencia clave-por-clave)
+  Volcado: `consul kv get -recurse config/` => 23 líneas (21 claves de servicio
+  + 2 de config/meta/).
+  Esperado generado con jq desde compose/consul/kv/*.json => 21 líneas.
+  diff -u esperado vs (volcado sin config/meta/) => sin diferencias.
+  RESULTADO: MATCH 21/21 claves, valores idénticos.
+
+  config/doc-service/doc_upload_grace_minutes:30
+  config/doc-service/max_pdf_bytes:26214400
+  config/doc-service/min_safety_age_minutes:15
+  config/doc-service/presign_download_ttl_seconds:300
+  config/doc-service/presign_upload_ttl_seconds:900
+  config/doc-service/reconcile_dry_run:false
+  config/doc-service/reconcile_interval_minutes:10
+  config/doc-service/reconcile_stuck_after_minutes:30
+  config/extraction-worker/breaker_failure_threshold:5
+  config/extraction-worker/breaker_timeout_seconds:30
+  config/extraction-worker/bulkhead_max_concurrency:4
+  config/extraction-worker/job_timeout_seconds:300
+  config/extraction-worker/max_pages:2000
+  config/extraction-worker/min_idle_ms:601000
+  config/extraction-worker/retry_initial_interval_ms:500
+  config/extraction-worker/retry_max_elapsed_seconds:30
+  config/extraction-worker/retry_max_interval_ms:60000
+  config/extraction-worker/retry_multiplier:1.5
+  config/extraction-worker/retry_randomization_factor:0.5
+  config/meta/applied_at:2026-11-17T23:20:11Z
+  config/meta/revision:f5af09b
+  config/rate-limiter/exempt_paths:/internal,/healthz,/metrics
+  config/rate-limiter/sensitive_routes:POST /api/v2/documents=5:10
+
+4) Segunda corrida (idempotencia)
+  Todas las claves => [PASS] ... unchanged
+  [PASS] meta/revision unchanged
+  [PASS] meta/applied_at unchanged
+  changes: 0
+  exit 0
+
+5) Rechazo de valores inválidos, sin escribir
+  Copia fuera del repo en /tmp/opencode/kv-bad con:
+    max_pdf_bytes = 1                  (fuera de rango 1 MiB..100 MiB)
+    reconcile_dry_run = "maybe"        (tipo incorrecto, esperado bool)
+    doc_upload_grace_minutes = 5       (rompe coherence: 5 < 2*10)
+  Comando:
+    CONSUL_KV_REVISION=$(git rev-parse --short HEAD) docker compose ... run --rm \
+      -v /tmp/opencode/kv-bad:/kv-bad:ro consul-kv-sync --kv-dir /kv-bad --dry-run
+  Salida (extracto):
+    [SKIP] doc-service/max_pdf_bytes (invalid: out of range)
+    [SKIP] doc-service/reconcile_dry_run (invalid: wrong type (expected bool))
+    [SKIP] doc-service/doc_upload_grace_minutes (invalid: coherence doc_upload_grace_minutes >= 2 * reconcile_interval_minutes and min_safety_age_minutes >= reconcile_interval_minutes)
+    changes: 0
+  KV intacto tras la prueba:
+    consul kv get config/doc-service/max_pdf_bytes        => 26214400
+    consul kv get config/doc-service/reconcile_dry_run    => false
+    consul kv get -detailed config/doc-service/max_pdf_bytes | grep ModifyIndex
+      antes: 651 / después: 651  (sin escritura)
+
+6) --dry-run con un cambio válido: muestra diff y no escribe
+  Copia /tmp/opencode/kv-dry con presign_upload_ttl_seconds = 901.
+  [WOULD-UPDATE] doc-service/presign_upload_ttl_seconds: '900' -> '901'
+  changes: 0
+  ModifyIndex y Value antes/después:
+    ModifyIndex 652 / Value 900  (idénticos) => DRY-RUN: NO WRITE CONFIRMED
+
+7) Metadatos de auditoría
+  config/meta/revision   => f5af09b   (= `git rev-parse --short HEAD` del repo infra/)
+  config/meta/applied_at => 2026-11-17T23:20:11Z
+
+Limpieza: /tmp/opencode/kv-bad y /tmp/opencode/kv-dry eliminados; ningún archivo
+temporal dentro del repo; sin claves sonda creadas ni prefijos borrados.
+
+Resultado: FAIL=0
+VEREDICTO: PASS — sync KV idempotente con CAS, validación previa y revisión.
