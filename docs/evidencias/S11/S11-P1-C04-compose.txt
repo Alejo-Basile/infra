@@ -1,0 +1,90 @@
+S11-P1-C04 — Consul server + agent in compose
+UTC date: 2026-11-17
+
+Files created/modified:
+- infra/compose/docker-compose.yml (discovery profile, volumes, secrets, consul/consul-agent/consul-kv-sync)
+- infra/compose/consul/config/server.hcl, agent.hcl
+- infra/compose/consul/config/dev-server.local.hcl, dev-agent.local.hcl (generated, gitignored)
+- infra/scripts/consul-dev-secrets.sh
+- infra/scripts/consul-kv-sync.sh
+- infra/.env, infra/.env.example
+- infra/.gitignore
+- infra/secrets/consul_* (generated, gitignored)
+
+Commands used (from infra/):
+  docker compose --env-file .env -f compose/docker-compose.yml --profile <p> ...
+  bash scripts/consul-dev-secrets.sh
+
+Verification:
+1) Compose renders and all profiles stay valid:
+   - --profile discovery config --quiet => exit 0
+   - --profile core config --quiet     => exit 0
+   - --profile full config --quiet     => exit 0
+   - --profile chaos config --quiet    => exit 0
+
+2) Dev secret material generation (infra/scripts/consul-dev-secrets.sh):
+   - second run is a no-op, no file content changes (no secret values printed)
+
+3) Leader elected (server, HTTPS + CA + operator token):
+   consul operator raft list-peers -http-addr=https://127.0.0.1:8501 \
+     -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token
+   Node          ID                                    Address           State   Voter  RaftProtocol  Commit Index  Trails Leader By
+   1caae67dcd30  07c2c94d-4165-cef1-06fe-07870cef5f4b  172.24.0.13:8300  leader  true   3             33            -
+
+4) Agent alive (through the client agent):
+   consul members -http-addr=https://127.0.0.1:8501 \
+     -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token
+   Node          Address           Status  Type    Build   Protocol  DC   Partition  Segment
+   1caae67dcd30  172.24.0.13:8301  alive   server  1.22.7  2         dc1  default    <all>
+   b4a55202336e  172.24.0.14:8301  alive   client  1.22.7  2         dc1  default    <default>
+
+5) Health + no host publication:
+   docker compose --profile discovery ps
+   infra-consul-1        Up (healthy)
+   infra-consul-agent-1  Up (healthy)
+   `ps` lists only container-exposed ports (8300-8302, 8500, 8600); none are published
+   because the service blocks have no `ports:`. Host check:
+   ss -ltn | grep -E ':(8500|8501)\b'  => no output (nothing bound on the host).
+
+6) ACL `default_policy = "deny"` enforced (curl from consul-agent, HTTPS + CA):
+   anon PUT /v1/kv/config/probe                      => 403
+   anon GET /v1/kv/config/probe (key exists)         => 403
+   anon GET /v1/acl/tokens                           => 403
+   PUT   /v1/kv/config/probe with operator token     => 200
+   DELETE /v1/kv/config/probe with operator token    => 200  (probe cleaned up)
+   Note: a read of a non-existent key under an allowed prefix returns 404; the 403 above
+   was taken against an existing key so it proves the deny policy, not a missing key.
+
+7) One-shot KV sync placeholder:
+   infra-consul-kv-sync-1  Exited (0)
+   (C07 owns the real CAS sync; the stub only proves reachability.)
+
+8) Images:
+   hashicorp/consul:1.22.7 @ sha256:a230dcea0bb107bd7958a912d1429fb7f9d399637de7ffb814b34412b9e8c543
+   curlimages/curl:8.10.1 (already present locally)
+
+9) Existing stack untouched:
+   mongo/redis-*/minio/traefik/prometheus/grafana/doc-service/extraction-worker kept their
+   pre-existing "Up 3 hours" status; only the three Consul containers were added.
+
+Deviations from task-4.md (all deliberate, observed):
+- Secrets/certs are generated in C04 via consul-dev-secrets.sh instead of bare placeholders:
+  hardcoded placeholder strings prevent Consul from starting (gossip encrypt and TLS).
+  C05 rotates/hardens gossip + TLS; C06 replaces the single management token with per-service ACL tokens.
+- TLS uses Consul's top-level keys (ca_file/cert_file/key_file/verify_server_hostname/
+  verify_outgoing/verify_incoming), not a `tls_config` block; the block form is not accepted
+  by Consul 1.22 agent config.
+- Config files are mounted individually read-only, never the whole /consul/config directory:
+  the image entrypoint chowns that directory and a read-only dir mount aborts startup
+  ("chown: /consul/config: Read-only file system").
+- The agent uses the same server cert/key (SANs include consul, consul-agent,
+  server.dc1.consul, localhost, 127.0.0.1) because its HTTPS listener needs cert_file/key_file.
+- Gossip key and the dev management token live in the generated, gitignored
+  dev-*.local.hcl files because `encrypt` is a config-only field with no file/secret support.
+- An extra named volume `consul-agent-data` is mounted at /consul/data for the client agent
+  (read-only rootfs needs a writable state dir; the image path lets the entrypoint chown it).
+
+Notes:
+- Dev-generated cert/key files under infra/secrets/ are created by `docker run` (root-owned,
+  0644) so the container's non-root `consul` user can read them. C05 owns rotation.
+- No host ports for 8500/8501. UI exposure is C09.
