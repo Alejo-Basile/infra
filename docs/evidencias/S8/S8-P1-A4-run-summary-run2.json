@@ -1,0 +1,35 @@
+{
+  "schema_version": "s8-replay/v1",
+  "run_id": "20261117T044106Z-9bc37c",
+  "started_at": "2026-11-17T04:41:06Z",
+  "finished_at": "2026-11-17T04:44:30Z",
+  "manifest": {
+    "path": "tests/parity/corpus/manifest.json",
+    "count": 100,
+    "version": "s8-expanded-1"
+  },
+  "endpoints": {
+    "v1": "http://localhost:9081",
+    "v2": "http://localhost:9080"
+  },
+  "docs_total": 100,
+  "v1_ok": 100,
+  "v1_errors": 0,
+  "v2_ok": 100,
+  "v2_errors": 0,
+  "docs_compared": 100,
+  "parity_rate": 100.0,
+  "threshold": 99.9,
+  "parity_pass": true,
+  "corpus_error_rate": 0.0,
+  "error_rate_threshold": 0.001,
+  "error_rate_pass": true,
+  "verdicts": {
+    "MATCH": 100,
+    "MATCH_WITH_DIFF": 0,
+    "MISMATCH": 0,
+    "ERROR": 0
+  },
+  "failed_documents": [],
+  "exit_code": 0
+}
