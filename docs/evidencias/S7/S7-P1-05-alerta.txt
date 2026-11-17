@@ -1,0 +1,46 @@
+=== S7-P1-05 Deteccion operativa: metricas, scrape y alertas (post-merge) ===
+Timestamp: 2026-11-15T22:37:51Z
+Operador: @Alejo-Basile (P1)
+Entorno: docker compose --profile full sobre main mergeado
+infra main: cb00558 | platform-services main: e76bba2 | doc-service main: 75b607d (PR #77 aun abierto)
+Contenedores recreados: 2026-11-15T22:34:45Z (traefik, doc-service, ratelimitd); Prometheus reiniciado para recargar reglas.
+
+--- Reglas validadas ---
+$ docker exec infra-prometheus-1 promtool check rules /etc/prometheus/alert.rules.yml
+Checking /etc/prometheus/alert.rules.yml
+  SUCCESS: 21 rules found
+
+--- Scrape job ratelimitd ---
+$ docker exec infra-prometheus-1 wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active'
+ratelimitd  http://ratelimitd:8090/metrics  up
+
+--- Reglas cargadas (grupo s1-p1-13-http) ---
+RateLimitDegraded   for=60s   expr=sum(increase(ratelimit_requests_total{decision="degraded"}[2m])) > 0   severity=warning
+RateLimitDaemonDown for=120s  expr=up{job="ratelimitd"} == 0                                               severity=critical
+
+--- Alerta disparada durante el drill (post-merge) ---
+[
+  {
+    "labels": {
+      "alertname": "RateLimitDegraded",
+      "severity": "warning"
+    },
+    "annotations": {
+      "description": "ratelimitd no pudo consultar redis-ratelimit y sirvio fail-open; la API responde 200 con X-RateLimit-Degraded: true y sin limite efectivo; restaurar redis-ratelimit, no reiniciar Traefik ni ratelimitd.",
+      "runbook_url": "infra/runbooks/gateway-trafico.md",
+      "summary": "ratelimitd sirvio fail-open (Redis no disponible)"
+    },
+    "state": "firing",
+    "activeAt": "2026-11-15T22:35:46.771976804Z",
+    "value": "1.1124539130434783e+01"
+  }
+]
+
+--- Resolucion automatica ---
+$ docker exec infra-prometheus-1 wget -qO- http://127.0.0.1:9090/api/v1/alerts   # 2026-11-15T22:37:51Z
+Alertas activas de rate limit: []
+
+--- Inconsistencia conocida (no bloqueante) ---
+RateLimitDaemonDown se verifico como regla cargada y target up, pero no se ejecuto un drill de caida
+del wrapper. Su enunciado se apoya en el comportamiento de Traefik ForwardAuth (error del auth server
+-> 5xx en /api/v2), no en una observacion de esta corrida.
