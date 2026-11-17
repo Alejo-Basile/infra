@@ -38,8 +38,17 @@ fi
 if [[ ! -s "$SECRETS/consul_server_key.pem" ]]; then
   OSSL genrsa -out /w/consul_server_key.pem 2048
 fi
+REGEN=0
 if [[ ! -s "$SECRETS/consul_server_cert.pem" ]]; then
-  printf 'subjectAltName=DNS:consul,DNS:consul-agent,DNS:server.dc1.consul,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$SECRETS/san.cnf"
+  REGEN=1
+elif ! docker run --rm -v "$SECRETS:/w" -w /w hashicorp/consul:1.22.7 openssl x509 -in /w/consul_server_cert.pem -noout -ext subjectAltName 2>/dev/null | grep -q 'consul.localhost'; then
+  REGEN=1
+fi
+if [[ "$REGEN" == "1" ]]; then
+  if [[ ! -s "$SECRETS/consul_server_key.pem" ]]; then
+    OSSL genrsa -out /w/consul_server_key.pem 2048
+  fi
+  printf 'subjectAltName=DNS:consul,DNS:consul-agent,DNS:consul.localhost,DNS:server.dc1.consul,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$SECRETS/san.cnf"
   docker run --rm -v "$SECRETS:/w" -w /w hashicorp/consul:1.22.7 sh -c 'openssl req -new -key /w/consul_server_key.pem -out /w/consul_server.csr -subj "/CN=consul" && openssl x509 -req -in /w/consul_server.csr -CA /w/consul_ca_cert.pem -CAkey /w/consul_ca_key.pem -CAcreateserial -out /w/consul_server_cert.pem -days 825 -sha256 -extfile /w/san.cnf'
   rm -f "$SECRETS/consul_server.csr" "$SECRETS/san.cnf" "$SECRETS/consul_ca_cert.srl"
 fi

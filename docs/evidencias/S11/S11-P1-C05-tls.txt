@@ -1,0 +1,75 @@
+S11-P1-C05 — Gossip cifrado + TLS de servidor (sin mTLS)
+UTC date: 2026-11-17
+
+Files created/modified:
+- infra/scripts/gen-certs.sh (emite material TLS de Consul firmado con la CA de dev existente;
+  SAN DNS:consul,DNS:consul-agent,DNS:consul.localhost; devuelve la propiedad al usuario del host)
+- infra/scripts/consul-dev-secrets.sh (SAN incluye consul.localhost; regenera el cert si el SAN falta)
+- infra/.env.example (CONSUL_HTTP_ADDR, CONSUL_HTTP_SSL, CONSUL_CACERT; CA siempre por archivo)
+- infra/docs/adr/ADR-0020.md (riesgo aceptado sin mTLS + decisión de inyección de `encrypt`)
+- infra/docs/evidencias/S11/S11-P1-C05-tls.txt (este archivo)
+
+Commands used (desde infra/):
+  bash -n scripts/gen-certs.sh && bash -n scripts/consul-dev-secrets.sh
+  bash scripts/consul-dev-secrets.sh
+  bash scripts/gen-certs.sh
+  docker compose --env-file .env -f compose/docker-compose.yml --profile discovery config --quiet
+  docker compose --env-file .env -f compose/docker-compose.yml --profile discovery \
+    up -d --force-recreate consul consul-agent
+
+Verification:
+1) Sintaxis y compose:
+   - bash -n ambos scripts => exit 0
+   - docker compose --profile discovery config --quiet => exit 0
+2) Contenedores:
+   - infra-consul-1       Up (healthy)
+   - infra-consul-agent-1 Up (healthy)
+3) Gossip cifrado (`consul keyring -list`, valor de clave redactado):
+   ==> Gathering installed encryption keys...
+
+   WAN:
+     <redacted> [1/1]
+
+   dc1 (LAN):
+     <redacted> [2/2]
+4) HTTPS con CA:
+   $ docker exec infra-consul-agent-1 sh -c \
+       'curl -sS --cacert /run/secrets/consul_ca_cert https://consul:8501/v1/status/leader'
+   "172.24.0.13:8300"
+5) Plaintext rechazado (http = -1; el puerto habla TLS):
+   $ docker exec infra-consul-1 sh -c 'curl -sS --max-time 3 http://127.0.0.1:8501/v1/status/leader'
+   Client sent an HTTP request to an HTTPS server.
+6) SAN del certificado servido por Consul (conexión real, no solo archivo):
+   $ docker exec infra-consul-1 sh -c \
+       'openssl s_client -connect consul:8501 -CAfile /run/secrets/consul_ca_cert \
+        -verify_hostname consul.localhost </dev/null'
+   subject=CN=consul
+   Verify return code: 0 (ok)
+   X509v3 Subject Alternative Name:
+     DNS:consul, DNS:consul-agent, DNS:consul.localhost, DNS:server.dc1.consul,
+     DNS:localhost, IP Address:127.0.0.1
+7) Material emitido por gen-certs.sh (firmado con infra/secrets/consul_ca_cert.pem):
+   - infra/traefik/certs/consul.localhost.pem      SAN: DNS:consul, DNS:consul-agent, DNS:consul.localhost
+   - infra/traefik/certs/consul.localhost-key.pem
+   - openssl verify -CAfile secrets/consul_ca_cert.pem traefik/certs/consul.localhost.pem => OK
+   - api.localhost/s3.localhost siguen emitiéndose (SAN correcto) y Traefik responde
+     https://api.localhost:8543/healthz => 200
+8) Fragmento TLS de server.hcl / agent.hcl (sin valores de clave):
+   ports {
+     https = 8501
+     http  = -1
+   }
+   ca_file                = "/run/secrets/consul_ca_cert"
+   cert_file              = "/run/secrets/consul_server_cert"
+   key_file               = "/run/secrets/consul_server_key"
+   verify_server_hostname = true
+   verify_outgoing        = true
+   verify_incoming        = false   # sin mTLS: riesgo aceptado (ADR-0020)
+9) Inyección de `encrypt`: Consul no soporta `*_FILE`; el valor se materializa en
+   dev-server.local.hcl / dev-agent.local.hcl desde infra/secrets/consul_gossip_key.txt
+   por consul-dev-secrets.sh (bootstrap, gitignored). Rotación con `consul keyring`.
+
+Notes:
+- El comando `consul keyring -list` imprime la clave en claro; por eso la salida se archiva redactada.
+- mkcert -install falla sin terminal interactiva en este host (sin sudo); gen-certs.sh lo tolera
+  y los certificados se emiten igual (la CA de mkcert no queda en el trust store del sistema).
