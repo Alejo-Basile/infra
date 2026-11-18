@@ -1,0 +1,30 @@
+Evidencia S11-P1-C28 — bloque ocr-worker en compose
+Fecha: 2026-11-18
+
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile full config --quiet
+exit 0
+
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile discovery config --quiet
+exit 0
+
+$ docker compose ... --profile full config --format json | jq '.services["ocr-worker"] | {image, read_only, profiles, networks, healthcheck, container_name}'
+image: ghcr.io/alejo-basile/ocr-worker@sha256:c406bbcaf7a08f324d2a76ebb0137e91244e9cfd5738948b76f13e87b8bf40a1
+read_only: true
+profiles: ["full"]
+networks: {data, internal}
+healthcheck: CMD curl -fsS http://localhost:8080/healthz
+container_name: null
+
+$ bash scripts/verify-consul-boundaries.sh
+Check 5 PASS, Check 6 PASS, exit 0
+
+$ sh -n compose/ocr-worker/entrypoint.sh
+OK
+
+Notas: §0.2 no cerrado formalmente (env derivado de crates/ocr-worker/src/config.rs); /readyz y /metrics ausentes; identidades MinIO/Mongo OCR no provisionadas (fuera de alcance C28, necesarias antes de runtime P3); contenedor healthy NO ejecutado.
+
+Post-revision (verificador independiente + correccion acotada)
+- Blocker corregido: el binario lee MONGO_DB (default "app"); el bloque ahora exporta `MONGO_DB: "${MONGO_DATABASE:-documents}"` ademas de MONGO_OCR_DB (URI/authSource del entrypoint).
+- Linea citada a proposito: el guardarrail C25 Check 5 compara lineas exactas contra extraction-worker.
+- Recheck final: `--profile full config --quiet` exit 0; MONGO_DB=documents en el JSON resuelto; `verify-consul-boundaries.sh` Check 5/6 PASS, exit 0; `sh -n` OK.
+- Defaults OCR alineados con el crate: OCR_DPI=150, OCR_LIMIT_W=3500, OCR_LIMIT_PIX=12000000, OCR_LANG=spa+eng, OCR_OEM=1, OCR_PSM=3, OCR_MAX_ATTEMPTS=3.

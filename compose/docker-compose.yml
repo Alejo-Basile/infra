@@ -75,6 +75,9 @@ secrets:
   svc_docservice_secret_key: { file: ../secrets/svc_docservice_secret_key.txt }
   svc_worker_access_key: { file: ../secrets/svc_worker_access_key.txt }
   svc_worker_secret_key: { file: ../secrets/svc_worker_secret_key.txt }
+  ocr_minio_access_key: { file: ../secrets/ocr_minio_access_key.txt }
+  ocr_minio_secret_key: { file: ../secrets/ocr_minio_secret_key.txt }
+  ocr_mongo_password: { file: ../secrets/ocr_mongo_password.txt }
   consul_gossip_key: { file: ../secrets/consul_gossip_key.txt }
   consul_server_cert: { file: ../secrets/consul_server_cert.pem }
   consul_server_key: { file: ../secrets/consul_server_key.pem }
@@ -770,7 +773,7 @@ services:
   # variable opcional EXTRACTION_WORKER_DIGEST queda documentada en .env.example
   # (vacia = se usa la ruta por tag). Si se completa, el operador reemplaza
   # manualmente la linea `image:` por la referencia con digest. El bloque de
-  # servicio de `ocr-worker` pertenece a S11-P1-C28: no crearlo aqui.
+  # servicio de `ocr-worker` vive mas abajo (S11-P1-C28), no dentro de este.
   #
   # Digests publicados (run 44272090569, commit 374d339, linux/amd64):
   #   ghcr.io/alejo-basile/extraction-worker@sha256:839710e3457b14a66f4b59c4baf43ce96ba948431dafe61710bea07ebd4de88d
@@ -878,6 +881,77 @@ services:
       timeout: 3s
       retries: 6
       start_period: 15s
+
+  # --- ocr-worker (S11-P1-C28): consumidor OCR de Redis Streams ---------------
+  # Imagen fijada por digest publicado en C27 (infra/docs/evidencias/S11/S11-P1-C27-digests.txt).
+  ocr-worker:
+    image: ${OCR_WORKER_IMAGE:-ghcr.io/alejo-basile/ocr-worker}@${OCR_WORKER_DIGEST:-sha256:c406bbcaf7a08f324d2a76ebb0137e91244e9cfd5738948b76f13e87b8bf40a1}
+    profiles: ["full"]
+    <<: *hardening
+    read_only: true
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["/usr/local/bin/ocr-worker"]
+    volumes:
+      - "./ocr-worker/entrypoint.sh:/entrypoint.sh:ro"
+    secrets: [ocr_minio_access_key, ocr_minio_secret_key, ocr_mongo_password, redis_streams_password]
+    environment:
+      REDIS_HOST: redis-streams
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_PASSWORD_FILE: "/run/secrets/redis_streams_password"
+      MONGO_OCR_HOST: mongo
+      MONGO_OCR_USER: ${OCR_MONGO_USER:-ocr-worker}
+      MONGO_OCR_PASSWORD_FILE: /run/secrets/ocr_mongo_password
+      MONGO_OCR_DB: ${MONGO_DATABASE:-documents}
+      # El binario lee MONGO_DB: se mantiene separado de MONGO_OCR_DB (que arma
+      # el URI + authSource en el entrypoint) y se cita para no compartir la
+      # linea exacta con extraction-worker (guardarrail C25 Check 5).
+      MONGO_DB: "${MONGO_DATABASE:-documents}"
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_RAW: raw-pdfs
+      S3_BUCKET_TXT: extracted-txt
+      S3_ACCESS_KEY_FILE: /run/secrets/ocr_minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/ocr_minio_secret_key
+      OCR_DPI: "150"
+      OCR_LIMIT_W: "3500"
+      OCR_LIMIT_PIX: "12000000"
+      OCR_LANG: spa+eng
+      OCR_OEM: "1"
+      OCR_PSM: "3"
+      OCR_MAX_ATTEMPTS: "3"
+      OCR_CONSUMER_BLOCK_MS: "5000"
+      OCR_CONSUMER_COUNT: "1"
+      REDIS_OCR_STREAM: ${REDIS_OCR_STREAM:-stream:ocr-processing}
+      REDIS_OCR_GROUP: ${REDIS_OCR_GROUP:-ocr-workers}
+      REDIS_OCR_DLQ_STREAM: ${REDIS_OCR_DLQ_STREAM:-stream:ocr-processing-dlq}
+      METRICS_ADDR: "0.0.0.0:8080"
+      RUST_LOG: ${RUST_LOG:-info}
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 200
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+      nproc:
+        soft: 200
+        hard: 200
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
 
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
