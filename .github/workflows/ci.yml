@@ -32,13 +32,26 @@ jobs:
           grep -E '^[[:space:]]+image:' compose/docker-compose.yml \
             | sed 's/.*image: //; s/[[:space:]]*#.*//' \
             | grep -v '\\${' \
-            | grep -vE '^(monolito|ratelimitd|doc-service|extraction-worker|slo-exporter):' \
+            | grep -vE '^(monolito|ratelimitd|slo-exporter):' \
             | sort -u > /tmp/images.txt
+          # Imagenes propias publicadas: se escanean por su tag/digest publico
+          # (S9-X-04). Las imagenes locales (monolito, ratelimitd, slo-exporter)
+          # se escanean en el CI de su propio repo, donde se construyen: aqui no
+          # son pulleables y no se silencian con `|| true`.
+          {
+            echo 'ghcr.io/alejo-basile/doc-service:latest'
+            echo 'ghcr.io/alejo-basile/extraction-worker:latest'
+            echo 'ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b'
+          } >> /tmp/images.txt
+          sort -u -o /tmp/images.txt /tmp/images.txt
           cat /tmp/images.txt
       - name: scan images
+        # Gate bloqueante (S9-X-04): CRITICAL y HIGH fallan. Las CVEs aceptadas
+        # viven en .trivyignore y en SECURITY.md > Excepciones aceptadas; no se
+        # usa continue-on-error ni se oculta un fallo con `|| true`.
         run: |
           while read -r img; do
-            docker run --rm aquasec/trivy:0.76.2 image --severity CRITICAL,HIGH --no-progress "$img" || true
+            docker run --rm -v "$PWD/.trivyignore:/trivyignore" aquasec/trivy:0.76.2 image --severity CRITICAL,HIGH --exit-code 1 --no-progress --ignorefile /trivyignore "$img"
           done < /tmp/images.txt
 
   consul-boundaries:
