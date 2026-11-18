@@ -616,6 +616,7 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
       # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
@@ -695,6 +696,7 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
       REDIS_MASTER_NAME: myprimary
