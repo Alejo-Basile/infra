@@ -3,12 +3,14 @@
 # This file is the authoritative per-ID list; the SECURITY.md table is the aggregate view.
 # owner=P1  review=2026-12-01  mitigation=non-root 10001:10001, read-only rootfs,
 # CapDrop=ALL, no-new-privileges, internal network only; image-upgrade backlog.
-# Generated 2026-11-18 from a CRITICAL/HIGH scan of the 20 images in the 'full' compose profile.
+# Generated 2026-11-18 from a CRITICAL/HIGH scan of the images pulled by the CI job.
 
 CVE-2023-2953 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2023-31484 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
+CVE-2023-45288 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2023-45853 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2024-12797 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
+CVE-2024-34156 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2024-41110 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2024-45337 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2024-45338 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog

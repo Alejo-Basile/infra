@@ -1,12 +1,13 @@
 # S9-P1-04 — Trivy image scan
 
-Fecha: 2026-11-18 · Perfil compose: `full` · Trivy 0.75.0 · 19 imágenes · `--ignorefile /dev/null` (scan crudo, sin excepciones aplicadas)
+Fecha: 2026-11-18 · Perfil compose: `full` · Trivy 0.75.0 · 20 imágenes · `--ignorefile /dev/null` (scan crudo, sin excepciones aplicadas)
 
 Nota: `trivy` auto-carga `./.trivyignore` desde el cwd, así que el scan crudo se ejecutó
 desde `/tmp` con `--ignorefile /dev/null`. Sin eso, todo sale 0/0 y la evidencia es falsa.
 
 ## Inventario
 
+- `gaiaadm/pumba:0.11.0` — CRITICAL=2 HIGH=37 unique_ids=36
 - `bitnamilegacy/minio-client:2025.7.21` — CRITICAL=21 HIGH=195 unique_ids=93
 - `bitnamilegacy/minio:2025.7.23-debian-12-r5` — CRITICAL=34 HIGH=410 unique_ids=144
 - `curlimages/curl:8.10.1` — CRITICAL=2 HIGH=22 unique_ids=13
@@ -31,6 +32,7 @@ desde `/tmp` con `--ignorefile /dev/null`. Sin eso, todo sale 0/0 y la evidencia
 
 | image | CRITICAL | HIGH | unique ids |
 |---|---|---|---|
+| `gaiaadm/pumba:0.11.0` | 2 | 37 | 36 |
 | `bitnamilegacy/minio-client:2025.7.21` | 21 | 195 | 93 |
 | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | 34 | 410 | 144 |
 | `curlimages/curl:8.10.1` | 2 | 22 | 13 |
@@ -50,11 +52,15 @@ desde `/tmp` con `--ignorefile /dev/null`. Sin eso, todo sale 0/0 y la evidencia
 | `redis:7.2` | 4 | 45 | 21 |
 | `slo-exporter:s5-p4-03` | 0 | 16 | 16 |
 | `traefik:v3.7` | 0 | 10 | 8 |
-| **Total** | **85** | **1595** | **241** |
+| **Total** | **87** | **1632** | **243** |
 
 Los identificadores aceptados (uno por línea) están en `infra/.trivyignore`.
 
 ## CRITICAL por imagen
+
+### gaiaadm/pumba:0.11.0 (2 critical vulns)
+- CVE-2023-45288 — pkg: stdlib (pumba) — fixed: 1.22.7, 1.21.12
+- CVE-2024-34156 — pkg: encoding/gob (pumba) — fixed: 1.21.12
 
 ### bitnamilegacy/minio-client:2025.7.21 (21 critical, 19 unique)
 - CVE-2023-45853 — pkg: zlib1g — fixed: n/a

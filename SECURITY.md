@@ -21,7 +21,7 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 
 | Criterio | Veredicto | Evidencia |
 |---|---|---|
-| 1. 0 CVE críticos/altos | Go con excepción aceptada (85 CRITICAL / 1595 HIGH en 19 imágenes; 241 advisory IDs aceptados; 0 en `doc-service`) | infra/docs/evidencias/S9/S9-P1-04-trivy.txt, infra/.trivyignore |
+| 1. 0 CVE críticos/altos | Go con excepción aceptada (87 CRITICAL / 1632 HIGH en 20 imágenes; 243 advisory IDs aceptados; 0 en `doc-service`) | infra/docs/evidencias/S9/S9-P1-04-trivy.txt, infra/.trivyignore |
 | 2. 0 secretos | Go | infra/docs/evidencias/S9/S9-P1-04-gitleaks.txt |
 | 3. Headers | Go | infra/docs/evidencias/S9/S9-P1-04-headers-tls.txt |
 | 4. TLS | Go | infra/docs/evidencias/S9/S9-P1-04-headers-tls.txt |
@@ -31,7 +31,7 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 ### Excepciones aceptadas
 
 - RUSTSEC-2026-0258, RUSTSEC-2025-0012, RUSTSEC-2024-0384, RUSTSEC-2026-0192 (owner P1, review 2026-12-31), mitigation from deny.toml.
-- Container CVEs: 241 unique advisory IDs accepted as exception, owner P1, review 2026-12-01, mitigation = non-root 10001:10001, read-only rootfs, CapDrop=ALL, no-new-privileges, internal network only, plus the image-upgrade backlog. Full per-ID list in `infra/.trivyignore`; the per-image aggregate table follows below. `doc-service` is clean (0/0); every other image carries base-image CVEs from its upstream distro or vendored binaries, not from project code. Fixable CVEs are NOT silently suppressed: remediation is tracked as an image-upgrade backlog with target date 2026-12-01 (minio, minio-client, grafana, loki, promtail, consul, mongo, monolito, prometheus, redis:7.2, traefik, alertmanager, redis_exporter, curl, slo-exporter, and the Debian base of extraction-worker/ocr-worker).
+- Container CVEs: 243 unique advisory IDs accepted as exception, owner P1, review 2026-12-01, mitigation = non-root 10001:10001, read-only rootfs, CapDrop=ALL, no-new-privileges, internal network only, plus the image-upgrade backlog. Full per-ID list in `infra/.trivyignore`; the per-image aggregate table follows below. `doc-service` is clean (0/0); every other image carries base-image CVEs from its upstream distro or vendored binaries, not from project code. Fixable CVEs are NOT silently suppressed: remediation is tracked as an image-upgrade backlog with target date 2026-12-01 (minio, minio-client, grafana, loki, promtail, consul, mongo, monolito, prometheus, redis:7.2, traefik, alertmanager, redis_exporter, curl, pumba, slo-exporter, and the Debian base of extraction-worker/ocr-worker).
 
 ### Tabla de excepciones por imagen
 
@@ -40,6 +40,7 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 | `bitnamilegacy/minio-client:2025.7.21` | 21 | 195 | Excepción aceptada |
 | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | 34 | 410 | Excepción aceptada |
 | `curlimages/curl:8.10.1` | 2 | 22 | Excepción aceptada |
+| `gaiaadm/pumba:0.11.0` | 2 | 37 | Excepción aceptada |
 | `ghcr.io/alejo-basile/doc-service:latest` | 0 | 0 | Limpio |
 | `ghcr.io/alejo-basile/extraction-worker:latest` | 0 | 106 | Excepción aceptada |
 | `ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b` | 1 | 149 | Excepción aceptada |
