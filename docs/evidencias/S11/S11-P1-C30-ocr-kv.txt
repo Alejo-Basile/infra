@@ -1,0 +1,149 @@
+S11-P1-C30 — config/ocr-worker/ en schema + KV + token propio
+UTC: 2026-11-18T10:45:46Z
+
+Alcance verificado: schema.json, kv/ocr-worker.json, ACL svc-ocr-worker,
+sync idempotente, matriz token x prefijo, arranque del worker con KV y sin KV.
+
+Archivos creados/modificados:
+  - infra/compose/consul/config/schema.json (bloque ocr-worker, 12 claves reload=restart)
+  - infra/compose/consul/kv/ocr-worker.json (12 defaults)
+  - infra/compose/consul/acl/svc-ocr-worker.hcl (key_prefix config/ocr-worker/ + config/meta/)
+  - infra/compose/consul/testdata/ocr-worker.*.json + manifest.json (5 fixtures)
+  - infra/scripts/consul-kv-sync.sh (tipo string: no vacio + longitud en rango)
+  - infra/compose/docker-compose.yml (volumen ocr-worker-config-cache + env CONSUL_KV_*)
+  - extraction-worker/crates/configkv (ValueKind::String, ValidatedOcrWorkerKv, OcrCache, from_consul_entries_ocr)
+  - extraction-worker/crates/ocr-worker/{Cargo.toml,src/kv.rs,src/config.rs,src/main.rs}
+  - extraction-worker/Dockerfile.ocr-worker (/var/lib/ocr-worker owned by 10001)
+
+== 1. schema.json vs kv/ocr-worker.json (jq + validacion de tipos/rangos) ==
+keys=12 schema_keys=12 errors=none
+
+== 2. consul-kv-sync.sh — primera corrida (aplica las 12 claves) ==
+Container infra-consul-1 Running 
+ Container infra-consul-1 Waiting 
+ Container infra-consul-1 Healthy 
+ Container infra-consul-kv-sync-run-fa83e5c1cdb6 Creating 
+ Container infra-consul-kv-sync-run-fa83e5c1cdb6 Created 
+[info] kv_dir=/kv schema=/schema.json addr=https://consul:8501 prefix=config revision=unknown dry_run=0
+[PASS] doc-service/max_pdf_bytes unchanged
+[PASS] doc-service/presign_upload_ttl_seconds unchanged
+[PASS] doc-service/presign_download_ttl_seconds unchanged
+[PASS] doc-service/reconcile_interval_minutes unchanged
+[PASS] doc-service/reconcile_stuck_after_minutes unchanged
+[PASS] doc-service/reconcile_dry_run unchanged
+[PASS] doc-service/doc_upload_grace_minutes unchanged
+[PASS] doc-service/min_safety_age_minutes unchanged
+[PASS] extraction-worker/bulkhead_max_concurrency unchanged
+[PASS] extraction-worker/retry_max_elapsed_seconds unchanged
+[PASS] extraction-worker/retry_initial_interval_ms unchanged
+[PASS] extraction-worker/retry_multiplier unchanged
+[PASS] extraction-worker/retry_max_interval_ms unchanged
+[PASS] extraction-worker/retry_randomization_factor unchanged
+[PASS] extraction-worker/breaker_failure_threshold unchanged
+[PASS] extraction-worker/breaker_timeout_seconds unchanged
+[PASS] extraction-worker/job_timeout_seconds unchanged
+[PASS] extraction-worker/max_pages unchanged
+[PASS] extraction-worker/min_idle_ms unchanged
+[PASS] ocr-worker/ocr_dpi updated -> '150'
+[PASS] ocr-worker/ocr_limit_w updated -> '3500'
+[PASS] ocr-worker/ocr_limit_pix updated -> '12000000'
+[PASS] ocr-worker/ocr_lang updated -> 'spa+eng'
+[PASS] ocr-worker/ocr_oem updated -> '1'
+[PASS] ocr-worker/ocr_psm updated -> '3'
+[PASS] ocr-worker/ocr_max_attempts updated -> '3'
+[PASS] ocr-worker/consumer_block_ms updated -> '5000'
+[PASS] ocr-worker/consumer_count updated -> '1'
+[PASS] ocr-worker/redis_ocr_stream updated -> 'stream:ocr-processing'
+[PASS] ocr-worker/redis_ocr_group updated -> 'ocr-workers'
+[PASS] ocr-worker/redis_ocr_dlq_stream updated -> 'stream:ocr-processing-dlq'
+[PASS] rate-limiter/sensitive_routes unchanged
+[PASS] rate-limiter/exempt_paths unchanged
+[PASS] meta/revision unchanged
+[PASS] meta/applied_at unchanged
+changes: 12
+
+== 3. consul-kv-sync.sh — segunda corrida (idempotente) ==
+Container infra-consul-1 Running 
+ Container infra-consul-1 Waiting 
+ Container infra-consul-1 Healthy 
+ Container infra-consul-kv-sync-run-8b8b5c31dc4e Creating 
+ Container infra-consul-kv-sync-run-8b8b5c31dc4e Created 
+[info] kv_dir=/kv schema=/schema.json addr=https://consul:8501 prefix=config revision=unknown dry_run=0
+[PASS] doc-service/max_pdf_bytes unchanged
+[PASS] doc-service/presign_upload_ttl_seconds unchanged
+[PASS] doc-service/presign_download_ttl_seconds unchanged
+[PASS] doc-service/reconcile_interval_minutes unchanged
+[PASS] doc-service/reconcile_stuck_after_minutes unchanged
+[PASS] doc-service/reconcile_dry_run unchanged
+[PASS] doc-service/doc_upload_grace_minutes unchanged
+[PASS] doc-service/min_safety_age_minutes unchanged
+[PASS] extraction-worker/bulkhead_max_concurrency unchanged
+[PASS] extraction-worker/retry_max_elapsed_seconds unchanged
+[PASS] extraction-worker/retry_initial_interval_ms unchanged
+[PASS] extraction-worker/retry_multiplier unchanged
+[PASS] extraction-worker/retry_max_interval_ms unchanged
+[PASS] extraction-worker/retry_randomization_factor unchanged
+[PASS] extraction-worker/breaker_failure_threshold unchanged
+[PASS] extraction-worker/breaker_timeout_seconds unchanged
+[PASS] extraction-worker/job_timeout_seconds unchanged
+[PASS] extraction-worker/max_pages unchanged
+[PASS] extraction-worker/min_idle_ms unchanged
+[PASS] ocr-worker/ocr_dpi unchanged
+[PASS] ocr-worker/ocr_limit_w unchanged
+[PASS] ocr-worker/ocr_limit_pix unchanged
+[PASS] ocr-worker/ocr_lang unchanged
+[PASS] ocr-worker/ocr_oem unchanged
+[PASS] ocr-worker/ocr_psm unchanged
+[PASS] ocr-worker/ocr_max_attempts unchanged
+[PASS] ocr-worker/consumer_block_ms unchanged
+[PASS] ocr-worker/consumer_count unchanged
+[PASS] ocr-worker/redis_ocr_stream unchanged
+[PASS] ocr-worker/redis_ocr_group unchanged
+[PASS] ocr-worker/redis_ocr_dlq_stream unchanged
+[PASS] rate-limiter/sensitive_routes unchanged
+[PASS] rate-limiter/exempt_paths unchanged
+[PASS] meta/revision unchanged
+[PASS] meta/applied_at unchanged
+changes: 0
+
+== 4. Matriz token x prefijo (GET de una clave sonda existente) ==
+token=ocr-worker  config/ocr-worker/ocr_dpi          -> 200 (esperado 200)
+token=ocr-worker  config/meta/revision               -> 200 (esperado 200)
+token=ocr-worker  config/extraction-worker/max_pages -> 403 (esperado 403)
+token=ocr-worker  config/doc-service/max_pdf_bytes   -> 403 (esperado 403)
+token=extraction  config/ocr-worker/ocr_dpi          -> 403 (esperado 403)
+anonimo           config/ocr-worker/ocr_dpi          -> 403 (esperado 403)
+
+== 5. Arranque del binario (red infra_internal, CA y token por archivo) ==
+A) Consul disponible:
+   INFO ocr_worker::kv msg="ocr_config_kv_applied" index=5386
+   INFO ocr_worker::config ocr_config_kv_overlay_applied
+   INFO ocr_worker: ocr-worker iniciando con stream stream:ocr-processing
+   cache escrito en /var/lib/ocr-worker/config-cache.json (modo 0600)
+B) Consul caido, con cache:
+   WARN ocr_worker::kv msg="ocr_config_kv_unavailable" error=transport error ...
+   INFO ocr_worker::kv msg="ocr_config_cache_used" index=5386
+   INFO ocr_worker::config ocr_config_kv_overlay_applied
+C) Consul caido, sin cache:
+   WARN ocr_worker::kv msg="ocr_config_kv_unavailable" error=transport error ...
+   INFO ocr_worker::kv msg="ocr_config_defaults_used"
+   (arranca con from_env(); presupuesto de 2 s, sin abortar)
+
+== 6. Verificacion de build ==
+cargo test -p configkv: 17 passed (lib) + 4 passed (fixtures_parity, incluye ocr_parity)
+cargo test -p ocr-worker: 13 passed
+cargo clippy -p configkv -p ocr-worker --all-targets -- -D warnings: OK
+cargo fmt --check: OK
+bash -n infra/scripts/consul-kv-sync.sh infra/scripts/consul-bootstrap-acl.sh: OK
+
+== 7. Guardarraíles ==
+verify-consul-boundaries.sh: Check1 PASS, Check2 SKIP (sin credenciales en el shell),
+Check3 PASS, Check4 PASS, Check5 PASS, Check6 PASS -> Boundaries OK.
+docker compose --env-file .env -f compose/docker-compose.yml --profile full config --quiet: OK
+
+== 8. Pendiente conocido (no bloquea C30, bloquea el runtime desplegado) ==
+La imagen fijada por digest (C27) no contiene /var/lib/ocr-worker, por lo que el
+volumen nombrado nace root-owned y la escritura de cache falla con EACCES
+(observado: 'cache io error: Permission denied'). El codigo degrada sin romper
+(loguea WARN y sigue con los valores aplicados). Dockerfile.ocr-worker ya crea el
+directorio con owner 10001; publicar un digest nuevo es de C27/pipeline, no de C30.

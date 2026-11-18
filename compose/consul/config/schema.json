@@ -25,5 +25,19 @@
     "job_timeout_seconds": {"type": "int", "min": 30, "max": 3600, "reload": "hot-jobs-nuevos", "default": 300},
     "max_pages": {"type": "int", "min": 1, "max": 100000, "reload": "hot-jobs-nuevos", "default": 2000},
     "min_idle_ms": {"type": "int", "min": 1000, "max": 86400000, "reload": "restart", "default": 601000}
+  },
+  "ocr-worker": {
+    "ocr_dpi": {"type": "int", "min": 72, "max": 600, "reload": "restart", "default": 150},
+    "ocr_limit_w": {"type": "int", "min": 100, "max": 10000, "reload": "restart", "default": 3500},
+    "ocr_limit_pix": {"type": "int", "min": 1000000, "max": 100000000, "reload": "restart", "default": 12000000},
+    "ocr_lang": {"type": "string", "min": 1, "max": 255, "reload": "restart", "default": "spa+eng"},
+    "ocr_oem": {"type": "int", "min": 0, "max": 3, "reload": "restart", "default": 1},
+    "ocr_psm": {"type": "int", "min": 0, "max": 13, "reload": "restart", "default": 3},
+    "ocr_max_attempts": {"type": "int", "min": 1, "max": 10, "reload": "restart", "default": 3},
+    "consumer_block_ms": {"type": "int", "min": 100, "max": 60000, "reload": "restart", "default": 5000},
+    "consumer_count": {"type": "int", "min": 1, "max": 16, "reload": "restart", "default": 1},
+    "redis_ocr_stream": {"type": "string", "min": 1, "max": 255, "reload": "restart", "default": "stream:ocr-processing"},
+    "redis_ocr_group": {"type": "string", "min": 1, "max": 255, "reload": "restart", "default": "ocr-workers"},
+    "redis_ocr_dlq_stream": {"type": "string", "min": 1, "max": 255, "reload": "restart", "default": "stream:ocr-processing-dlq"}
   }
 }
