@@ -480,6 +480,7 @@ services:
       SVC_WORKER_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
       # Retencion configurable por entorno (T-05); defaults = decision de negocio.
       RAW_PDFS_EXPIRE_DAYS: ${RAW_PDFS_EXPIRE_DAYS:-7}
+      EXTRACTED_MD_EXPIRE_DAYS: ${EXTRACTED_MD_EXPIRE_DAYS:-30}
       EXTRACTED_TXT_EXPIRE_DAYS: ${EXTRACTED_TXT_EXPIRE_DAYS:-30}
     volumes:
       - ./minio/init-buckets.sh:/init-buckets.sh:ro
@@ -629,8 +630,10 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
-      MINIO_BUCKET_TXT: extracted-txt
+      # Salida vigente (Markdown, campo md_ref) y bucket legacy que doc-service
+      # sigue leyendo para objetos .txt anteriores (read-fallback D5).
       MINIO_BUCKET_MD: extracted-md
+      MINIO_LEGACY_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
       # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
@@ -710,8 +713,10 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
-      MINIO_BUCKET_TXT: extracted-txt
+      # Salida vigente (Markdown, campo md_ref) y bucket legacy que doc-service
+      # sigue leyendo para objetos .txt anteriores (read-fallback D5).
       MINIO_BUCKET_MD: extracted-md
+      MINIO_LEGACY_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
       REDIS_MASTER_NAME: myprimary
@@ -826,6 +831,9 @@ services:
       # MinIO con credenciales propias del worker, nunca la root (SPEC 3.4).
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET_RAW: raw-pdfs
+      # Destino objetivo del artefacto Markdown; el binario actual todavia lee
+      # S3_BUCKET_TXT (migracion pendiente en el repo extraction-worker).
+      S3_BUCKET_MD: extracted-md
       S3_BUCKET_TXT: extracted-txt
       S3_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
       S3_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key

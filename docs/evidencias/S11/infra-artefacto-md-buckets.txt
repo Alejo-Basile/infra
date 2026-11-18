@@ -1,0 +1,83 @@
+# MinIO: lifecycle de extracted-md y policies sin ventana de permisos
+
+Fecha: 2026-11-18
+Alcance: solo `infra`.
+Contexto: el bucket `extracted-md` y las policies de doc-service/worker ya
+existen en `main` (commit `be61861`). Este cambio cubre lo que faltaba, no
+re-provisiona lo ya presente.
+
+## Delta real sobre `main`
+
+1. **Lifecycle de `extracted-md`**: no existia regla de retencion, asi que el
+   bucket de salida vigente crecia sin limite. Se agrega con
+   `EXTRACTED_MD_EXPIRE_DAYS` (default 30 dias), con la misma idempotencia que
+   `raw-pdfs`/`extracted-txt`.
+2. **Policies sin ventana de permisos**: `reconcile_policy` hacia
+   `detach -> remove -> create -> attach`. Entre el `detach` y el `attach` el
+   usuario queda sin permisos, y si el `create` falla el servicio se queda sin
+   acceso de forma permanente. Ademas, con nombre fijo `mc admin policy create`
+   falla si la policy existe y **no** actualiza su contenido, asi que un entorno
+   ya inicializado conservaba una version vieja en silencio.
+   Ahora: nombre versionado por hash (`<prefijo>-<sha256 corto>`), crear el
+   nuevo, **adjuntar antes de retirar** el viejo (union de permisos) y luego
+   desadjuntar/borrar los nombres del mismo prefijo.
+3. **Reintentos acotados**: en un MinIO recien creado los usuarios y las
+   policies tardan en ser visibles para la API de asociacion; `add`/`create`
+   responden OK y el `attach` inmediato falla con
+   `The specified user does not exist` / `canned policy does not exist`. Solo
+   ocurre en entornos efimeros; se reintenta antes de fallar.
+4. **Verificacion por nombre exacto**: se verifica el nombre versionado que se
+   acaba de aplicar y el contenido (ARN/tokens), no "alguna policy".
+5. **Env de compose**: `MINIO_BUCKET_TXT` en doc-service era configuracion
+   muerta (el codigo lee `MINIO_BUCKET_MD` y `MINIO_LEGACY_BUCKET_TXT`); se
+   reemplaza por la variable legacy real. Se agrega `S3_BUCKET_MD` al
+   extraction-worker (inerte hasta que aterrice su migracion) y
+   `EXTRACTED_MD_EXPIRE_DAYS` a `minio-init`.
+
+## Archivos
+
+- `compose/minio/init-buckets.sh`
+- `compose/minio/lifecycle-buckets.sh`
+- `compose/docker-compose.yml`
+- `docs/permisos-minio.md`
+- `runbooks/minio-lifecycle.md`
+
+## Validacion
+
+```
+$ sh -n compose/minio/init-buckets.sh && sh -n compose/minio/lifecycle-buckets.sh
+OK
+```
+
+Ejecucion real de ambos scripts contra el MinIO del stack de desarrollo
+(contenedor descartable, scripts montados desde este worktree):
+
+```
+Policy creada: docservice-rw-166e1a25
+Policy retirada: docservice-rw-c2cb76c7 (reemplazada por docservice-rw-166e1a25)
+Policy creada: worker-extract-3038be95
+Policy retirada: worker-extract-356a421d (reemplazada por worker-extract-3038be95)
+Verificado: buckets raw-pdfs, extracted-txt, extracted-md.
+Verificado: <docservice-key> con policy docservice-rw-166e1a25.
+Verificado: <worker-key> con policy worker-extract-3038be95.
+Lifecycle ya presente: local/raw-pdfs expira a los 7 dias (sin cambios).
+Lifecycle ya presente: local/extracted-md expira a los 30 dias (sin cambios).
+Lifecycle ya presente: local/extracted-txt expira a los 30 dias (sin cambios).
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-md=30d, extracted-txt=30d.
+```
+
+Segunda ejecucion: no crea policies ni reglas nuevas y verifica los mismos
+nombres (convergencia idempotente).
+
+`mc admin policy info` posteriores muestran `docservice-rw-166e1a25` con
+`s3:DeleteObject` sobre raw-pdfs/extracted-txt/extracted-md y
+`worker-extract-3038be95` con Put/Delete en `extracted-md/*` y
+`extracted-txt/*`, sin `PutObject` en `raw-pdfs`.
+
+## No incluido
+
+- Corregir la regla de lifecycle duplicada de `extracted-txt` en entornos ya
+  inicializados (dos reglas de 30 dias): el chequeo de idempotencia no deduplica
+  reglas preexistentes. Queda como deuda separada.
+- El usuario de MinIO del `ocr-worker` no lo crea ningun script de este
+  repositorio.

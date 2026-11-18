@@ -8,9 +8,12 @@ set -e
 ALIAS="local"
 
 # Valores de retencion configurables por entorno; los defaults son la decision
-# registrada en §4 (raw-pdfs 7 dias, extracted-txt 30 dias — retencion de negocio,
-# ajustable sin tocar el script).
+# registrada en §4 (raw-pdfs 7 dias, extracted-md/extracted-txt 30 dias —
+# retencion de negocio, ajustable sin tocar el script).
+# extracted-md es la salida vigente (Markdown); extracted-txt solo aplica a
+# objetos .txt legacy que doc-service sigue sirviendo por el read-fallback.
 RAW_PDFS_EXPIRE_DAYS="${RAW_PDFS_EXPIRE_DAYS:-7}"
+EXTRACTED_MD_EXPIRE_DAYS="${EXTRACTED_MD_EXPIRE_DAYS:-30}"
 EXTRACTED_TXT_EXPIRE_DAYS="${EXTRACTED_TXT_EXPIRE_DAYS:-30}"
 
 # ¿Ya existe una regla con esta expiracion en el bucket?
@@ -54,19 +57,23 @@ apply_rule() {
 }
 
 apply_rule raw-pdfs "$RAW_PDFS_EXPIRE_DAYS"
+apply_rule extracted-md "$EXTRACTED_MD_EXPIRE_DAYS"
 apply_rule extracted-txt "$EXTRACTED_TXT_EXPIRE_DAYS"
 
 # --- Verificacion post-aplicacion (falla ruidoso si algo no quedo) -------------
 echo "--- Reglas activas ---"
-for bucket in raw-pdfs extracted-txt; do
+for bucket in raw-pdfs extracted-md extracted-txt; do
   echo "== $ALIAS/$bucket =="
   mc ilm rule ls "$ALIAS/$bucket"
 done
 
-for pair in "raw-pdfs:$RAW_PDFS_EXPIRE_DAYS" "extracted-txt:$EXTRACTED_TXT_EXPIRE_DAYS"; do
+for pair in \
+  "raw-pdfs:$RAW_PDFS_EXPIRE_DAYS" \
+  "extracted-md:$EXTRACTED_MD_EXPIRE_DAYS" \
+  "extracted-txt:$EXTRACTED_TXT_EXPIRE_DAYS"; do
   b=${pair%%:*}
   d=${pair##*:}
   rule_has_days "$b" "$d" \
     || { echo "ERROR: $b quedo sin regla de ${d} dias." >&2; exit 1; }
 done
-echo "Lifecycle aplicado y verificado: raw-pdfs=${RAW_PDFS_EXPIRE_DAYS}d, extracted-txt=${EXTRACTED_TXT_EXPIRE_DAYS}d."
+echo "Lifecycle aplicado y verificado: raw-pdfs=${RAW_PDFS_EXPIRE_DAYS}d, extracted-md=${EXTRACTED_MD_EXPIRE_DAYS}d, extracted-txt=${EXTRACTED_TXT_EXPIRE_DAYS}d."
