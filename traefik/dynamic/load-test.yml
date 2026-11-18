@@ -1,0 +1,52 @@
+# Host de carga (QA): mismo doc-service por Traefik, sin el limite de 10 rps.
+#
+# Motivo: la matriz k6 de doc-service (platform-services/tests/k6/v2) corre a
+# cientos de rps. Contra api.localhost se convierte en 429 porque el forwardAuth
+# `rate-limit` esta en rate=10 burst=20 (control verificado por S7-P4-04).
+# Frenar la carga (SMOKE_SLEEP) deja de ser una prueba de carga; bypassear
+# Traefik deja de medir el camino real. Este archivo separa ambas cosas: el
+# host de carga conserva TLS, ruteo, body-limit y sec-headers, y usa un limite
+# alto propio.
+#
+# api.localhost NO cambia: sigue en rate=10 burst=20, asi que
+# tests/k6/ratelimit/run-limit-verification.sh sigue siendo valido.
+#
+# Uso:
+#   BASE_URL=https://load.localhost:8543 ./tests/k6/v2/run-v2.sh
+#
+# El certificado servido es el default (api.localhost), que no incluye
+# load.localhost como SAN: los arneses usan -k / insecureSkipTLSVerify.
+#
+# Laboratorio unicamente: no exponer este host fuera de la red local.
+http:
+  routers:
+    r-load-healthz:
+      rule: "Host(`load.localhost`) && Path(`/healthz`)"
+      entryPoints: [websecure]
+      tls: true
+      service: docv2
+      priority: 300
+      middlewares: [sec-headers@file]
+
+    r-load-api-v2:
+      rule: "Host(`load.localhost`) && PathPrefix(`/api/v2`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-api-v2-weighted
+      priority: 300
+      middlewares: [rate-limit-load@file, body-limit-1mb@file, sec-headers@file]
+
+  middlewares:
+    # Mismo forwardAuth, clave propia (api-v2-load) y un techo que la matriz
+    # (10 VUs, ~430 rps medidos) no alcanza. La clave es distinta de api-v2 a
+    # proposito: el bucket GCRA de carga no debe contaminar el limite real.
+    rate-limit-load:
+      forwardAuth:
+        address: "http://ratelimitd:8090/check?key=api-v2-load&rate=1000&burst=200"
+        authResponseHeaders:
+          - Retry-After
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+          - X-RateLimit-Retry-After
+          - X-RateLimit-Degraded
