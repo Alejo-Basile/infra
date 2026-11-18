@@ -1,0 +1,11 @@
+UTC date: 2026-11-18T15:12:40Z
+Root cause: Check 2 docker branch omitted --env-file, so compose interpolation failed (missing CONSUL_IMAGE_TAG); also CLI emits lowercase key/value but jq used capitalized fields.
+Diff summary: added COMPOSE_ENV_FILE default; docker branch now conditionally adds --env-file; both jq flattenings tolerate both shapes.
+SKIP output before fix: SKIP: Check 2: Consul no disponible / sin credenciales (§0, C25)
+PASS output after: PASS: Check 2: KV config/ sin credenciales
+Negative-test FAIL: FAIL: clave o valor con forma de credencial en Consul KV (prefijo config/)
+Cleanup: probe key removed; re-run PASS exit 0.
+bash -n: syntax OK
+
+Degradacion sin env-file (simula CI sin stack): COMPOSE_ENV_FILE=/tmp/nope bash scripts/verify-consul-boundaries.sh -> "SKIP: Check 2: Consul no disponible / sin credenciales (§0, C25)" (nunca FAIL).
+Post-edit re-verificacion: bash -n OK; run plana exit 0 con Check 2 PASS; probe con credencial -> FAIL exit 1; cleanup -> PASS exit 0.

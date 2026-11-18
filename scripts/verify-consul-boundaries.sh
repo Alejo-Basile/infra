@@ -14,6 +14,7 @@ set -u
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 TRAEFIK_CONFIG="${TRAEFIK_CONFIG:-$REPO_ROOT/traefik/traefik.yml}"
 COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose/docker-compose.yml}"
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-$REPO_ROOT/.env}"
 PROMETHEUS_CONFIG="${PROMETHEUS_CONFIG:-$REPO_ROOT/compose/prometheus/prometheus.yml}"
 OCR_MAIN_RS="${OCR_MAIN_RS:-$REPO_ROOT/../extraction-worker/crates/ocr-worker/src/main.rs}"
 ROUTING_FILE="${ROUTING_FILE:-$REPO_ROOT/traefik/dynamic/routing.yml}"
@@ -46,11 +47,15 @@ elif [ -n "${CONSUL_HTTP_ADDR:-}" ] && [ -n "${CONSUL_TOKEN_FILE:-}" ] && [ -r "
     echo "$tmpdir/kv_raw.json" >/dev/null
     # flatten best-effort
     if command -v jq >/dev/null 2>&1; then
-      jq -r '.[] | "\(.Key)=\(.Value|@base64d)"' "$tmpdir/kv_raw.json" > "$kv_file" 2>/dev/null && got_kv=1
+      jq -r '.[] | "\(.Key // .key)=\(((.Value // .value) // "")|@base64d)"' "$tmpdir/kv_raw.json" > "$kv_file" 2>/dev/null && got_kv=1
     fi
   fi
 elif command -v docker >/dev/null 2>&1; then
-  if docker compose -f "$COMPOSE_FILE" exec -T consul-agent consul kv export -http-addr=https://127.0.0.1:8501 -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token config/ > "$kv_file" 2>/dev/null; then
+  compose_cmd=(docker compose -f "$COMPOSE_FILE")
+  if [ -f "$COMPOSE_ENV_FILE" ]; then
+    compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")
+  fi
+  if "${compose_cmd[@]}" exec -T consul-agent consul kv export -http-addr=https://127.0.0.1:8501 -ca-file=/run/secrets/consul_ca_cert -token-file=/run/secrets/consul_operator_token config/ > "$kv_file" 2>/dev/null; then
     got_kv=1
   fi
 fi
@@ -61,10 +66,12 @@ else
   bad=0
   kv_flat="$tmpdir/kv-flat.txt"
   if [ "$(head -c 1 "$kv_file" 2>/dev/null)" = "[" ]; then
-    # consul kv export returns JSON ([{"Key":...,"Value":<base64>}]). Flatten it first:
-    # grepping the raw JSON would match the literal field name "Key" on every entry.
+    # KV JSON comes in two shapes: HTTP /v1/kv uses {"Key","Value"}; the
+    # `consul kv export` CLI uses {"key","value"}. Both values are base64.
+    # Flatten it first: grepping the raw JSON would match the literal field
+    # names on every entry instead of the actual keys.
     if command -v jq >/dev/null 2>&1; then
-      if ! jq -r '.[] | "\(.Key)=\((.Value // "")|@base64d)"' "$kv_file" > "$kv_flat" 2>/dev/null; then
+      if ! jq -r '.[] | "\(.Key // .key)=\(((.Value // .value) // "")|@base64d)"' "$kv_file" > "$kv_flat" 2>/dev/null; then
         skip "Check 2: export JSON ilegible y sin jq para normalizarlo (§0, C25)"
         kv_flat=""
       fi
