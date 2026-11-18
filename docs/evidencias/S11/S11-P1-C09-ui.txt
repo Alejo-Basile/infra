@@ -1,0 +1,53 @@
+Date: 2026-11-18
+Task: S11-P1-C09 - UI de Consul por Traefik con basic auth
+
+Variables usadas en los comandos (nunca se imprime el valor):
+  CONSUL_UI_USER=consul
+  CONSUL_UI_PASSWORD -> contenido de infra/secrets/consul_ui_password.txt (gitignored)
+  CONSUL_UI_AUTH="$CONSUL_UI_USER:$CONSUL_UI_PASSWORD"
+  CONSUL_UI_WRONG_AUTH="$CONSUL_UI_USER:wrong"
+  PORT=8543 (TRAEFIK_HTTPS_PORT de infra/.env)
+
+[1] GET / sin credenciales
+$ curl -sk -o /dev/null -w '%{http_code}\n' https://consul.localhost:8543/
+-> 401
+
+[2] GET / con credenciales
+$ curl -sk -o /dev/null -w '%{http_code}\n' -u "$CONSUL_UI_AUTH" https://consul.localhost:8543/
+-> 200
+
+[3] GET /ui/ con credenciales
+$ curl -sk -o /dev/null -w '%{http_code}\n' -u "$CONSUL_UI_AUTH" https://consul.localhost:8543/ui/
+-> 200
+
+[4] Password incorrecta
+$ curl -sk -o /dev/null -w '%{http_code}\n' -u "$CONSUL_UI_WRONG_AUTH" https://consul.localhost:8543/
+-> 401
+
+[5] Puerto 8501 no publicado al host
+$ docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml --profile full port consul 8501
+-> (salida vacia)
+
+[6] TLS: cadena contra la CA local y verificacion de hostname
+$ docker run --rm --network host -v "$(pwd)/infra/secrets:/s:ro" hashicorp/consul:1.22.7 sh -c \
+    'echo | openssl s_client -connect 127.0.0.1:8543 -servername consul.localhost -CAfile /s/consul_ca_cert.pem 2>&1 | grep -E "Verify return code|subject=|issuer="'
+-> subject=CN = consul
+-> Verify return code: 0 (ok)
+
+[7] Vigencia del certificado
+$ docker run --rm -v "$(pwd)/infra/traefik/certs:/c:ro" hashicorp/consul:1.22.7 \
+    openssl x509 -in /c/consul.localhost.pem -noout -enddate
+-> notAfter=Feb 19 23:00:33 2029 GMT
+
+[8] Routers en routing.yml
+-> 14 antes -> 15 despues (los 14 previos sin cambios)
+
+[9] Validacion de compose
+$ docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml --profile full config --quiet
+-> exit 0
+
+Notas de diseno:
+- El service apunta a https://consul:8501 (el server). El agente tiene ui_config
+  deshabilitado: responde /ui/ 404 y / 200 text/plain "UI disabled".
+- consul-ui-root reescribe / a /ui/ porque el server devuelve 301 en el root.
+- El host HTTPS es 8543 (TRAEFIK_HTTPS_PORT), no 443.
