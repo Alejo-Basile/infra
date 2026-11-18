@@ -31,6 +31,16 @@ prefix8() { cut -c1-8; }
 OP_FILE="$SECRETS/consul_operator_token.txt"
 OP_TOKEN="$(tr -d '\n' < "$OP_FILE")"
 
+# Non-root consumers (doc-service, ratelimitd, worker, prometheus) read these
+# through Docker file-secrets, which inherit the host file mode.
+normalize_token_modes() {
+  local f
+  for f in consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_prometheus_token.txt; do
+    [[ -s "$SECRETS/$f" ]] && chmod 0644 "$SECRETS/$f"
+  done
+}
+normalize_token_modes
+
 # Idempotency guard
 all_policies_exist() {
   for p in consul-operator svc-doc-service svc-ratelimitd svc-extraction-worker prometheus-read; do
@@ -116,7 +126,7 @@ for t in data:
     SEC="$(docker exec "$CONSUL_CT" sh -c "CONSUL_HTTP_ADDR=$ADDR CONSUL_CACERT=$CA CONSUL_HTTP_TOKEN='$WORK_TOKEN' consul acl token read -id $EXISTING -format=json" | python3 -c "import json,sys; print(json.load(sys.stdin)['SecretID'])" 2>/dev/null || true)"
     if [[ -n "$SEC" ]]; then
       printf '%s' "$SEC" > "$outfile"
-      chmod 600 "$outfile"
+      chmod 644 "$outfile"
       return 0
     fi
   fi
@@ -124,7 +134,7 @@ for t in data:
   RES="$(docker exec -i "$CONSUL_CT" sh -c "CONSUL_HTTP_ADDR=$ADDR CONSUL_CACERT=$CA CONSUL_HTTP_TOKEN='$WORK_TOKEN' consul acl token create -description '$desc' -policy-name $policy -format=json")"
   SEC="$(printf '%s' "$RES" | python3 -c "import json,sys; print(json.load(sys.stdin)['SecretID'])" 2>/dev/null || printf '%s' "$RES" | grep -o '"SecretID":"[^"]*"' | head -1 | cut -d'"' -f4)"
   printf '%s' "$SEC" > "$outfile"
-  chmod 600 "$outfile"
+  chmod 644 "$outfile"
 }
 
 create_service_token "S11-P1-C06 svc-doc-service" svc-doc-service "$SECRETS/consul_doc_service_token.txt"
