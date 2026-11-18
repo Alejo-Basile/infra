@@ -1,6 +1,10 @@
 datacenter = "dc1"
 data_dir = "/consul/data"
 bind_addr = "0.0.0.0"
+# El agente es el punto de registro de las apps (plan S11 §4.1): con el default
+# 127.0.0.1 solo escucha en loopback y ningún contenedor de la red `internal`
+# puede alcanzarlo. No se publica al host: no hay ports: en el compose.
+client_addr = "0.0.0.0"
 retry_join = ["consul"]
 
 acl {
