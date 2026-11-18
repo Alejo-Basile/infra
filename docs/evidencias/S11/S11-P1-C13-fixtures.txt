@@ -1,0 +1,17 @@
+$ cargo test --offline -p configkv --test fixtures_parity -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/fixtures_parity.rs (target/debug/deps/fixtures_parity-9576985301e0b574)
+
+running 3 tests
+test malformed_fixture_reports_no_key ... ok
+extraction-worker.broken-coherence.json -> rejected/min_idle_ms
+extraction-worker.malformed.json -> rejected/
+extraction-worker.out-of-range.json -> rejected/bulkhead_max_concurrency
+extraction-worker.unknown-key.json -> rejected/bulkhead_queue_limit
+extraction-worker.valid.json -> accepted/
+extraction-worker.wrong-type.json -> rejected/retry_multiplier
+test parity ... ok
+test vendored_matches_upstream ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

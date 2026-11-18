@@ -57,6 +57,7 @@ volumes:
   promtail-positions:
   consul-data:
   consul-agent-data:
+  worker-config-cache:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -795,6 +796,10 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       LOG_FORMAT: json
     networks: [internal, data]
+    # S11-P1-C13: cache last-known-good del cliente KV de Consul. El rootfs es
+    # de solo lectura, asi que la cache necesita un volumen propio y nombrado.
+    volumes:
+      - worker-config-cache:/var/lib/worker
     depends_on:
       mongo:
         condition: service_healthy

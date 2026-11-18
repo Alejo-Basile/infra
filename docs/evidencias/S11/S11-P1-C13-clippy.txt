@@ -1,0 +1,5 @@
+$ cargo clippy --offline --workspace --all-targets -- -D warnings
+    Checking configkv v0.1.0 (<repo>/extraction-worker/crates/configkv)
+    Checking extraction-worker v0.0.0 (<repo>/extraction-worker/crates/worker)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.72s
+clippy exit=0

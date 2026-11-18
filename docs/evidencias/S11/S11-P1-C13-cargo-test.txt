@@ -1,0 +1,141 @@
+$ cargo test --offline -p configkv
+   Compiling configkv v0.1.0 (<repo>/extraction-worker/crates/configkv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.63s
+     Running unittests src/lib.rs (target/debug/deps/configkv-42c481a4c6ec6b8d)
+
+running 14 tests
+test cache::tests::corrupt ... ok
+test cache::tests::missing_parent_created ... ok
+test cache::tests::roundtrip ... ok
+test schema::tests::keys_count_and_resolve ... ok
+test validate::tests::coherence ... ok
+test validate::tests::happy_path ... ok
+test validate::tests::malformed ... ok
+test validate::tests::range ... ok
+test validate::tests::type_float_for_int_key ... ok
+test validate::tests::type_string_for_multiplier ... ok
+test validate::tests::unknown_key ... ok
+test watch::tests::backoff_bounds ... ok
+test client::tests::ca_path_errors ... ok
+test client::tests::mock_http ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/fixtures_parity.rs (target/debug/deps/fixtures_parity-9576985301e0b574)
+
+running 3 tests
+test malformed_fixture_reports_no_key ... ok
+test parity ... ok
+test vendored_matches_upstream ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests configkv
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test --offline -p extraction-worker --lib
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running unittests src/lib.rs (target/debug/deps/extraction_worker-b21b779697a54135)
+
+running 94 tests
+test consumer::cgroup::tests::archivos_ausentes_devuelven_none_sin_paniquear ... ok
+test consumer::cgroup::tests::v1_con_directorio_pids_devuelve_ambos ... ok
+test consumer::cgroup::tests::v2_con_limite_max_devuelve_none ... ok
+test consumer::cgroup::tests::contenido_no_numerico_devuelve_none_sin_paniquear ... ok
+test consumer::cgroup::tests::los_gauges_de_pids_aparecen_en_el_exporter ... ok
+test consumer::classify::tests::errores_de_servidor_reintentables_son_transitorios ... ok
+test consumer::classify::tests::auth_y_config_son_fatales ... ok
+test consumer::classify::tests::errores_de_servidor_de_configuracion_son_fatales ... ok
+test consumer::classify::tests::failover_de_master_lleva_marcador_transitorio ... ok
+test consumer::cgroup::tests::v2_con_limite_numerico_devuelve_ambos ... ok
+test consumer::classify::tests::io_y_client_son_transitorios ... ok
+test consumer::classify::tests::marcador_de_failover_no_aplica_a_otros_transitorios ... ok
+test consumer::classify::tests::needs_reconnect_cubre_failover_y_socket_muerto ... ok
+test consumer::classify::tests::protocolo_inesperado_es_fatal ... ok
+test consumer::classify::tests::needs_reconnect_cubre_stall_del_read_bloqueante ... ok
+test consumer::classify::tests::redis_nunca_clasifica_como_documento ... ok
+test consumer::config::tests::from_env_recorta_espacios_y_descarta_items_vacios ... ok
+test consumer::config::tests::from_env_sin_claves_da_modo_directo ... ok
+test consumer::config::tests::from_env_parsea_addrs_separadas_por_coma ... ok
+test consumer::config::tests::from_env_parsea_sentinel_password ... ok
+test consumer::config::tests::from_env_sin_sentinel_password_no_configura_auth_de_sentinel ... ok
+test consumer::config::tests::validate_con_addr_malformada_falla_nombrando_la_addr ... ok
+test consumer::config::tests::validate_con_addrs_sin_master_name_falla ... ok
+test consumer::config::tests::validate_con_master_name_sin_addrs_falla ... ok
+test consumer::config::tests::validate_error_no_expone_credenciales ... ok
+test consumer::config::tests::validate_sentinel_completo_es_ok ... ok
+test consumer::config::tests::validate_sentinel_password_con_sentinel_es_ok ... ok
+test consumer::config::tests::validate_sentinel_password_sin_addrs_falla ... ok
+test consumer::config::tests::validate_vacio_es_modo_directo ... ok
+test consumer::dlq::tests::causa_de_contrato_invalido_es_business ... ok
+test consumer::dlq::tests::causa_de_schema_no_soportada_es_business ... ok
+test consumer::dlq::tests::best_effort_item_conserva_lo_reconocible ... ok
+test consumer::kv_overlay::tests::from_env_defaults ... ok
+test consumer::kv_overlay::tests::only_max_pages_changes ... ok
+test consumer::pipeline::tests::error_de_documento_propaga_codigo_y_kind ... ok
+test consumer::pipeline::tests::objeto_grande_falla_como_documento ... ok
+test consumer::redis_conn::tests::build_client_config_invalida_falla_sin_credenciales ... ok
+test consumer::redis_conn::tests::build_client_modo_directo_con_password_ok ... ok
+test consumer::pipeline::tests::camino_feliz_extrae_y_sube ... ok
+test consumer::redis_conn::tests::is_failover_marca_readonly_y_masterdown ... ok
+test consumer::redis_conn::tests::build_client_modo_directo_ok ... ok
+test consumer::redis_conn::tests::is_readonly_solo_marca_errores_readonly ... ok
+test consumer::redis_conn::tests::redis_client_connect_a_puerto_cerrado_falla_sin_filtrar_credenciales ... ok
+test consumer::redis_conn::tests::redis_client_directo_reset_es_idempotente_y_no_abre_socket ... ok
+test consumer::redis_conn::tests::redis_client_is_sentinel_refleja_la_config ... ok
+test consumer::redis_conn::tests::redis_client_connect_abre_un_socket_al_endpoint ... ok
+test consumer::pipeline::tests::job_timeout_devuelve_transitorio ... ok
+test consumer::redis_conn::tests::sentinel_auth_solo_usa_redis_sentinel_password ... ok
+test consumer::replay::tests::acepta_all_y_valores_inline ... ok
+test consumer::replay::tests::exige_un_filtro_o_all ... ok
+test consumer::replay::tests::rechaza_argumentos_desconocidos_y_limite_invalido ... ok
+test consumer::resilience::tests::breaker_abre_tras_umbral_de_fallos_consecutivos ... ok
+test consumer::resilience::tests::breaker_cierra_con_exito_y_resetea_el_contador ... ok
+test consumer::redis_conn::tests::resolver_async_no_se_conecta_al_master ... ok
+test consumer::resilience::tests::circuito_abierto_rechaza_sin_llamar_la_operacion ... ok
+test consumer::resilience::tests::documento_no_reintenta_ni_cuenta_para_el_breaker ... ok
+test consumer::resilience::tests::fallo_del_probe_reabre_el_breaker ... ok
+test consumer::resilience::tests::fatal_no_reintenta_pero_cuenta_para_el_breaker ... ok
+test consumer::resilience::tests::breaker_reporta_estado_para_metricas ... ok
+test consumer::resilience::tests::halfopen_permite_un_solo_probe ... ok
+test consumer::resilience::tests::rejecting_solo_durante_el_cooldown ... ok
+test consumer::runner::tests::attempts_exceeded_solo_pasado_el_limite ... ok
+test consumer::runner::tests::drain_con_todos_los_jobs_cortos_no_aborta ... ok
+test consumer::redis_conn::tests::resolver_async_corta_con_sentinel_mudo ... ok
+test consumer::runner::tests::drain_sin_presupuesto_aborta_todo ... ok
+test consumer::runner::tests::half_open_no_cuenta_como_degradado ... ok
+test consumer::runner::tests::master_conn_reconecta_si_el_socket_muere ... ok
+test consumer::runner::tests::master_conn_reconecta_tras_fallo_de_failover ... ok
+test consumer::runner::tests::master_conn_sin_failover_no_reconecta ... ok
+test consumer::runner::tests::modo_degradado_refleja_los_breakers_de_procesamiento ... ok
+test consumer::runner::tests::terminal_state_por_causa_de_dlq ... ok
+test extract::tests::extrae_texto_del_fixture ... ok
+test extract::tests::pdf_con_demasiadas_paginas_es_error_de_negocio ... ok
+test extract::tests::pdf_corrupto_es_error_de_negocio ... ok
+test extract::tests::texto_extraido_no_tiene_whitespace_de_borde ... ok
+test http::tests::healthz_responde_200 ... ok
+test http::tests::metrics_declara_content_type_de_prometheus ... ok
+test consumer::pipeline::tests::transitorio_se_reintenta_hasta_exito ... ok
+test http::tests::metrics_devuelve_texto_parseable_por_prometheus ... ok
+test http::tests::metrics_responde_head_con_content_type ... ok
+test http::tests::readyz_group_check_usa_stream_y_group_de_config ... ok
+test http::tests::redis_group_check_detecta_grupo_ausente_y_presente ... ignored, requiere Redis real (REDIS_TEST_URL)
+test http::tests::redis_ping_falla_si_el_nodo_sigue_siendo_replica ... ok
+test http::tests::redis_ping_reintenta_tras_rol_replica_y_triunfa ... ok
+test http::tests::redis_ping_sin_redis_falla_luego_de_reintentar ... ok
+test http::tests::str_ignora_claves_sentinel_incluida_auth ... ok
+test http::tests::str_mantiene_stream_y_group_por_defecto ... ok
+test telemetry::tests::el_handle_es_idempotente ... ok
+test telemetry::tests::el_handle_renderiza_metricas_registradas ... ok
+test telemetry::tests::json_incluye_campos_estables_y_de_correlacion ... ok
+test telemetry::tests::json_incluye_el_error_cuando_esta_presente ... ok
+test consumer::runner::tests::drain_espera_los_cortos_y_aborta_los_largos ... ok
+test consumer::resilience::tests::transitorio_reintenta_hasta_exitoso ... ok
+test http::tests::readyz_con_dependencias_muertas_responde_503 ... ok
+
+test result: ok. 93 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.31s
+
