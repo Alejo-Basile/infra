@@ -762,6 +762,19 @@ services:
   #
   # Nada de este servicio se publica al host: escucha /healthz, /readyz y
   # /metrics en la red interna para Prometheus (SPEC 10).
+  # Digest pinning (S11-P1-C27): el digest inmutable se publica por
+  # publish-image.yml y se fija por el operador con la referencia completa
+  # `<imagen>@sha256:<digest>`. Compose solo soporta interpolacion de un
+  # nivel (`${VAR:-default}`), por lo que no se puede combinar imagen/tag y
+  # digest en una sola expresion sin romper el path basado en tags. La
+  # variable opcional EXTRACTION_WORKER_DIGEST queda documentada en .env.example
+  # (vacia = se usa la ruta por tag). Si se completa, el operador reemplaza
+  # manualmente la linea `image:` por la referencia con digest. El bloque de
+  # servicio de `ocr-worker` pertenece a S11-P1-C28: no crearlo aqui.
+  #
+  # Digests publicados (run 44272090569, commit 374d339, linux/amd64):
+  #   ghcr.io/alejo-basile/extraction-worker@sha256:839710e3457b14a66f4b59c4baf43ce96ba948431dafe61710bea07ebd4de88d
+  #   ghcr.io/alejo-basile/ocr-worker@sha256:c406bbcaf7a08f324d2a76ebb0137e91244e9cfd5738948b76f13e87b8bf40a1
   extraction-worker:
     image: ${EXTRACTION_WORKER_IMAGE:-ghcr.io/alejo-basile/extraction-worker}:${EXTRACTION_WORKER_TAG:-latest}
     profiles: ["full"]

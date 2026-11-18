@@ -1,0 +1,73 @@
+# S11-P1-C27 — digests publicados
+# Fecha: 2026-11-18
+
+Contrato P3/§0.2
+- C27 no depende del contrato P3/§0.2. Es ejecutable ya; no requiere cambios de P3.
+
+Estado del cambio
+- Workflow: commit `e4f31c3` en la rama `feat/s11-p1-c27-publish-image-matrix`.
+- PR: https://github.com/Alejo-Basile/extraction-worker/pull/73 (base `main`).
+- Merge: `374d339913cf77733bb160dabc9c90fc5f419e25` (2026-11-18T09:01:44Z).
+- Run de publicacion: https://github.com/Alejo-Basile/extraction-worker/actions/runs/44272090569 — `success`, jobs `build extraction-worker (linux/amd64)` 4m40s y `build ocr-worker (linux/amd64)` 5m04s.
+- `publish-image.yml` solo se dispara con push a `main` o tags `v*`: la publicacion ocurre al mergear el PR, no al abrirlo.
+- El job `image-scan` de `ci.yml` ya construye y escanea ambas imagenes en `main`, lo que confirma que `Dockerfile.ocr-worker` es construible.
+
+
+Build context verificado
+- Dockerfile: extraction-worker/Dockerfile (contexto compartido: raiz del repo extraction-worker/)
+- Dockerfile: extraction-worker/Dockerfile.ocr-worker (contexto compartido: raiz del repo extraction-worker/)
+- Evidencia de copia en Dockerfile.ocr-worker: COPY Cargo.toml Cargo.lock ./ y COPY crates ./
+  (el contexto debe ser la raiz del repo, no crates/ocr-worker/).
+
+Cambios aplicados
+- Workflow convertido a matriz: dos imagenes (extraction-worker, ocr-worker).
+- fail-fast: false para no cancelar una imagen por falla de la otra.
+- context: . para ambas; file: ${{ matrix.dockerfile }}.
+- images: ghcr.io/alejo-basile/${{ matrix.image }}.
+- Tags inmutables por SHA corto (type=sha,format=short) siempre; latest solo en default branch; semver en tags v*.
+- Labels: title por imagen; description por imagen desde la matriz (extraction-worker conserva "Worker de extraccion de PDFs"; ocr-worker define "Worker de OCR de PDFs"); source y revision=${{ github.sha }}.
+- Cache separado por imagen: scope=${{ matrix.image }}-amd64.
+- Paso de digest nombra la imagen: ghcr.io/alejo-basile/${{ matrix.image }}@${IMAGE_DIGEST}.
+- Compose: comentario de digest pinning sobre la linea image: de extraction-worker; EXTRACTION_WORKER_DIGEST opcional.
+- .env.example: seccion con EXTRACTION_WORKER_* y OCR_WORKER_*.
+
+Validacion local
+- yamllint -d relaxed extraction-worker/.github/workflows/publish-image.yml: 0 errores, 1 warning de line-length ya presente en el commit base (misma linea `org.opencontainers.image.source`).
+- python3 yaml.safe_load: OK.
+- docker compose --profile full config --quiet (con --env-file ../.env.example): OK.
+
+Digests publicados
+- Commit publicado: 374d339 (tag de imagen `sha-374d339`), plataforma linux/amd64.
+- extraction-worker (index OCI): sha256:839710e3457b14a66f4b59c4baf43ce96ba948431dafe61710bea07ebd4de88d
+- extraction-worker (manifest amd64): sha256:7a71bdb9437f9321f116305cb8465a5a5b68341482aac7f8e664f50e82b3ebad
+- ocr-worker (index OCI): sha256:c406bbcaf7a08f324d2a76ebb0137e91244e9cfd5738948b76f13e87b8bf40a1
+- ocr-worker (manifest amd64): sha256:9884458a332e086679dc8a70fb55bda95f4e39005650b6ab31185913428b3261
+- Las etiquetas `latest` y `sha-374d339` de ambas imagenes apuntan al mismo index digest.
+
+Ambos digests quedan citados en infra/compose/docker-compose.yml, en el bloque de comentario de digest pinning sobre el servicio extraction-worker.
+
+Decisión sobre .env.example
+- EXTRACTION_WORKER_DIGEST y OCR_WORKER_DIGEST se dejan vacios en la plantilla: vacio significa "se usa la ruta por tag". El operador completa el digest de su despliegue; no se hardcodea un digest de un commit concreto en un archivo versionado de ejemplo.
+
+Verificacion (ejecutada)
+$ docker buildx imagetools inspect ghcr.io/alejo-basile/extraction-worker:sha-374d339
+Name:      ghcr.io/alejo-basile/extraction-worker:sha-374d339
+MediaType: application/vnd.oci.image.index.v1+json
+Digest:    sha256:839710e3457b14a66f4b59c4baf43ce96ba948431dafe61710bea07ebd4de88d
+
+Manifests:
+  Name:        ghcr.io/alejo-basile/extraction-worker:sha-374d339@sha256:7a71bdb9437f9321f116305cb8465a5a5b68341482aac7f8e664f50e82b3ebad
+  MediaType:   application/vnd.oci.image.manifest.v1+json
+  Platform:    linux/amd64
+
+$ docker buildx imagetools inspect ghcr.io/alejo-basile/ocr-worker:sha-374d339
+Name:      ghcr.io/alejo-basile/ocr-worker:sha-374d339
+MediaType: application/vnd.oci.image.index.v1+json
+Digest:    sha256:c406bbcaf7a08f324d2a76ebb0137e91244e9cfd5738948b76f13e87b8bf40a1
+
+Manifests:
+  Name:        ghcr.io/alejo-basile/ocr-worker:sha-374d339@sha256:9884458a332e086679dc8a70fb55bda95f4e39005650b6ab31185913428b3261
+  MediaType:   application/vnd.oci.image.manifest.v1+json
+  Platform:    linux/amd64
+
+(Ademas de los manifests amd64, cada index incluye un manifest con Platform: unknown/unknown, que corresponde a la atestacion de provenance.)
