@@ -83,6 +83,8 @@ secrets:
   consul_ratelimitd_token: { file: ../secrets/consul_ratelimitd_token.txt }
   consul_worker_token: { file: ../secrets/consul_worker_token.txt }
   consul_prometheus_token: { file: ../secrets/consul_prometheus_token.txt }
+  consul_ui_password: { file: ../secrets/consul_ui_password.txt }
+  consul_ui_users: { file: ../secrets/consul_ui_users.txt }
 
 services:
   # ===========================================================================
@@ -529,6 +531,7 @@ services:
     profiles: ["full"]
     <<: *hardening
     read_only: true
+    secrets: [consul_ui_users, consul_ca_cert]
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
     environment:
