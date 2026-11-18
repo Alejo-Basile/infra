@@ -1,0 +1,9 @@
+{
+  "_expected": {
+    "verdict": "rejected",
+    "key": "sensitive_routes",
+    "reason": "range"
+  },
+  "sensitive_routes": "",
+  "exempt_paths": "/internal,/healthz,/metrics"
+}
