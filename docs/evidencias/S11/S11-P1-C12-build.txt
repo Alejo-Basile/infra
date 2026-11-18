@@ -1,0 +1,4 @@
+# S11-P1-C12 — go build
+# Fecha: 2026-11-17T23:00:31-03:00
+$ go build ./...
+exit=0

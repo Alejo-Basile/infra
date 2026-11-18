@@ -1,0 +1,8 @@
+# S11-P1-C12 — RED observado
+# Fecha: 2026-11-17T23:00:31-03:00
+# Estado previo a la correccion: paquete configkv sin tests, main.go sin watcher KV.
+$ go test ./internal/configkv/... -count=1
+?   	github.com/Alejo-Basile/platform-services/rate-limiter/internal/configkv	[no test files]
+
+$ grep -c "configkv" cmd/ratelimitd/main.go
+0
