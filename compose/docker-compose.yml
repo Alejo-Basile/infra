@@ -637,6 +637,11 @@ services:
       CONSUL_HTTP_ADDR: https://consul:8501
       CONSUL_CACERT: /run/secrets/consul_ca_cert
       CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      # S11-P1-C14: el registro va contra el agente local, no contra el
+      # server; el cliente KV lee CONSUL_HTTP_TOKEN_FILE (mismo secreto).
+      CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: doc-service
     networks: [internal, data]
     depends_on:
       mongo:
@@ -672,6 +677,10 @@ services:
       - redis_streams_password
       - minio_webhook_secret
       - internal_token
+      # S11-P1-C14: el canary es una réplica más de doc-service, así que se
+      # registra con su propio ID (hostname único) y el mismo contrato de KV.
+      - consul_doc_service_token
+      - consul_ca_cert
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
@@ -695,6 +704,13 @@ services:
       RECONCILE_INTERVAL_MIN: "10"
       DOC_UPLOAD_GRACE_MIN: "30"
       MIN_SAFETY_AGE_MIN: "15"
+      # S11-P1-C06 / S11-P1-C14: KV y registro de esta réplica.
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: doc-service
     networks: [internal, data]
     depends_on:
       mongo:
