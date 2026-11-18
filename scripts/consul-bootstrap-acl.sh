@@ -35,7 +35,7 @@ OP_TOKEN="$(tr -d '\n' < "$OP_FILE")"
 # through Docker file-secrets, which inherit the host file mode.
 normalize_token_modes() {
   local f
-  for f in consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_prometheus_token.txt; do
+  for f in consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_ocr_worker_token.txt consul_prometheus_token.txt; do
     [[ -s "$SECRETS/$f" ]] && chmod 0644 "$SECRETS/$f"
   done
 }
@@ -43,7 +43,7 @@ normalize_token_modes
 
 # Idempotency guard
 all_policies_exist() {
-  for p in consul-operator svc-doc-service svc-ratelimitd svc-extraction-worker prometheus-read; do
+  for p in consul-operator svc-doc-service svc-ratelimitd svc-extraction-worker svc-ocr-worker prometheus-read; do
     if ! docker exec "$CONSUL_CT" sh -c "CONSUL_HTTP_ADDR=$ADDR CONSUL_CACERT=$CA CONSUL_HTTP_TOKEN='$OP_TOKEN' consul acl policy read -name $p" >/dev/null 2>&1; then
       return 1
     fi
@@ -51,7 +51,7 @@ all_policies_exist() {
   return 0
 }
 all_token_files_exist() {
-  for f in consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_prometheus_token.txt; do
+  for f in consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_ocr_worker_token.txt consul_prometheus_token.txt; do
     [[ -s "$SECRETS/$f" ]] || return 1
   done
   return 0
@@ -62,7 +62,7 @@ token_authenticates() {
 
 if [[ "${1:-}" != "--verify" ]] && [[ -s "$OP_FILE" ]] && token_authenticates && all_policies_exist && all_token_files_exist; then
   echo "bootstrap already done"
-  for f in consul_operator_token.txt consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_prometheus_token.txt; do
+  for f in consul_operator_token.txt consul_doc_service_token.txt consul_ratelimitd_token.txt consul_worker_token.txt consul_ocr_worker_token.txt consul_prometheus_token.txt; do
     echo "$f: $(tr -d '\n' < "$SECRETS/$f" | cut -c1-8)"
   done
   exit 0
@@ -99,6 +99,7 @@ create_policy consul-operator "$ACL_DIR/consul-operator.hcl"
 create_policy svc-doc-service "$ACL_DIR/svc-doc-service.hcl"
 create_policy svc-ratelimitd "$ACL_DIR/svc-ratelimitd.hcl"
 create_policy svc-extraction-worker "$ACL_DIR/svc-extraction-worker.hcl"
+create_policy svc-ocr-worker "$ACL_DIR/svc-ocr-worker.hcl"
 create_policy prometheus-read "$ACL_DIR/prometheus-read.hcl"
 
 # Attach consul-operator policy to existing operator token via accessor id
@@ -140,6 +141,7 @@ for t in data:
 create_service_token "S11-P1-C06 svc-doc-service" svc-doc-service "$SECRETS/consul_doc_service_token.txt"
 create_service_token "S11-P1-C06 svc-ratelimitd" svc-ratelimitd "$SECRETS/consul_ratelimitd_token.txt"
 create_service_token "S11-P1-C06 svc-extraction-worker" svc-extraction-worker "$SECRETS/consul_worker_token.txt"
+create_service_token "S11-P1-C29 svc-ocr-worker" svc-ocr-worker "$SECRETS/consul_ocr_worker_token.txt"
 create_service_token "S11-P1-C06 prometheus-read" prometheus-read "$SECRETS/consul_prometheus_token.txt"
 
 # Print prefixes
@@ -147,6 +149,7 @@ echo "consul-operator: $(cut -c1-8 < "$OP_FILE")"
 echo "svc-doc-service: $(cut -c1-8 < "$SECRETS/consul_doc_service_token.txt")"
 echo "svc-ratelimitd: $(cut -c1-8 < "$SECRETS/consul_ratelimitd_token.txt")"
 echo "svc-extraction-worker: $(cut -c1-8 < "$SECRETS/consul_worker_token.txt")"
+echo "svc-ocr-worker: $(cut -c1-8 < "$SECRETS/consul_ocr_worker_token.txt")"
 echo "prometheus-read: $(cut -c1-8 < "$SECRETS/consul_prometheus_token.txt")"
 
 # --verify handling
