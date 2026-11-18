@@ -1,0 +1,88 @@
+S11-P1-C21 — extraction-worker: min_idle_ms restart-only
+Date: 2026-11-18
+
+Scope
+-----
+This task makes a change to min_idle_ms published through Consul KV persist and be logged
+once, while the effective value used by the XAUTOCLAIM loop stays the startup value until
+restart. Hot changes to job_timeout_seconds never recalculate min_idle_ms.
+
+Commands and observed results
+----------------------------
+1. cargo test -p extraction-worker --lib
+   Result: test result: ok. 123 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.61s
+
+2. cargo test -p configkv
+   Result: test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Failing test: vendored_matches_upstream (fixtures_parity).
+   Note: this failure is pre-existing and unrelated to C21. It is caused by drift in
+   infra/compose/consul/testdata/{extraction-worker.malformed,extraction-worker.out-of-range,
+   extraction-worker.unknown-key,manifest}.json, which were modified on 2026-11-18 01:09,
+   before this task started at 02:59. This task does not touch crates/configkv or those
+   fixtures, and does not modify any file outside the allowed edit surfaces.
+
+3. cargo fmt --check
+   Result: exit 0, no output.
+
+4. cargo clippy -p extraction-worker --all-targets -- -D warnings
+   Result: Finished dev profile, 0 warnings.
+
+RED run
+-------
+The tests were written first and executed before implementation. The raw terminal capture of
+that failing run is not available in this artifact; the observed failure was the expected
+missing-module / missing-symbol compile errors for the new min_idle module and the overlay
+assertion, resolved by the implementation described below.
+
+Real test names (new, passing)
+------------------------------
+- consumer::min_idle::tests::sin_cambio_no_loguea
+- consumer::min_idle::tests::cambio_se_loguea_una_vez
+- consumer::min_idle::tests::mismo_valor_no_re_loguea
+- consumer::min_idle::tests::valor_distinto_re_loguea
+- consumer::min_idle::tests::volver_al_efectivo_limpia_pendiente
+- consumer::min_idle::tests::coherencia_exige_2x_job_timeout
+- consumer::kv_overlay::tests::apply_no_aplica_min_idle_ms
+- consumer::kv_overlay::tests::job_timeout_caliente_no_recalcula_min_idle_ms
+- consumer::config::tests::min_idle_desde_env_al_arrancar
+- consumer::resilience::hot_reload_tests2::tunables_min_idle_efectivo_es_el_de_arranque
+
+Existing tests preserved: 123 passed, 0 failed, 1 ignored.
+
+Log messages
+------------
+- min_idle_change_requires_restart (emitted once per distinct requested value)
+- min_idle_below_2x_job_timeout (startup coherence warning)
+
+Metric names
+------------
+- worker_min_idle_change_requires_restart_total (counter)
+- worker_min_idle_pending_ms (gauge, 0 when no pending value)
+- worker_min_idle_below_2x_job_timeout_total (counter, optional)
+
+Behavior verified
+-----------------
+- Effective min_idle_ms equals the startup value (WORKER_MIN_IDLE_MS, default 601000 =
+  300*2000+1000 with job_timeout=300s).
+- A valid new min_idle_ms arriving from Consul KV is persisted by the existing configkv
+  last-known-good cache and recorded as pending; the effective value used by XAUTOCLAIM
+  stays the startup value.
+- min_idle_change_requires_restart is emitted exactly once per distinct requested value.
+  Re-publishing the same value does not log again; a different value logs again once;
+  reverting to the effective value clears the pending state without logging.
+- WorkerKvOverlay::apply never writes cfg.min_idle_ms.
+- Changing job_timeout_seconds in KV does not recalculate min_idle_ms.
+- After restart, a new WORKER_MIN_IDLE_MS env value or cache value becomes effective.
+- Startup warns (never aborts) when min_idle_ms < 2 * job_timeout.
+
+Manual verification steps (Compose end-to-end NOT executed in this task)
+---------------------------------------------------------------------
+1. Publish min_idle_ms=900000 using infra/scripts/consul-kv-sync.sh.
+2. Confirm the log min_idle_change_requires_restart appears exactly once and the gauge
+   worker_min_idle_pending_ms reports 900000 while the effective value remains 601000.
+3. Republish 900000 and confirm no second log line.
+4. Restart the worker and confirm the effective value becomes 900000.
+5. Publish job_timeout_seconds=600 in KV and confirm min_idle_ms stays 601000.
+Note: the Compose end-to-end observation was not executed in this task, matching the
+limitation recorded in S11-P1-C20-bulkhead.txt. The steps above are the manual procedure
+to perform it.

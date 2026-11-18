@@ -1,0 +1,33 @@
+Date: 2026-11-18
+Task: S11-P1-C19
+
+backoff 0.4 defaults measured:
+- initial_interval = 500 ms
+- multiplier = 1.5
+- max_interval = 60000 ms
+- randomization_factor = 0.5
+- max_elapsed_time = 900000 ms
+
+Baseline before change: 10 lib resilience tests + 3 resilience_it tests green.
+After change: 13 lib resilience tests (10 preserved + 3 new) green; 3 resilience_it green.
+
+New tests:
+- breaker_umbral_cambiado_en_caliente_no_cierra_open: PASS (Open stays Open after threshold raise)
+- breaker_umbral_compartido_afecta_instancias_existentes: PASS
+- retry_params_vivos_respetan_max_elapsed: PASS (returns within <1.5s)
+
+kv_overlay apply_tunables: Some applies, None preserves.
+
+clippy: cargo clippy -p extraction-worker --all-targets -- -D warnings -> PASS
+fmt: cargo fmt --check -> PASS
+
+Wiring confirmation:
+- main.rs single WorkerTunables handed to ExtractionPipeline::from_env_with_tunables and ConsumerRunner::new_with_tunables.
+- redis breaker via CircuitBreaker::with_config; mongo via mongo_breaker_with; minio via minio_breaker_with.
+- with_retry_cb_cfg at runner 116/205/1190/1218 and pipeline 217/254/281.
+
+kv_overlay tests: apply_tunables_aplica_solo_campos_presentes PASS; apply_tunables_umbral_compartido_abre_breakers_existentes PASS.
+
+Full suite: 105 passed lib, 17 and 3 in other suites, 1 passed shutdown in isolation 3/3 runs. Pre-existing flake: shutdown_it::sigterm_drena_en_menos_de_6s (child got default SIGTERM before wait_for_shutdown_signal installed handlers; ExitStatus(unix_wait_status(15))), unrelated to this diff; passed 3/3 standalone and once in earlier aggregate run.
+
+cargo fmt --check PASS; clippy PASS.
