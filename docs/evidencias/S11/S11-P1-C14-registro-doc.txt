@@ -1,0 +1,177 @@
+S11-P1-C14 — doc-service: registro y desregistro en Consul
+Fecha: 2026-11-18 (UTC)
+Entorno: docker compose project `infra`, archivo infra/compose/docker-compose.yml, env infra/.env
+Imagen probada: doc-service:local (build desde el checkout local con
+infra/compose/docker-compose.build.yml); imagen previa en el entorno:
+ghcr.io/alejo-basile/doc-service:latest.
+
+RESUMEN
+  PASS  build / vet / unit tests
+  PASS  compose config valido
+  PASS  2 replicas registradas con IDs distintos y checks passing
+  PASS  stop ordenado deja 0 entradas en < 1 s
+  PASS  purga tras SIGKILL por DeregisterCriticalServiceAfter
+  PASS  arranque con Consul caido: /healthz OK, metrica incrementada
+  PASS  reconexion automatica del registro cuando Consul vuelve (sin reiniciar)
+  PASS  shutdown no se alarga (stop wall 0.68 s)
+
+--------------------------------------------------------------------------
+1. GATES DE CODIGO
+
+$ cd doc-service && go build ./...
+(sin salida)  exit 0
+
+$ cd doc-service && go vet ./...
+(sin salida)  exit 0
+
+$ cd doc-service && go test ./internal/consulreg/ ./internal/metrics/ ./internal/configkv/ -count=1
+ok   github.com/Alejo-Basile/doc-service/internal/consulreg
+ok   github.com/Alejo-Basile/doc-service/internal/metrics   (cached)
+ok   github.com/Alejo-Basile/doc-service/internal/configkv   (cached)
+
+$ cd doc-service && go test ./...
+FAIL github.com/Alejo-Basile/doc-service/internal/adapters/redis
+  --- FAIL: TestWorkQueue_Ping: no se pudo conectar a Redis: dial tcp 127.0.0.1:6379: connect: connection refused
+  --- FAIL: TestWorkQueue_WaitNoBloqueaEnStandalone: idem
+  --- FAIL: TestWorkQueue_IntegracionConRedisReal: Redis no disponible
+Resto de paquetes: ok.
+NOTA: fallo preexistente del entorno (los tests de integracion de Redis
+esperan un Redis en 127.0.0.1:6379 que no existe en el host). No tiene
+relacion con este cambio: consulreg no toca el adaptador de Redis.
+
+$ cd infra && docker compose --env-file .env -f compose/docker-compose.yml --profile full config --quiet
+(sin salida)  exit 0
+
+--------------------------------------------------------------------------
+2. REGISTRO CON --scale doc-service=2
+
+$ docker compose --env-file .env -f compose/docker-compose.yml \
+    -f compose/docker-compose.build.yml --profile full up -d --build \
+    --force-recreate --no-deps --scale doc-service=2 doc-service
+ Container infra-doc-service-1 Started
+ Container infra-doc-service-2 Started
+
+$ docker ps --filter name=infra-doc-service
+infra-doc-service-1  Up 30 seconds (healthy)
+infra-doc-service-2  Up 30 seconds (healthy)
+infra-doc-service-canary-1  Up 8 hours (healthy)
+
+$ GET https://consul-agent:8501/v1/health/service/svc-doc-service
+entries: 2
+doc-service-15ad88016394 | 172.24.0.15 | ['passing', 'passing']
+doc-service-3504d7373140 | 172.24.0.4  | ['passing', 'passing']
+
+$ consul catalog services  (contra consul-agent)
+consul
+svc-doc-service
+
+IDs distintos, ambos checks (serf + health HTTP a /healthz) en passing.
+El Address publicado es la IPv4 de la red `internal` (172.24.0.0/16), no el
+hostname: el DNS embebido de Docker no resuelve el hostname corto del
+contenedor para otros contenedores (verificado:
+`docker exec infra-consul-agent-1 getent hosts <hostname>` -> vacio, mientras
+que `getent hosts infra-doc-service-1` si resuelve). El ID conserva el
+hostname porque solo necesita ser unico, no resoluble.
+
+--------------------------------------------------------------------------
+3. DESREGISTRO ORDENADO
+
+$ T0=$(date +%s.%N); docker compose ... stop doc-service; T1=$(date +%s.%N)
+stop_wall_seconds=0.68
+
+$ consul catalog services | grep -c svc-doc-service
+t+0.7s entries=0
+t+1.4s entries=0
+t+2.1s entries=0
+
+0 entradas dentro del presupuesto de 2 s del desregistro. El stop completo
+tardo 0.68 s: los 15 s de shutdownTimeout no se alargaron.
+
+--------------------------------------------------------------------------
+4. PURGA TRAS SIGKILL (DeregisterCriticalServiceAfter)
+
+$ docker kill -s KILL infra-doc-service-1     (03:05:40 UTC)
+t+10s entries=1
+t+20s entries=1
+...
+t+60s entries=1
+t+70s entries=0
+
+Observacion honesta: la entrada tarda ~70 s, no <=60 s, porque el cronometro
+de 1m de DeregisterCriticalServiceAfter empieza cuando el check pasa a
+critico (deteccion ~10 s con interval 10s / timeout 3s), no en el instante
+del kill. Es el comportamiento documentado de Consul con el valor `1m` que
+fija la tarea; el catalogo queda limpio sin intervencion manual.
+Nota: esta medicion se tomo con el binario previo al reintento; la purga la
+ejecuta el agente y no depende del codigo de doc-service.
+
+--------------------------------------------------------------------------
+5. ARRANQUE CON CONSUL CAIDO (degradacion)
+
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile full stop consul-agent consul
+$ docker compose ... up -d --no-deps --scale doc-service=1 doc-service
+(sleep 25)
+
+$ wget -qO- http://127.0.0.1:8080/healthz     (dentro del contenedor)
+{"status":"healthy","timestamp":"2026-11-18T03:16:41Z","service":"doc-service"}
+
+$ wget -qO- http://127.0.0.1:8080/metrics | grep ^docservice_consul_registration_failed_total
+docservice_consul_registration_failed_total 3
+
+$ docker logs infra-doc-service-1 | grep -c "registro en Consul fallido"
+3
+
+El servicio arranca y sirve sin Consul. Cada intento fallido loguea WARN con
+id, address y error, e incrementa la metrica. Ejemplo del primer intento:
+{"level":"WARN","msg":"registro en Consul fallido, el servicio sigue operando",
+ "id":"doc-service-31606a5d9624","address":"172.22.0.8",
+ "error":"consul register: Put \"https://consul-agent:8501/v1/agent/service/register\": dial tcp: lookup consul-agent on 127.0.0.11:53: server misbehaving"}
+(En modo degradado, sin DNS del agente, la derivacion de direccion cae al
+primer IPv4 global y puede devolver la IP de la red `data`. No importa: en ese
+estado no hay registro. Cuando el agente responde, usa la IP de `internal`.)
+
+--------------------------------------------------------------------------
+6. RECONEXION AUTOMATICA DEL REGISTRO
+
+$ docker compose --env-file .env -f compose/docker-compose.yml --profile full start consul consul-agent
+consul_up_at=03:16:47
+
+$ (polling del catalogo, sin reiniciar doc-service)
+t+10s entries=0
+t+20s entries=0
+t+30s entries=1
+
+$ docker logs infra-doc-service-1 | grep "registrado en Consul" | tail -1
+{"time":"2026-11-18T03:17:31.639083833Z","level":"INFO","msg":"registrado en Consul",
+ "id":"doc-service-3504d7373140","address":"172.24.0.4","port":8080}
+
+La replica se registra sola cuando Consul vuelve, con backoff 5 s -> 60 s.
+Sin este reintento la replica quedaba fuera del catalogo hasta que alguien la
+reiniciara.
+
+--------------------------------------------------------------------------
+7. ESTADO FINAL DEL ENTORNO
+
+infra-doc-service-1         Up (healthy)   doc-service:local   [registrada]
+infra-doc-service-canary-1  Up (healthy)   ghcr.io/alejo-basile/doc-service:latest
+
+$ GET /v1/health/service/svc-doc-service
+doc-service-3504d7373140 172.24.0.4 ['passing', 'passing']
+
+Cambios de infraestructura acompanantes (justificados):
+  - infra/compose/consul/config/agent.hcl: se agrega `client_addr = "0.0.0.0"`.
+    Con el default 127.0.0.1, el agente solo escuchaba en loopback y ningun
+    contenedor de `internal` podia registrarse contra el (medido:
+    `netstat -ltn` -> 127.0.0.1:8501 y `connect: connection refused` desde
+    doc-service). No se publica al host: el bloque compose del agente no tiene
+    `ports:`.
+  - doc-service y doc-service-canary reciben CONSUL_REGISTRATION_ADDR,
+    SERVICE_NAME y el secreto consul_doc_service_token; el canary ademas
+    CONSUL_HTTP_ADDR/CACERT/TOKEN_FILE, que no tenia. Nota: antes del cambio el
+    cliente KV del canary usaba el default interno del binario
+    (https://consul-agent:8501), que tambien funciona; ahora queda explicito.
+
+Rollback verificado por diseno (no ejecutado para no dejar el entorno sin
+registro): CONSUL_REGISTRATION_DISABLED=true hace que Register y Deregister
+sean no-op y que el loop de reintento no arranque (cubierto por
+TestDisabledSkipsHTTP).

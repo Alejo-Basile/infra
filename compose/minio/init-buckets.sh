@@ -56,11 +56,11 @@ ALIAS="local"
 mc alias set "$ALIAS" "http://minio:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" --api S3v4
 
 # --- Buckets ------------------------------------------------------------------
-for bucket in raw-pdfs extracted-txt; do
+for bucket in raw-pdfs extracted-txt extracted-md; do
   mc mb --ignore-existing "$ALIAS/$bucket"
   # Listado anonimo DESHABILITADO por defecto (ningun mc anonymous set)
 done
-echo "Buckets listos: raw-pdfs, extracted-txt"
+echo "Buckets listos: raw-pdfs, extracted-txt, extracted-md"
 
 # --- Policies -----------------------------------------------------------------
 # doc-service: emite URLs presignadas POST de subida a raw-pdfs (ESCRIBE via
@@ -75,13 +75,23 @@ cat > /tmp/policy-docservice.json <<'EOF'
       "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:HeadBucket"],
       "Resource": [
         "arn:aws:s3:::raw-pdfs", "arn:aws:s3:::raw-pdfs/*",
-        "arn:aws:s3:::extracted-txt", "arn:aws:s3:::extracted-txt/*"
+        "arn:aws:s3:::extracted-txt", "arn:aws:s3:::extracted-txt/*",
+        "arn:aws:s3:::extracted-md", "arn:aws:s3:::extracted-md/*"
       ]
     },
     {
       "Effect": "Allow",
       "Action": ["s3:PutObject"],
       "Resource": ["arn:aws:s3:::raw-pdfs/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::raw-pdfs/*",
+        "arn:aws:s3:::extracted-txt/*",
+        "arn:aws:s3:::extracted-md/*"
+      ]
     }
   ]
 }
@@ -100,17 +110,23 @@ cat > /tmp/policy-worker.json <<'EOF'
     {
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "Resource": ["arn:aws:s3:::extracted-txt/*"]
+      "Resource": ["arn:aws:s3:::extracted-txt/*", "arn:aws:s3:::extracted-md/*"]
     }
   ]
 }
 EOF
 
-# Policies (idempotente: "create" falla si ya existe -> se reemplaza el contenido)
-mc admin policy create "$ALIAS" docservice-rw /tmp/policy-docservice.json 2>/dev/null \
-  || echo "Policy docservice-rw ya existe (contenido inmutable desde S0; para cambiarla, eliminar y recrear)"
-mc admin policy create "$ALIAS" worker-extract /tmp/policy-worker.json 2>/dev/null \
-  || echo "Policy worker-extract ya existe"
+# Policies (reconciliacion idempotente: si existe, detach+remove+create+attach)
+reconcile_policy() {
+  _rp_name="$1"
+  _rp_file="$2"
+  _rp_user="$3"
+  if mc admin policy info "$ALIAS" "$_rp_name" >/dev/null 2>&1; then
+    mc admin policy detach "$ALIAS" "$_rp_name" --user "$_rp_user" >/dev/null
+    mc admin policy remove "$ALIAS" "$_rp_name"
+  fi
+  mc admin policy create "$ALIAS" "$_rp_name" "$_rp_file"
+}
 
 # --- Usuarios de servicio -----------------------------------------------------
 # NOTA: el fallo de `user add` se trata como idempotencia SOLO si el usuario ya existe.
@@ -128,10 +144,33 @@ add_user "$SVC_WORKER_ACCESS_KEY" "$SVC_WORKER_SECRET_KEY"
 
 # Attach (idempotente en mc recientes). SIN fallback deprecado `policy set`
 # (imprime un ERROR "Deprecated command" pero devuelve exito, enmascarando fallos).
+reconcile_policy docservice-rw /tmp/policy-docservice.json "$SVC_DOCSERVICE_ACCESS_KEY"
+reconcile_policy worker-extract /tmp/policy-worker.json "$SVC_WORKER_ACCESS_KEY"
 mc admin policy attach "$ALIAS" docservice-rw --user "$SVC_DOCSERVICE_ACCESS_KEY"
 mc admin policy attach "$ALIAS" worker-extract --user "$SVC_WORKER_ACCESS_KEY"
 
 # --- Verificacion post-init (falla ruidoso si algo no quedo) -------------------
+for b in raw-pdfs extracted-txt extracted-md; do
+  mc ls "$ALIAS/$b" >/dev/null
+done
+echo "Verificado: buckets raw-pdfs, extracted-txt, extracted-md."
+
+if ! mc admin policy info "$ALIAS" docservice-rw | grep -q "s3:DeleteObject"; then
+  echo "ERROR: docservice-rw no contiene s3:DeleteObject" >&2
+  exit 1
+fi
+for tok in extracted-md extracted-txt raw-pdfs; do
+  if ! mc admin policy info "$ALIAS" docservice-rw | grep -q "$tok"; then
+    echo "ERROR: docservice-rw no contiene $tok" >&2
+    exit 1
+  fi
+done
+if ! mc admin policy info "$ALIAS" worker-extract | grep -q "extracted-md"; then
+  echo "ERROR: worker-extract no contiene extracted-md" >&2
+  exit 1
+fi
+echo "Verificado: policies docservice-rw y worker-extract."
+
 for u in "$SVC_DOCSERVICE_ACCESS_KEY" "$SVC_WORKER_ACCESS_KEY"; do
   mc admin user info "$ALIAS" "$u" >/dev/null
   echo "Verificado: $u existe con policy adjunta."
