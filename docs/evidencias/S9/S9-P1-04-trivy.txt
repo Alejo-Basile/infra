@@ -1,123 +1,149 @@
 # S9-P1-04 — Trivy image scan
 
+Fecha: 2026-11-18 · Perfil compose: `full` · Trivy 0.75.0 · 19 imágenes · `--ignorefile /dev/null` (scan crudo, sin excepciones aplicadas)
+
+Nota: `trivy` auto-carga `./.trivyignore` desde el cwd, así que el scan crudo se ejecutó
+desde `/tmp` con `--ignorefile /dev/null`. Sin eso, todo sale 0/0 y la evidencia es falsa.
+
 ## Inventario
 
-- `bitnamilegacy/minio:2025.7.23-debian-12-r5` — CRITICAL=34 HIGH=410 fixable=330 unfixed=114
-- `ghcr.io/alejo-basile/doc-service:latest` — CRITICAL=0 HIGH=0 fixable=0 unfixed=0
-- `ghcr.io/alejo-basile/extraction-worker:s5p1-closure` — CRITICAL=0 HIGH=107 fixable=1 unfixed=106
-- `grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7` — CRITICAL=0 HIGH=4 fixable=4 unfixed=0
-- `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d` — CRITICAL=1 HIGH=59 fixable=58 unfixed=2
-- `loki:3.6.20-healthcheck` — CRITICAL=0 HIGH=0 fixable=0 unfixed=0
-- `mongo:7.0` — CRITICAL=1 HIGH=80 fixable=81 unfixed=0
-- `monolito:latest` — CRITICAL=0 HIGH=72 fixable=25 unfixed=47
-- `oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820` — CRITICAL=0 HIGH=4 fixable=4 unfixed=0
-- `prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a` — CRITICAL=0 HIGH=14 fixable=14 unfixed=0
-- `prom/prometheus:v2.53.4` — CRITICAL=6 HIGH=114 fixable=116 unfixed=4
-- `ratelimitd:p4-04` — CRITICAL=0 HIGH=23 fixable=23 unfixed=0
-- `redis:7.2` — CRITICAL=4 HIGH=45 fixable=11 unfixed=38
-- `redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a` — CRITICAL=0 HIGH=0 fixable=0 unfixed=0
-- `traefik:v3.7` — CRITICAL=0 HIGH=10 fixable=10 unfixed=0
+- `bitnamilegacy/minio-client:2025.7.21` — CRITICAL=21 HIGH=195 unique_ids=93
+- `bitnamilegacy/minio:2025.7.23-debian-12-r5` — CRITICAL=34 HIGH=410 unique_ids=144
+- `curlimages/curl:8.10.1` — CRITICAL=2 HIGH=22 unique_ids=13
+- `ghcr.io/alejo-basile/doc-service:latest` — CRITICAL=0 HIGH=0 unique_ids=0
+- `ghcr.io/alejo-basile/extraction-worker:latest` — CRITICAL=0 HIGH=106 unique_ids=27
+- `ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b` — CRITICAL=1 HIGH=149 unique_ids=51
+- `grafana/grafana:11.6.0` — CRITICAL=10 HIGH=156 unique_ids=94
+- `grafana/loki:3.4.2` — CRITICAL=2 HIGH=58 unique_ids=56
+- `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d` — CRITICAL=1 HIGH=59 unique_ids=54
+- `hashicorp/consul:1.22.7` — CRITICAL=3 HIGH=85 unique_ids=68
+- `mongo:7.0` — CRITICAL=1 HIGH=80 unique_ids=33
+- `monolito:latest` — CRITICAL=0 HIGH=72 unique_ids=36
+- `oliver006/redis_exporter:v1.93.0` — CRITICAL=0 HIGH=4 unique_ids=4
+- `prom/alertmanager:v0.34.1` — CRITICAL=0 HIGH=14 unique_ids=6
+- `prom/prometheus:v2.53.4` — CRITICAL=6 HIGH=114 unique_ids=58
+- `ratelimitd:p4-04` — CRITICAL=0 HIGH=0 unique_ids=0
+- `redis:7.2` — CRITICAL=4 HIGH=45 unique_ids=21
+- `slo-exporter:s5-p4-03` — CRITICAL=0 HIGH=16 unique_ids=16
+- `traefik:v3.7` — CRITICAL=0 HIGH=10 unique_ids=8
 
 ## Resumen
 
-| image | CRITICAL | HIGH | fixable | unfixed | exit |
-|---|---|---|---|---|---|
-| `bitnamilegacy/minio:2025.7.23-debian-12-r5` | 34 | 410 | 330 | 114 | 1 |
-| `ghcr.io/alejo-basile/doc-service:latest` | 0 | 0 | 0 | 0 | 0 |
-| `ghcr.io/alejo-basile/extraction-worker:s5p1-closure` | 0 | 107 | 1 | 106 | 1 |
-| `grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7` | 0 | 4 | 4 | 0 | 1 |
-| `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d` | 1 | 59 | 58 | 2 | 1 |
-| `loki:3.6.20-healthcheck` | 0 | 0 | 0 | 0 | 0 |
-| `mongo:7.0` | 1 | 80 | 81 | 0 | 1 |
-| `monolito:latest` | 0 | 72 | 25 | 47 | 1 |
-| `oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820` | 0 | 4 | 4 | 0 | 1 |
-| `prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a` | 0 | 14 | 14 | 0 | 1 |
-| `prom/prometheus:v2.53.4` | 6 | 114 | 116 | 4 | 1 |
-| `ratelimitd:p4-04` | 0 | 23 | 23 | 0 | 1 |
-| `redis:7.2` | 4 | 45 | 11 | 38 | 1 |
-| `redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a` | 0 | 0 | 0 | 0 | 0 |
-| `traefik:v3.7` | 0 | 10 | 10 | 0 | 1 |
+| image | CRITICAL | HIGH | unique ids |
+|---|---|---|---|
+| `bitnamilegacy/minio-client:2025.7.21` | 21 | 195 | 93 |
+| `bitnamilegacy/minio:2025.7.23-debian-12-r5` | 34 | 410 | 144 |
+| `curlimages/curl:8.10.1` | 2 | 22 | 13 |
+| `ghcr.io/alejo-basile/doc-service:latest` | 0 | 0 | 0 |
+| `ghcr.io/alejo-basile/extraction-worker:latest` | 0 | 106 | 27 |
+| `ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b` | 1 | 149 | 51 |
+| `grafana/grafana:11.6.0` | 10 | 156 | 94 |
+| `grafana/loki:3.4.2` | 2 | 58 | 56 |
+| `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d` | 1 | 59 | 54 |
+| `hashicorp/consul:1.22.7` | 3 | 85 | 68 |
+| `mongo:7.0` | 1 | 80 | 33 |
+| `monolito:latest` | 0 | 72 | 36 |
+| `oliver006/redis_exporter:v1.93.0` | 0 | 4 | 4 |
+| `prom/alertmanager:v0.34.1` | 0 | 14 | 6 |
+| `prom/prometheus:v2.53.4` | 6 | 114 | 58 |
+| `ratelimitd:p4-04` | 0 | 0 | 0 |
+| `redis:7.2` | 4 | 45 | 21 |
+| `slo-exporter:s5-p4-03` | 0 | 16 | 16 |
+| `traefik:v3.7` | 0 | 10 | 8 |
+| **Total** | **85** | **1595** | **241** |
+
+Los identificadores aceptados (uno por línea) están en `infra/.trivyignore`.
 
 ## CRITICAL por imagen
 
-### bitnamilegacy/minio:2025.7.23-debian-12-r5 (34 critical vulns, 18 unique CVEs)
-- CVE-2026-111497 — pkg: libbrotli1 — fixed: 1.0.9-2+deb12u1
-- CVE-2026-33845 — pkg: libgnutls30 — fixed: 3.7.9-2+deb12u7
+### bitnamilegacy/minio-client:2025.7.21 (21 critical, 19 unique)
+- CVE-2023-45853 — pkg: zlib1g — fixed: n/a
+- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
 - CVE-2026-13221 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
-- CVE-2026-31789 — pkg: libssl3 — fixed: 3.0.19-1~deb12u2
-- CVE-2026-31789 — pkg: openssl — fixed: 3.0.19-1~deb12u2
 - CVE-2026-13221 — pkg: perl — fixed: 5.36.0-7+deb12u4
 - CVE-2026-13221 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
 - CVE-2026-13221 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-31789 — pkg: libssl3 — fixed: 3.0.19-1~deb12u2
+- CVE-2026-31789 — pkg: openssl — fixed: 3.0.19-1~deb12u2
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+- CVE-2026-33845 — pkg: libgnutls30 — fixed: 3.7.9-2+deb12u7
+- CVE-2026-42010 — pkg: libgnutls30 — fixed: 3.7.9-2+deb12u7
+- CVE-2026-42496 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+
+### bitnamilegacy/minio:2025.7.23-debian-12-r5 (34 critical, 25 unique)
 - CVE-2023-45853 — pkg: zlib1g — fixed: n/a
-- CVE-2026-33186 — pkg: google.golang.org/grpc (minio-client) — fixed: 1.79.3
-- CVE-2025-68121 — pkg: stdlib (minio-client) — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
-- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
 - CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
-- CVE-2026-77405 — pkg: github.com/rabbitmq/amqp091-go (minio) — fixed: 1.13.0
-- CVE-2026-33186 — pkg: google.golang.org/grpc (minio) — fixed: 1.79.3
-- CVE-2025-68121 — pkg: stdlib (minio) — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
-- CVE-2026-33322 — pkg: github.com/minio/minio — fixed: n/a
-- CVE-2026-77405 — pkg: github.com/rabbitmq/amqp091-go — fixed: 1.13.0
-
-### grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d (1 critical vulns, 1 unique CVEs)
-- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
-
-### mongo:7.0 (1 critical vulns, 1 unique CVEs)
-- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
-
-### prom/prometheus:v2.53.4 (6 critical vulns, 3 unique CVEs)
-- CVE-2024-41110 — pkg: github.com/docker/docker — fixed: 23.0.15, 26.1.5, 27.1.1, 25.0.6
-- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
-- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
-
-### redis:7.2 (4 critical vulns, 2 unique CVEs)
+- CVE-2026-111497 — pkg: libbrotli1 — fixed: 1.0.9-2+deb12u1
+- CVE-2026-13221 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-13221 — pkg: perl — fixed: 5.36.0-7+deb12u4
 - CVE-2026-13221 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-13221 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-31789 — pkg: libssl3 — fixed: 3.0.19-1~deb12u2
+- CVE-2026-31789 — pkg: openssl — fixed: 3.0.19-1~deb12u2
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+- CVE-2026-33322 — pkg: github.com/minio/minio — fixed: n/a
+- CVE-2026-33419 — pkg: github.com/minio/minio — fixed: n/a
+- CVE-2026-33845 — pkg: libgnutls30 — fixed: 3.7.9-2+deb12u7
+- CVE-2026-42010 — pkg: libgnutls30 — fixed: 3.7.9-2+deb12u7
+- CVE-2026-42496 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-77405 — pkg: github.com/rabbitmq/amqp091-go — fixed: 1.13.0
+- CVE-2026-77408 — pkg: github.com/rabbitmq/amqp091-go — fixed: 1.13.0
+- CVE-2026-77411 — pkg: github.com/rabbitmq/amqp091-go — fixed: 1.13.0
+- CVE-2026-8376 — pkg: libperl5.36 — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl-modules-5.36 — fixed: 5.36.0-7+deb12u4
+
+### curlimages/curl:8.10.1 (2 critical, 2 unique)
+- CVE-2026-31789 — pkg: libcrypto3 — fixed: 3.3.7-r0
+- CVE-2026-31789 — pkg: libssl3 — fixed: 3.3.7-r0
+
+### ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b (1 critical, 1 unique)
+- CVE-2026-6653 — pkg: libxml2 — fixed: n/a
+
+### grafana/grafana:11.6.0 (10 critical, 8 unique)
+- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
+- CVE-2026-111497 — pkg: brotli-libs — fixed: 1.1.1-r0
+- CVE-2026-31789 — pkg: libcrypto3 — fixed: 3.3.7-r0
+- CVE-2026-31789 — pkg: libssl3 — fixed: 3.3.7-r0
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+- CVE-2026-33815 — pkg: github.com/jackc/pgx/v5 — fixed: 5.9.0
+- CVE-2026-33816 — pkg: github.com/jackc/pgx/v5 — fixed: 5.9.0
+- GHSA-r277-6w6q-xmqw — pkg: github.com/getkin/kin-openapi — fixed: 0.144.0
+
+### grafana/loki:3.4.2 (2 critical, 2 unique)
+- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+
+### grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d (1 critical, 1 unique)
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+
+### hashicorp/consul:1.22.7 (3 critical, 3 unique)
+- CVE-2026-111497 — pkg: brotli-libs — fixed: 1.2.1-r0
+- CVE-2026-33845 — pkg: gnutls — fixed: 3.8.13-r0
+- CVE-2026-42010 — pkg: gnutls — fixed: 3.8.13-r0
+
+### mongo:7.0 (1 critical, 1 unique)
+- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
+
+### prom/prometheus:v2.53.4 (6 critical, 3 unique)
+- CVE-2024-41110 — pkg: github.com/docker/docker — fixed: 23.0.15, 26.1.5, 27.1.1, 25.0.6
+- CVE-2025-68121 — pkg: stdlib — fixed: 1.24.13, 1.25.7, 1.26.0-rc.3
+- CVE-2026-33186 — pkg: google.golang.org/grpc — fixed: 1.79.3
+
+### redis:7.2 (4 critical, 4 unique)
 - CVE-2023-45853 — pkg: zlib1g — fixed: n/a
-
-## HIGH
-
-- `bitnamilegacy/minio:2025.7.23-debian-12-r5`: HIGH=410, con fix disponible (global fixable incluye CRITICAL+HIGH) = 330 fixable total
-- `ghcr.io/alejo-basile/doc-service:latest`: HIGH=0, con fix disponible (global fixable incluye CRITICAL+HIGH) = 0 fixable total
-- `ghcr.io/alejo-basile/extraction-worker:s5p1-closure`: HIGH=107, con fix disponible (global fixable incluye CRITICAL+HIGH) = 1 fixable total
-- `grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7`: HIGH=4, con fix disponible (global fixable incluye CRITICAL+HIGH) = 4 fixable total
-- `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d`: HIGH=59, con fix disponible (global fixable incluye CRITICAL+HIGH) = 58 fixable total
-- `loki:3.6.20-healthcheck`: HIGH=0, con fix disponible (global fixable incluye CRITICAL+HIGH) = 0 fixable total
-- `mongo:7.0`: HIGH=80, con fix disponible (global fixable incluye CRITICAL+HIGH) = 81 fixable total
-- `monolito:latest`: HIGH=72, con fix disponible (global fixable incluye CRITICAL+HIGH) = 25 fixable total
-- `oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820`: HIGH=4, con fix disponible (global fixable incluye CRITICAL+HIGH) = 4 fixable total
-- `prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a`: HIGH=14, con fix disponible (global fixable incluye CRITICAL+HIGH) = 14 fixable total
-- `prom/prometheus:v2.53.4`: HIGH=114, con fix disponible (global fixable incluye CRITICAL+HIGH) = 116 fixable total
-- `ratelimitd:p4-04`: HIGH=23, con fix disponible (global fixable incluye CRITICAL+HIGH) = 23 fixable total
-- `redis:7.2`: HIGH=45, con fix disponible (global fixable incluye CRITICAL+HIGH) = 11 fixable total
-- `redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a`: HIGH=0, con fix disponible (global fixable incluye CRITICAL+HIGH) = 0 fixable total
-- `traefik:v3.7`: HIGH=10, con fix disponible (global fixable incluye CRITICAL+HIGH) = 10 fixable total
-
-## Dependencias
-
-Ver govulncheck + cargo en `infra/docs/evidencias/S9/S9-P1-04-sca.txt`.
-
-## Umbral
-
-Política: 0 Critical/High sin corregir, o excepción documentada en `infra/SECURITY.md`.
-
-## Veredicto
-
-- `bitnamilegacy/minio:2025.7.23-debian-12-r5`: FINDINGS (CRITICAL=34, HIGH=410)
-- `ghcr.io/alejo-basile/doc-service:latest`: PASS
-- `ghcr.io/alejo-basile/extraction-worker:s5p1-closure`: FINDINGS (CRITICAL=0, HIGH=107)
-- `grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7`: FINDINGS (CRITICAL=0, HIGH=4)
-- `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d`: FINDINGS (CRITICAL=1, HIGH=59)
-- `loki:3.6.20-healthcheck`: PASS
-- `mongo:7.0`: FINDINGS (CRITICAL=1, HIGH=80)
-- `monolito:latest`: FINDINGS (CRITICAL=0, HIGH=72)
-- `oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820`: FINDINGS (CRITICAL=0, HIGH=4)
-- `prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a`: FINDINGS (CRITICAL=0, HIGH=14)
-- `prom/prometheus:v2.53.4`: FINDINGS (CRITICAL=6, HIGH=114)
-- `ratelimitd:p4-04`: FINDINGS (CRITICAL=0, HIGH=23)
-- `redis:7.2`: FINDINGS (CRITICAL=4, HIGH=45)
-- `redis:7.2-alpine3.22@sha256:ea0b4a0bac3988a3129908075d6219d78cc7b2a0a4b643b14ce857333026177a`: PASS
-- `traefik:v3.7`: FINDINGS (CRITICAL=0, HIGH=10)
-
-Global: PASS=3, FINDINGS=12, total CRITICAL=46, total HIGH=942, total fixable=677.
+- CVE-2026-13221 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-42496 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
+- CVE-2026-8376 — pkg: perl-base — fixed: 5.36.0-7+deb12u4
 
