@@ -360,6 +360,10 @@ services:
       # que MinIO inyecta como `Authorization: Bearer <secreto>`.
       RL_WEBHOOK_TOKEN_FILE: /run/secrets/minio_webhook_secret
       RL_WEBHOOK_PATH: ${DOC_SERVICE_WEBHOOK_PATH:-/internal/storage/events}
+      # S11-P1-C17: registro de la replica en el agente local de Consul.
+      SERVICE_NAME: ratelimitd
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
     volumes:
       - ratelimitd-config-cache:/var/lib/ratelimitd
     networks: [internal, data]
