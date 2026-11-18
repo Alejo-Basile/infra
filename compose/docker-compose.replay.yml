@@ -220,6 +220,7 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${REPLAY_MINIO_PUBLIC_ENDPOINT}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
       MINIO_WEBHOOK_SECRET: ${REPLAY_MINIO_WEBHOOK_SECRET:?}
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
       REDIS_ADDR: redis-streams:6379
