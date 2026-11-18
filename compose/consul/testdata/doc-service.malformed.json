@@ -1,1 +1,8 @@
-{"a":1,
+{
+  "_expected": {
+    "verdict": "rejected",
+    "key": null,
+    "reason": "malformed_json"
+  },
+  "max_pdf_bytes": 26214400,
+  "reconcile_dry_run": false,

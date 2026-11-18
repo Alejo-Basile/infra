@@ -1,10 +1,10 @@
 {
   "_expected": {
     "verdict": "rejected",
-    "key": "burst_multiplier",
+    "key": "shadow_paths",
     "reason": "unknown_key"
   },
   "sensitive_routes": "POST /api/v2/documents=5:10",
   "exempt_paths": "/internal,/healthz,/metrics",
-  "burst_multiplier": 2
+  "shadow_paths": "/admin"
 }

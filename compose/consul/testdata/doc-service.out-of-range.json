@@ -4,7 +4,7 @@
     "key": "max_pdf_bytes",
     "reason": "range"
   },
-  "max_pdf_bytes": 524288,
+  "max_pdf_bytes": 209715200,
   "presign_upload_ttl_seconds": 900,
   "presign_download_ttl_seconds": 300,
   "reconcile_interval_minutes": 10,

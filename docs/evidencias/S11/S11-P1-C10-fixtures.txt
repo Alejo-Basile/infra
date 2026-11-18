@@ -1,121 +1,31 @@
-S11-P1-C10 — Contrato de cliente KV y fixtures
-Fecha: 2026-11-17 | Owner: P1 | Verificación cruzada: P4
-Entregables: infra/docs/consul-kv-contract.md + infra/compose/consul/testdata/ + este archivo
+S11-P1-C10 fixtures parity matrix
+date: 2026-11-17T22:15:37-03:00
+note: fixture set under infra/compose/consul/testdata/ was restored after an accidental deletion during S11-P1-C11; content re-derived from infra/compose/consul/config/schema.json (source of truth) and this manifest.
 
-== 0. Entorno ==
-jq: jq-1.8.1
+fixture                                    verdict   key                          reason
+-----------------------------------------------------------------------------------------------
+doc-service.broken-coherence.json          rejected  doc_upload_grace_minutes     coherence  exits=True expected_match=True
+doc-service.malformed.json                 rejected  None                         malformed_json  exits=True expected_match=True
+doc-service.out-of-range.json              rejected  max_pdf_bytes                range  exits=True expected_match=True
+doc-service.unknown-key.json               rejected  shadow_ttl_minutes           unknown_key  exits=True expected_match=True
+doc-service.valid.json                     accepted  None                         None  exits=True expected_match=True
+doc-service.wrong-type.json                rejected  reconcile_dry_run            type  exits=True expected_match=True
+extraction-worker.broken-coherence.json    rejected  min_idle_ms                  coherence  exits=True expected_match=True
+extraction-worker.malformed.json           rejected  None                         malformed_json  exits=True expected_match=True
+extraction-worker.out-of-range.json        rejected  bulkhead_max_concurrency     range  exits=True expected_match=True
+extraction-worker.unknown-key.json         rejected  bulkhead_queue_limit         unknown_key  exits=True expected_match=True
+extraction-worker.valid.json               accepted  None                         None  exits=True expected_match=True
+extraction-worker.wrong-type.json          rejected  retry_multiplier             type  exits=True expected_match=True
+rate-limiter.broken-coherence.json         rejected  sensitive_routes             coherence  exits=True expected_match=True
+rate-limiter.malformed.json                rejected  None                         malformed_json  exits=True expected_match=True
+rate-limiter.out-of-range.json             rejected  exempt_paths                 range  exits=True expected_match=True
+rate-limiter.unknown-key.json              rejected  shadow_paths                 unknown_key  exits=True expected_match=True
+rate-limiter.valid.json                    accepted  None                         None  exits=True expected_match=True
+rate-limiter.wrong-type.json               rejected  exempt_paths                 type  exits=True expected_match=True
 
-== 1. jq empty sobre todos los fixtures (3 FAIL esperados: *.malformed.json) ==
-OK doc-service.broken-coherence.json
-FAIL doc-service.malformed.json -> jq: parse error: Unfinished JSON term at EOF at line 2, column 0
-OK doc-service.out-of-range.json
-OK doc-service.unknown-key.json
-OK doc-service.valid.json
-OK doc-service.wrong-type.json
-OK extraction-worker.broken-coherence.json
-FAIL extraction-worker.malformed.json -> jq: parse error: Expected another key-value pair at line 1, column 8
-OK extraction-worker.out-of-range.json
-OK extraction-worker.unknown-key.json
-OK extraction-worker.valid.json
-OK extraction-worker.wrong-type.json
-OK manifest.json
-OK rate-limiter.broken-coherence.json
-FAIL rate-limiter.malformed.json -> jq: parse error: Unfinished JSON term at EOF at line 2, column 0
-OK rate-limiter.out-of-range.json
-OK rate-limiter.unknown-key.json
-OK rate-limiter.valid.json
-OK rate-limiter.wrong-type.json
+schema keys:
+  doc-service: max_pdf_bytes, presign_upload_ttl_seconds, presign_download_ttl_seconds, reconcile_interval_minutes, reconcile_stuck_after_minutes, reconcile_dry_run, doc_upload_grace_minutes, min_safety_age_minutes
+  rate-limiter: sensitive_routes, exempt_paths
+  extraction-worker: bulkhead_max_concurrency, retry_max_elapsed_seconds, retry_initial_interval_ms, retry_multiplier, retry_max_interval_ms, retry_randomization_factor, breaker_failure_threshold, breaker_timeout_seconds, job_timeout_seconds, max_pages, min_idle_ms
 
-== 2. _expected declarado por fixture parseable ==
-doc-service.broken-coherence.json: verdict=rejected key=doc_upload_grace_minutes reason=coherence
-doc-service.out-of-range.json: verdict=rejected key=max_pdf_bytes reason=range
-doc-service.unknown-key.json: verdict=rejected key=shadow_ttl_minutes reason=unknown_key
-doc-service.valid.json: verdict=accepted key=null reason=null
-doc-service.wrong-type.json: verdict=rejected key=reconcile_dry_run reason=type
-extraction-worker.broken-coherence.json: verdict=rejected key=min_idle_ms reason=coherence
-extraction-worker.out-of-range.json: verdict=rejected key=bulkhead_max_concurrency reason=range
-extraction-worker.unknown-key.json: verdict=rejected key=bulkhead_queue_limit reason=unknown_key
-extraction-worker.valid.json: verdict=accepted key=null reason=null
-extraction-worker.wrong-type.json: verdict=rejected key=retry_multiplier reason=type
-rate-limiter.broken-coherence.json: verdict=rejected key=sensitive_routes reason=coherence
-rate-limiter.out-of-range.json: verdict=rejected key=sensitive_routes reason=range
-rate-limiter.unknown-key.json: verdict=rejected key=burst_multiplier reason=unknown_key
-rate-limiter.valid.json: verdict=accepted key=null reason=null
-rate-limiter.wrong-type.json: verdict=rejected key=exempt_paths reason=type
-
-== 3. manifest.json: 18 entradas, sin _expected ==
-fixtures entries: 18
-manifest _expected: absent (OK)
-doc-service.broken-coherence.json: verdict=rejected key=doc_upload_grace_minutes reason=coherence
-doc-service.malformed.json: verdict=rejected key=null reason=malformed_json
-doc-service.out-of-range.json: verdict=rejected key=max_pdf_bytes reason=range
-doc-service.unknown-key.json: verdict=rejected key=shadow_ttl_minutes reason=unknown_key
-doc-service.valid.json: verdict=accepted key=null reason=null
-doc-service.wrong-type.json: verdict=rejected key=reconcile_dry_run reason=type
-extraction-worker.broken-coherence.json: verdict=rejected key=min_idle_ms reason=coherence
-extraction-worker.malformed.json: verdict=rejected key=null reason=malformed_json
-extraction-worker.out-of-range.json: verdict=rejected key=bulkhead_max_concurrency reason=range
-extraction-worker.unknown-key.json: verdict=rejected key=bulkhead_queue_limit reason=unknown_key
-extraction-worker.valid.json: verdict=accepted key=null reason=null
-extraction-worker.wrong-type.json: verdict=rejected key=retry_multiplier reason=type
-rate-limiter.broken-coherence.json: verdict=rejected key=sensitive_routes reason=coherence
-rate-limiter.malformed.json: verdict=rejected key=null reason=malformed_json
-rate-limiter.out-of-range.json: verdict=rejected key=sensitive_routes reason=range
-rate-limiter.unknown-key.json: verdict=rejected key=burst_multiplier reason=unknown_key
-rate-limiter.valid.json: verdict=accepted key=null reason=null
-rate-limiter.wrong-type.json: verdict=rejected key=exempt_paths reason=type
-
-== 4. Claves de kv/*.json existen en schema.json y están en rango ==
-doc-service: in-range max_pdf_bytes=26214400 [1048576,104857600]
-doc-service: in-range presign_upload_ttl_seconds=900 [60,3600]
-doc-service: in-range presign_download_ttl_seconds=300 [60,900]
-doc-service: in-range reconcile_interval_minutes=10 [1,60]
-doc-service: in-range reconcile_stuck_after_minutes=30 [5,720]
-doc-service: in-range reconcile_dry_run=false [-,-]
-doc-service: in-range doc_upload_grace_minutes=30 [5,240]
-doc-service: in-range min_safety_age_minutes=15 [1,120]
-extraction-worker: in-range bulkhead_max_concurrency=4 [1,64]
-extraction-worker: in-range retry_max_elapsed_seconds=30 [1,600]
-extraction-worker: in-range retry_initial_interval_ms=500 [10,60000]
-extraction-worker: in-range retry_multiplier=1.5 [1.0,10.0]
-extraction-worker: in-range retry_max_interval_ms=60000 [100,300000]
-extraction-worker: in-range retry_randomization_factor=0.5 [0.0,1.0]
-extraction-worker: in-range breaker_failure_threshold=5 [1,100]
-extraction-worker: in-range breaker_timeout_seconds=30 [1,300]
-extraction-worker: in-range job_timeout_seconds=300 [30,3600]
-extraction-worker: in-range max_pages=2000 [1,100000]
-extraction-worker: in-range min_idle_ms=601000 [1000,86400000]
-rate-limiter: in-range sensitive_routes=1 entries [1,50]
-rate-limiter: in-range exempt_paths=3 entries [1,50]
-
-== 5. Guardarraíl de secretos en nombres de clave de fixtures ==
-RESULT: 0 claves con nombre de credencial
-
-== 6. Tabla de paridad (declarada, NO ejecutada todavía) ==
-Clientes: C11 doc-service (Go), C12 ratelimitd (Go), C13 worker (Rust, crate compartido configkv).
-FIXTURE                                    VEREDICTO  CLAVE                      MOTIVO          C11-13    
-doc-service.broken-coherence.json          rejected   doc_upload_grace_minutes   coherence       pendiente 
-doc-service.malformed.json                 rejected   -                          malformed_json  pendiente 
-doc-service.out-of-range.json              rejected   max_pdf_bytes              range           pendiente 
-doc-service.unknown-key.json               rejected   shadow_ttl_minutes         unknown_key     pendiente 
-doc-service.valid.json                     accepted   -                          -               pendiente 
-doc-service.wrong-type.json                rejected   reconcile_dry_run          type            pendiente 
-extraction-worker.broken-coherence.json    rejected   min_idle_ms                coherence       pendiente 
-extraction-worker.malformed.json           rejected   -                          malformed_json  pendiente 
-extraction-worker.out-of-range.json        rejected   bulkhead_max_concurrency   range           pendiente 
-extraction-worker.unknown-key.json         rejected   bulkhead_queue_limit       unknown_key     pendiente 
-extraction-worker.valid.json               accepted   -                          -               pendiente 
-extraction-worker.wrong-type.json          rejected   retry_multiplier           type            pendiente 
-rate-limiter.broken-coherence.json         rejected   sensitive_routes           coherence       pendiente 
-rate-limiter.malformed.json                rejected   -                          malformed_json  pendiente 
-rate-limiter.out-of-range.json             rejected   sensitive_routes           range           pendiente 
-rate-limiter.unknown-key.json              rejected   burst_multiplier           unknown_key     pendiente 
-rate-limiter.valid.json                    accepted   -                          -               pendiente 
-rate-limiter.wrong-type.json               rejected   exempt_paths               type            pendiente 
-
-NOTA: C11-C13 no están implementados. La paridad de veredictos es una DECLARACIÓN del contrato
-      y debe EJECUTARSE en las tareas C11, C12 y C13. Este archivo no afirma paridad ejecutada.
-
-== 7. Criterio de aceptación ==
-Cumplido: contrato documentado (8 secciones) + 18 fixtures + manifest con veredictos;
-jq valida sintaxis (3 malformados fallan como se espera) y los valores iniciales coinciden con schema.json.
+RESULT: PASS

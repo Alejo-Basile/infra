@@ -1,0 +1,159 @@
+S11-P1-C08 — Prometheus con consul_sd_configs y alertas
+UTC date: 2026-11-17T23:43:00Z
+Repositorio de trabajo: infra/ (compose project "infra", env file infra/.env)
+
+Estado previo observado (RED):
+- prometheus.yml: job `doc-service` con dns_sd_configs (A record, puerto 8080) y
+  job `extraction-worker` con target estático `extraction-worker:8081`.
+- Sin job `consul`, sin alertas de Consul ni de config KV.
+- El contenedor infra-prometheus-1 no tenía /run/secrets: fue creado antes de que
+  el bloque `secrets: [consul_prometheus_token, consul_ca_cert]` existiera en el
+  compose (S11-P1-C06), así que el token no estaba disponible en runtime.
+
+Archivos modificados (sin commits):
+- infra/compose/prometheus/prometheus.yml — se eliminan dns_sd_configs y el target
+  estático; se agregan los jobs `app-services` (consul_sd) y `consul` (static).
+- infra/compose/prometheus/alert.rules.yml — WorkerDown y DocServiceNotReady
+  migradas a `up{job="app-services", service="..."}`; nuevo grupo
+  `s11-p1-consul` con ConsulServerDown, ConsulNoLeader, ConfigKVStale y
+  ConfigKVRejected (25 reglas totales en el archivo).
+- infra/compose/docker-compose.yml — SIN cambios: ya declaraba
+  `secrets: [consul_prometheus_token, consul_ca_cert]` en el servicio prometheus.
+
+1. Validación estática (promtool v2.53.4, imagen prom/prometheus:v2.53.4)
+
+$ docker compose --env-file ../.env --profile full config --quiet
+  => exit 0
+
+$ docker run --rm --entrypoint promtool \
+    -v "$PWD/prometheus:/etc/prometheus:ro" \
+    -v "$PWD/../secrets/consul_prometheus_token.txt:/run/secrets/consul_prometheus_token:ro" \
+    -v "$PWD/../secrets/consul_ca_cert.pem:/run/secrets/consul_ca_cert:ro" \
+    prom/prometheus:v2.53.4 check config /etc/prometheus/prometheus.yml
+  => Checking /etc/prometheus/prometheus.yml
+     SUCCESS: 25 rules found
+
+$ docker run --rm --entrypoint promtool -v "$PWD/prometheus:/etc/prometheus:ro" \
+    prom/prometheus:v2.53.4 check rules /etc/prometheus/alert.rules.yml
+  => SUCCESS: 25 rules found
+
+2. Campo de token: variante elegida y evidencia de descarte
+
+promtool 2.53.4 RECHAZA `token_file` en consul_sd_configs:
+  => FAILED: parsing YAML file: yaml: unmarshal errors:
+     line 9: field token_file not found in type consul.plain
+`token:` inline también parsea, pero queda descartado por política del repo
+(los secretos nunca se escriben inline). Variante usada y validada:
+  authorization:
+    credentials_file: /run/secrets/consul_prometheus_token
+La misma variante (authorization.credentials_file) se usa en el job `consul`
+con target estático.
+
+3. Rutas de secretos (desviación respecto de task-8 §4.5, justificada)
+
+task-8 proponía bind mounts a /etc/prometheus/secrets con nombres
+`consul_prometheus_token` y `consul-ca.pem`. El repo ya resuelve los secretos vía
+Docker secrets (infra/compose/docker-compose.yml, bloque `secrets:`), con nombres
+de archivo `consul_prometheus_token.txt` y `consul_ca_cert.pem`. Dentro del
+contenedor las rutas son:
+  /run/secrets/consul_prometheus_token
+  /run/secrets/consul_ca_cert
+
+4. Recreación y permisos (bug encontrado en C06)
+
+El contenedor se recreó: `docker compose --env-file ../.env --profile full up -d prometheus`
+  => Container infra-prometheus-1 Recreated / Started
+`docker exec infra-prometheus-1 ls /run/secrets` => consul_ca_cert, consul_prometheus_token
+
+Bug: consul-bootstrap-acl.sh escribe los tokens con `chmod 600`, y el file-secret
+de Compose propaga el modo del archivo del host. Prometheus corre como `nobody`
+(65534) y no podía leer el token:
+  err="unable to read authorization credentials: open /run/secrets/consul_prometheus_token: permission denied"
+  (repetido cada 15 s en el discovery manager de Consul)
+Corrección aplicada: `chmod 0644 infra/secrets/consul_prometheus_token.txt`
+(consistente con consul_operator_token.txt y el resto de secretos consumidos por
+contenedores). Tras el chmod, `docker exec -u 65534 ... head -c 4` lee el token.
+DEUDA PARA C11-C14: consul-bootstrap-acl.sh:119,127 deja en 600 los tokens
+`consul_doc_service_token`, `consul_ratelimitd_token` y `consul_worker_token`.
+Los tres servicios consumidores corren como usuario no-root y van a fallar la
+lectura igual que Prometheus. Hay que fijar el modo (644) o inyectarlos con otro
+mecanismo antes de C14/C18.
+
+5. Descubrimiento: target `consul`
+
+$ /api/v1/targets?state=active  (consultado desde un contenedor en infra_internal,
+porque el puerto 9090 no se publica al host: la red `internal` es internal:true)
+  job=consul  instance=consul:8501
+  scrapeUrl=https://consul:8501/v1/agent/metrics?format=prometheus
+  health=up  lastError=""  lastScrape=2026-11-17T23:43:09Z
+
+Query de cordura del gauge de líder (PromQL):
+  max({__name__=~"consul_.+_server_isLeader"}) => 1
+
+Se scrapea el SERVER (consul:8501) y no el agente: agent.hcl no define
+`client_addr`, así que consul-agent escucha solo en loopback y rechaza conexiones
+desde otras redes (`consul-agent:8501` => connection refused). Es un gap de C04
+que no bloquea C08 pero sí bloquea el registro de apps de C14/C18, que apuntan al
+agente. Además /v1/agent/metrics devuelve JSON por defecto: se requiere
+`params: {format: [prometheus]}`.
+
+6. Descubrimiento: job `app-services` (smoke con registros temporales)
+
+Estado real: las apps todavía NO se registran en Consul (C14/C18 pendientes), por
+lo que `consul catalog services` devuelve solo `consul` y `app-services` tiene 0
+targets reales. Para probar token, TLS, relabel y unicidad por réplica se
+registraron 3 instancias temporales contra el server (miembro del catálogo, no del
+delta de código) y se desregistraron después:
+
+  svc-doc-service         tmp-c08-doc-1     http://doc-service:8080/metrics         up
+  svc-extraction-worker   tmp-c08-worker-1  http://extraction-worker:8081/metrics   up
+  svc-doc-service         tmp-c08-doc-2     http://doc-service:8080/metrics         up
+
+Resultado: 3 targets distintos, `instance` = service_id, `service` = nombre de
+servicio, todos `up`. Prueba de que el relabel por __meta_consul_service_id
+distingue réplicas (lo que exige `--scale`) y de que el token/CA funcionan.
+
+Limpieza verificada:
+  deregister tmp-c08-doc-1/2 y tmp-c08-worker-1 => HTTP 200 cada uno
+  consul catalog services => consul (solo el server)
+  /api/v1/targets app-services => 0 targets
+
+7. Alertas cargadas
+
+/api/v1/rules?type=alert, grupo s11-p1-consul (todas health=ok, inactive):
+  ConsulServerDown
+  ConsulNoLeader
+  ConfigKVStale
+  ConfigKVRejected
+
+8. Jobs preexistentes (sin cambio de comportamiento)
+
+  traefik          up
+  redis-exporter   up
+  minio            up
+  ratelimitd       up
+  slo-exporter     down  (preexistente: el servicio no está desplegado, DNS sin registro)
+
+9. Estado de alertas al cierre y dependencias pendientes (honesto)
+
+- Firing: DocServiceNotReady y WorkerDown. Causa: app-services todavía no tiene
+  targets porque C14/C18 no registran svc-doc-service / svc-extraction-worker. Se
+  migraron a `absent(up{job="app-services", service="..."} == 1)` justamente para
+  no quedar en NoData silencioso; se apagan solas cuando C14/C18 cierren.
+- DLQNotEmpty ya estaba firing antes de esta tarea (hay mensajes en la DLQ); no lo
+  introduce este cambio.
+- ConfigKVStale y ConfigKVRejected quedan NoData hasta que C11-C13 publiquen
+  `*_config_kv_last_success_timestamp_seconds` y `*_config_kv_rejected_total`; los
+  selectores son regex agnósticos al prefijo para que funcionen sin retoques.
+- ConsulNoLeader no usa `consul_raft_leader`: esa métrica no existe en Consul
+  1.22.7. El gauge real es `consul_<nodo>_server_isLeader` (prefijo de nodo
+  inestable), de ahí el selector regex.
+- El puerto 9090 de Prometheus no se publica al host porque el contenedor está en
+  la red `internal` (internal:true). Las consultas de evidencia se hicieron desde
+  un contenedor efímero en infra_internal contra http://prometheus:9090.
+
+10. Rollback
+
+  git checkout -- infra/compose/prometheus/prometheus.yml
+  git checkout -- infra/compose/prometheus/alert.rules.yml
+  docker kill -s HUP infra-prometheus-1   (recarga sin recrear)
