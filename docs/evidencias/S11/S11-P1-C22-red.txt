@@ -1,0 +1,16 @@
+UTC: Wed Nov 18 06:36:18 AM UTC 2026
+compose project: infra
+command: bash infra/scripts/test-consul.sh
+exit code: 1
+note: C09/C25 pending
+---
+PASS 1 compose config quiet
+PASS 2 leader elected
+PASS 3 ACL matrix
+PASS 4 registration
+PASS 5 KV matches JSON
+PASS 6 Prometheus SD
+FAIL 7 UI — C09 no implementado (falta consul_ui_password.txt)
+SKIP 8 guardrails (C25 no implementado; fuera de alcance de C22)
+FAIL=1 SKIP=1
+exit=1
