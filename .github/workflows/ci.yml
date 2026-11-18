@@ -29,9 +29,12 @@ jobs:
       # via grep, because building a valid env for `config --images` in CI is impractical.
       - name: extract image list
         run: |
+          # Descarta las lineas con interpolacion `${VAR:-default}`: sin el env
+          # resuelto no son referencias validas y Trivy no puede parsearlas.
+          # Esas imagenes se agregan abajo de forma explicita.
           grep -E '^[[:space:]]+image:' compose/docker-compose.yml \
             | sed 's/.*image: //; s/[[:space:]]*#.*//' \
-            | grep -v '\\${' \
+            | grep -vF '${' \
             | grep -vE '^(monolito|ratelimitd|slo-exporter):' \
             | sort -u > /tmp/images.txt
           # Imagenes propias publicadas: se escanean por su tag/digest publico
