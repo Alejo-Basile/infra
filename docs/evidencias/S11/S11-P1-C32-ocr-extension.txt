@@ -1,0 +1,89 @@
+S11-P1-C32 — OCR extension of C22/C24/C25/C26
+UTC date: 2026-11-18
+Compose project: infra
+
+RED proof (before edit)
+- grep -c 'svc-ocr-worker' infra/scripts/test-consul.sh = 0
+
+Changes covered by this evidence
+- infra/scripts/test-consul.sh: Step 4 loop includes svc-ocr-worker; Step 6 asserts at least one up target for svc-ocr-worker.
+- infra/runbooks/consul.md: §8 OCR row points to §11; §11 bloque OCR restart-only (12 keys); §12 escalado OCR; §13 credenciales OCR; stray trailing "EOF"/"echo done" removed.
+- docs/infra-changes.md: ocr-worker block (registration, sd target, own credentials, restart-only KV, scaling).
+
+Smoke test (C22 extended) — full output
+PASS 1 compose config quiet
+PASS 2 leader elected
+PASS 3 ACL matrix
+PASS 4 registration
+PASS 5 KV matches JSON
+PASS 6 Prometheus SD
+PASS 7 UI
+PASS 8 guardrails
+FAIL=0 SKIP=0
+exit: 0
+
+Registration detail at smoke time
+- svc-doc-service: 1 entry, doc-service-eea485913b0d, checks passing
+- svc-extraction-worker: 1 entry, extraction-worker-d51da0ac08c3, checks passing
+- svc-ocr-worker: 1 entry, ocr-worker-567d09b7c446, checks passing
+
+OCR scale rehearsal (C24 extended) 3 -> 1
+- Scale up: docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml --profile full up -d --scale ocr-worker=3
+- Consul svc-ocr-worker: count=3, all passing
+  - ocr-worker-1a10b91b836a
+  - ocr-worker-2c1cb03fa1ff
+  - ocr-worker-567d09b7c446
+- Prometheus app-services svc-ocr-worker targets: count=3, up=3
+  - ocr-worker-1a10b91b836a up
+  - ocr-worker-2c1cb03fa1ff up
+  - ocr-worker-567d09b7c446 up
+- Scale down: docker compose ... up -d --scale ocr-worker=1
+- Consul svc-ocr-worker: count=1, passing
+  - ocr-worker-567d09b7c446
+- Prometheus app-services svc-ocr-worker targets: count=1, up=1
+  - ocr-worker-567d09b7c446 up
+- Stack left at 1 replica.
+
+Guardrails (C25 checks 5 and 6) — full output
+PASS: Check 1: no consulCatalog en traefik.yml
+PASS: Check 2: KV config/ sin credenciales
+PASS: Check 3: sin dns: apuntando a Consul
+PASS: Check 4: pre-existing routers intact; additions permitted
+PASS: Check 5: ocr-worker con credenciales propias
+PASS: Check 6: svc-ocr-worker con /metrics
+
+Boundaries OK.
+exit: 0
+
+Runbook excerpt (C26 extended)
+## 8. Tabla de claves que exigen reinicio
+| `config/ocr-worker/*` (12 claves) | restart | Bloque OCR completo; ver §11 |
+
+## 11. Bloque OCR (restart-only)
+ocr_dpi, ocr_limit_w, ocr_limit_pix, ocr_lang, ocr_oem, ocr_psm, ocr_max_attempts,
+consumer_block_ms, consumer_count, redis_ocr_stream, redis_ocr_group,
+redis_ocr_dlq_stream — todas `restart`.
+`min_idle_ms` / `job_timeout_seconds` son exclusivos de extraction-worker.
+
+## 12. Escalado OCR
+Scale 3 -> count via /v1/health/service/svc-ocr-worker and Prometheus /api/v1/targets (service=svc-ocr-worker) -> scale 1.
+
+## 13. Credenciales OCR
+Own MinIO (ocr_minio_access_key/ocr_minio_secret_key) and Mongo (ocr_mongo_password); never shared with extraction-worker (SPEC §3.4). Guarded by verify-consul-boundaries.sh Check 5, and Check 6 for /metrics.
+
+Links
+- infra/docs/evidencias/S11/S11-P1-C22-green.txt
+- infra/docs/evidencias/S11/S11-P1-C24-escala.txt
+- infra/docs/evidencias/S11/S11-P1-C25-boundaries.txt
+- infra/docs/evidencias/S11/S11-P1-C26-cierre.md
+- infra/docs/evidencias/S11/S11-P1-C27-digests.txt
+- infra/docs/evidencias/S11/S11-P1-C28-compose.txt
+- infra/docs/evidencias/S11/S11-P1-C29-registro-ocr.txt
+- infra/docs/evidencias/S11/S11-P1-C30-ocr-kv.txt
+- infra/docs/evidencias/S11/S11-P1-C31-ocr-sd.txt
+
+Operational note
+- During the rehearsal the Consul catalog had lost doc-service, ratelimitd and extraction-worker entries
+  (checks went critical after an earlier network/stack change and DeregisterCriticalServiceAfter removed them).
+  Restarting doc-service, extraction-worker and ratelimitd re-registered them with passing checks, after which
+  the smoke test went fully green. This is operational recovery, not a code change in C32.

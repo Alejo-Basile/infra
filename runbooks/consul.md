@@ -125,7 +125,7 @@ desde snapshot previo verificado.
 | --- | --- | --- |
 | `config/extraction-worker/min_idle_ms` | restart | No se recomputa cuando `job_timeout_seconds` cambia en caliente |
 | reducción de `bulkhead_max_concurrency` | restart (nunca a la fuerza) | |
-| `OCR_*`, `REDIS_OCR_*` | restart (cuando aterrice) | bloque OCR |
+| `config/ocr-worker/*` (12 claves) | restart | Bloque OCR completo; ver §11 |
 
 El resto de claves son hot / hot-aumento / hot-jobs-nuevos.
 
@@ -146,9 +146,60 @@ Evidencia: `infra/docs/evidencias/S11/S11-P1-C23-degradacion.txt`.
 4. `docker compose --profile full up -d` + smoke por Traefik.
 5. Nunca borrar volúmenes de mongo, redis-*, minio ni prometheus.
 
+## 11. Bloque OCR (restart-only)
+
+Todas las claves de `config/ocr-worker/` son `restart`: `ocr-worker` las lee una
+sola vez al arrancar y no hay hot reload. Tras cambiar cualquiera, reiniciar la
+réplica (`docker compose up -d --force-recreate ocr-worker` o un restart
+controlado, respetando el presupuesto de desregistro en SIGTERM).
+
+| Clave | Modo |
+| --- | --- |
+| `ocr_dpi` | restart |
+| `ocr_limit_w` | restart |
+| `ocr_limit_pix` | restart |
+| `ocr_lang` | restart |
+| `ocr_oem` | restart |
+| `ocr_psm` | restart |
+| `ocr_max_attempts` | restart |
+| `consumer_block_ms` | restart |
+| `consumer_count` | restart |
+| `redis_ocr_stream` | restart |
+| `redis_ocr_group` | restart |
+| `redis_ocr_dlq_stream` | restart |
+
+`min_idle_ms` / `job_timeout_seconds` son exclusivos de `extraction-worker` y no
+aplican a `ocr-worker`.
+
+## 12. Escalado OCR
+
+Escalar a 3 réplicas:
+
+```
+docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml --profile full up -d --scale ocr-worker=3
+```
+
+Esperar checks `passing` y contar por `/v1/health/service/svc-ocr-worker` y por
+Prometheus `/api/v1/targets` (labels `service=svc-ocr-worker`, `instance` único
+por réplica). Volver a 1:
+
+```
+docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml --profile full up -d --scale ocr-worker=1
+```
+
+Cada réplica se registra con ID `<servicio>-<hostname>`; al bajar, el desregistro
+en SIGTERM la quita del catálogo. Evidencia: `S11-P1-C31-ocr-sd.txt`,
+`S11-P1-C32-ocr-extension.txt`.
+
+## 13. Credenciales OCR
+
+`ocr-worker` usa secretos propios de MinIO (`ocr_minio_access_key` /
+`ocr_minio_secret_key`) y Mongo (`ocr_mongo_password`), nunca compartidos con
+`extraction-worker` (SPEC §3.4, mínimo privilegio). El guardarraíl
+`verify-consul-boundaries.sh` Check 5 falla si comparten credenciales, y Check 6
+falla si `svc-ocr-worker` entra en `consul_sd_configs` sin `/metrics`.
+
 ## Estado del ensayo
 
 Snapshot/restore ensayado en volumen desechable; ver `S11-P1-C26-snapshot.txt`.
 Trivy y gitleaks archivados en `S11-P1-C26-trivy.txt` y `S11-P1-C26-gitleaks.txt`.
-EOF
-echo done
