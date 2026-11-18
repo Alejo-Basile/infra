@@ -360,6 +360,10 @@ services:
       # que MinIO inyecta como `Authorization: Bearer <secreto>`.
       RL_WEBHOOK_TOKEN_FILE: /run/secrets/minio_webhook_secret
       RL_WEBHOOK_PATH: ${DOC_SERVICE_WEBHOOK_PATH:-/internal/storage/events}
+      # S11-P1-C17: registro de la replica en el agente local de Consul.
+      SERVICE_NAME: ratelimitd
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
     volumes:
       - ratelimitd-config-cache:/var/lib/ratelimitd
     networks: [internal, data]
@@ -616,6 +620,7 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
       # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
@@ -638,6 +643,11 @@ services:
       CONSUL_HTTP_ADDR: https://consul:8501
       CONSUL_CACERT: /run/secrets/consul_ca_cert
       CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      # S11-P1-C14: el registro va contra el agente local, no contra el
+      # server; el cliente KV lee CONSUL_HTTP_TOKEN_FILE (mismo secreto).
+      CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: doc-service
     networks: [internal, data]
     depends_on:
       mongo:
@@ -673,6 +683,10 @@ services:
       - redis_streams_password
       - minio_webhook_secret
       - internal_token
+      # S11-P1-C14: el canary es una réplica más de doc-service, así que se
+      # registra con su propio ID (hostname único) y el mismo contrato de KV.
+      - consul_doc_service_token
+      - consul_ca_cert
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
@@ -686,6 +700,7 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
       MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
       REDIS_MASTER_NAME: myprimary
@@ -696,6 +711,13 @@ services:
       RECONCILE_INTERVAL_MIN: "10"
       DOC_UPLOAD_GRACE_MIN: "30"
       MIN_SAFETY_AGE_MIN: "15"
+      # S11-P1-C06 / S11-P1-C14: KV y registro de esta réplica.
+      CONSUL_HTTP_ADDR: https://consul:8501
+      CONSUL_CACERT: /run/secrets/consul_ca_cert
+      CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: doc-service
     networks: [internal, data]
     depends_on:
       mongo:
