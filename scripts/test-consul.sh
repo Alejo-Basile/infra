@@ -70,7 +70,7 @@ fi
 # Step 4 registration
 REG_OK=1
 IDS=""
-for svc in svc-doc-service svc-extraction-worker; do
+for svc in svc-doc-service svc-extraction-worker svc-ocr-worker; do
   health="$(timeout 60s docker exec "$(compose ps -q consul-agent)" sh -c "TOKEN=\$(cat /run/secrets/consul_operator_token 2>/dev/null || cat /run/secrets/consul_operator_token.txt 2>/dev/null); curl -s -H \"X-Consul-Token: \$TOKEN\" --cacert /run/secrets/consul_ca_cert https://consul:8501/v1/health/service/$svc" 2>/dev/null || echo "[]")"
   count="$(echo "$health" | jq 'length' 2>/dev/null || echo 0)"
   if [[ "$count" -lt 1 ]]; then REG_OK=0; fi
@@ -113,10 +113,11 @@ app_targets="$(echo "$targets" | jq '.data.activeTargets[] | select(.labels.job=
 count="$(echo "$app_targets" | jq -s 'length' 2>/dev/null || echo 0)"
 up_count="$(echo "$app_targets" | jq -s '[.[] | select(.health=="up")] | length' 2>/dev/null || echo 0)"
 distinct_inst="$(echo "$app_targets" | jq -s '[.[].labels.instance] | unique | length' 2>/dev/null || echo 0)"
-if [[ "$count" -ge 2 && "$count" == "$up_count" && "$distinct_inst" == "$count" ]]; then
+ocr_up="$(echo "$app_targets" | jq -s '[.[] | select(.labels.service=="svc-ocr-worker" and .health=="up")] | length' 2>/dev/null || echo 0)"
+if [[ "$count" -ge 2 && "$count" == "$up_count" && "$distinct_inst" == "$count" && "$ocr_up" -ge 1 ]]; then
   pass 6 "Prometheus SD"
 else
-  fail 6 "Prometheus SD (count=$count up=$up_count distinct=$distinct_inst)"
+  fail 6 "Prometheus SD (count=$count up=$up_count distinct=$distinct_inst ocr_up=$ocr_up)"
 fi
 
 # Step 7 UI
