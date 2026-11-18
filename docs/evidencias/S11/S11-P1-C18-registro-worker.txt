@@ -1,0 +1,164 @@
+S11-P1-C18 — extraction-worker: registro y desregistro en Consul
+Fecha: 2026-11-18 (UTC)
+Entorno: docker compose project `infra`, infra/compose/docker-compose.yml, env infra/.env
+Agente: infra-consul-agent-1 (HTTPS 8501, CA /run/secrets/consul_ca_cert)
+Imagen probada: extraction-worker:local (build local desde el checkout, digest
+sha256:dd9aab1de9f8a1eb8d861c57fddb63a6acfe2a47f62bf1e92119b5497fcc6730).
+Imagen previa del entorno: ghcr.io/alejo-basile/extraction-worker:s5p1-closure.
+
+RESUMEN
+  PASS  build / fmt / clippy / unit tests (102 passed, 9 nuevos de consul_reg)
+  PASS  compose config valido
+  PASS  3 replicas registradas con IDs distintos y checks passing
+  PASS  stop ordenado deja 0 entradas (presupuesto de 2 s respetado)
+  PASS  purga tras SIGKILL por DeregisterCriticalServiceAfter
+  PASS  arranque con Consul caido: /healthz OK y metrica incrementada
+  PASS  reconexion automatica del registro cuando Consul vuelve (sin reiniciar)
+  PASS  shutdown total dentro de SHUTDOWN_GRACE_SECS (6 s)
+
+--------------------------------------------------------------------------
+1. GATES DE CODIGO
+
+$ cd extraction-worker && cargo fmt --all --check
+(sin salida)  exit 0
+
+$ cd extraction-worker && cargo build --locked -p extraction-worker
+Finished `dev` profile [unoptimized + debuginfo] target(s)  exit 0
+
+$ cd extraction-worker && cargo clippy -p extraction-worker --all-targets -- -D warnings
+Finished `dev` profile  exit 0
+
+$ cd extraction-worker && cargo test -p extraction-worker
+test result: ok. 102 passed; 0 failed; 1 ignored   (lib)
+test result: ok. 17 passed; 0 failed              (integration)
+resto: ok / ignorados por entorno
+
+$ cd extraction-worker && cargo test -p extraction-worker consul_reg
+test consul_reg::tests::payload_cumple_el_contrato ... ok
+test consul_reg::tests::register_hace_put_al_agente ... ok
+test consul_reg::tests::deregister_hace_put_con_el_id ... ok
+test consul_reg::tests::disabled_no_hace_http ... ok
+test consul_reg::tests::registro_no_2xx_devuelve_error ... ok
+test consul_reg::tests::service_id_y_nombre_derivan_del_hostname ... ok
+test consul_reg::tests::service_name_alternativo_cambia_id_y_nombre ... ok
+test consul_reg::tests::percent_encode_escapa_caracteres_reservados ... ok
+test consul_reg::tests::split_host_port_tolera_esquema_y_puerto ... ok
+test result: ok. 9 passed; 0 failed
+
+$ cd infra && docker compose --env-file .env -f compose/docker-compose.yml --profile full config --quiet
+(sin salida)  exit 0
+
+--------------------------------------------------------------------------
+2. REGISTRO CON --scale extraction-worker=3
+
+$ docker build -t extraction-worker:local -f extraction-worker/Dockerfile extraction-worker
+naming to docker.io/library/extraction-worker:local  exit 0
+
+$ EXTRACTION_WORKER_IMAGE=extraction-worker EXTRACTION_WORKER_TAG=local \
+  docker compose ... --profile full up -d --no-deps --force-recreate \
+  --scale extraction-worker=3 extraction-worker
+infra-extraction-worker-1  Up (healthy)
+infra-extraction-worker-2  Up (healthy)
+infra-extraction-worker-3  Up (healthy)
+
+$ GET /v1/health/service/svc-extraction-worker?passing   (desde consul-agent)
+entries: 3
+extraction-worker-43e0819a24a9 172.24.0.16:8081 ['passing', 'passing']
+extraction-worker-c975a34b33d5 172.24.0.10:8081 ['passing', 'passing']
+extraction-worker-dfdb6068b1c0 172.24.0.15:8081 ['passing', 'passing']
+
+IDs distintos por hostname de contenedor; el Address publicado es la IPv4 de
+la red `internal` (172.24.0.0/16), derivada con UDP connect al agente, tal como
+se midio en C14. Los tres checks HTTP a /healthz estan en passing.
+
+--------------------------------------------------------------------------
+3. DESREGISTRO ORDENADO
+
+Con 3 replicas:
+$ time docker compose ... stop extraction-worker
+stop_wall_seconds=2.59   (3 replicas)
+passing_entries=0  (consulta inmediata, query corregida)
+
+Con 1 replica:
+$ GET /v1/health/service/svc-extraction-worker?passing   -> 1 entrada
+$ time docker compose ... stop extraction-worker
+stop_wall_seconds=4.76   (1 replica, incluye drenaje del consumer)
+t+0.2s passing_entries=0
+
+El desregistro consume como maximo 2 s dentro del presupuesto de 6 s
+(SHUTDOWN_GRACE_SECS); el resto es el drenaje HTTP/consumer ya existente.
+
+Observacion honesta: durante la ventana de pruebas aparecio una entrada
+`c1a407ae-067c-37f4-2dda-8759563eddf3` con ServiceName svc-extraction-worker.
+No la crea este cambio (el ID del worker es `<servicio>-<hostname>`): es estado
+persistido de pruebas previas en el volumen consul-agent-data. Se purgo sola
+tras pasar su check a critico y no reaparecio despues. El ID creado por este
+cambio es siempre `extraction-worker-<hostname>`.
+
+--------------------------------------------------------------------------
+4. PURGA TRAS SIGKILL (DeregisterCriticalServiceAfter)
+
+$ docker kill -s KILL infra-extraction-worker-1
+consulta SIN filtro ?passing (catalogo completo, incluye checks criticos):
+t+5s  all_entries=2   (worker + entrada obsoleta previa)
+t+60s all_entries=2
+t+90s all_entries=0
+purge_seconds=93
+
+El cronometro de `1m` empieza cuando el check pasa a critico (~10 s de
+deteccion con interval 10s / timeout 3s), de ahi el margen sobre 60 s. El
+catalogo queda limpio sin intervencion manual.
+
+--------------------------------------------------------------------------
+5. ARRANQUE CON CONSUL CAIDO (degradacion)
+
+$ docker compose ... stop consul-agent consul
+$ EXTRACTION_WORKER_IMAGE=extraction-worker EXTRACTION_WORKER_TAG=local \
+  docker compose ... up -d --no-deps --scale extraction-worker=1 extraction-worker
+
+$ curl -fsS http://127.0.0.1:8081/healthz
+{"status":"ok"}
+$ curl -fsS http://127.0.0.1:8081/metrics | grep ^worker_consul_registration_failed_total
+worker_consul_registration_failed_total 3
+$ docker logs infra-extraction-worker-1 | grep -c "registro en consul fallido"
+3
+
+El worker arranca, sirve /healthz y no bloquea: el registro se reintenta con
+backoff 5 s -> 60 s y cada fallo loguea WARN e incrementa la metrica.
+
+--------------------------------------------------------------------------
+6. RECONEXION AUTOMATICA DEL REGISTRO
+
+$ docker compose ... start consul consul-agent      (worker sin reiniciar)
+t+13s passing_entries=1  (worker)
+reconnect_seconds=22
+
+$ docker logs infra-extraction-worker-1 | grep -c "registrado en consul"
+6   (incluye intentos previos exitosos de la misma sesion de pruebas)
+
+La replica se registra sola cuando Consul vuelve. En el arranque degradado el
+Address publicado fue el hostname del contenedor (la resolucion DNS del agente
+no estaba disponible al construir el registrar); verificado: el agente resuelve
+ese hostname y el check HTTP queda en passing. En arranque normal el Address es
+la IPv4 de `internal`.
+
+--------------------------------------------------------------------------
+7. ESTADO FINAL DEL ENTORNO
+
+infra-extraction-worker-1  Up (healthy)  extraction-worker:local  [registrada]
+  GET /v1/health/service/svc-extraction-worker?passing
+  extraction-worker-c975a34b33d5  172.24.0.10  ['passing', 'passing']
+
+1 replica, imagen local con el cambio, check passing. Volumenes de mongo,
+redis, minio y prometheus intactos. No se tocaron ACL, routing.yml ni
+traefik.yml.
+
+Cambios de infraestructura acompanantes:
+  - compose worker: CONSUL_REGISTRATION_ADDR, SERVICE_NAME=extraction-worker,
+    CONSUL_REGISTRATION_DISABLED (default false) y volumen nombrado
+    `worker-config-cache` para /var/lib/worker (la cache de configkv de C13
+    escribia en un path sin volumen en rootfs read-only).
+
+Rollback verificado por tests (no ejecutado para no dejar el entorno sin
+registro): CONSUL_REGISTRATION_DISABLED=true hace register/deregister no-op y
+no arranca el loop de reintento (test disabled_no_hace_http).
