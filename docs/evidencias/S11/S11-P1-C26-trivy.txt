@@ -1,0 +1,12 @@
+S11-P1-C26 Trivy
+trivy version: (see command output)
+Date UTC: 2026-11-18
+Command: trivy image --severity CRITICAL,HIGH --exit-code 1 hashicorp/consul:1.22.7
+Exit code: 1
+CRITICAL/HIGH rows (sample, full JSON captured): CVE-2026-111497 brotli-libs 1.2.0-r0 -> 1.2.1-r0 CRITICAL; CVE-2026-33845 gnutls 3.8.12-r0 -> 3.8.13-r0 CRITICAL; plus multiple HIGH (musl, curl, sqlite, openssl, stdlib, golang.org/x/*).
+Exception: owner P1, expiry 2026-12-31, mitigation track upstream image update; image not changed to pass scan.
+
+Command: trivy image --severity CRITICAL,HIGH --exit-code 1 curlimages/curl:8.10.1
+Exit code: 1
+Exception: owner P1, expiry 2026-12-31; image not changed to pass scan.
+EOF
