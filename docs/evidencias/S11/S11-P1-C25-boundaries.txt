@@ -1,0 +1,80 @@
+# S11-P1-C25 — Guardarraíles de frontera (evidencia)
+
+Fecha: 2026-11-18
+Infra HEAD: b3dc3e3
+Script: scripts/verify-consul-boundaries.sh (solo lectura, sin red externa)
+CI: .github/workflows/ci.yml, job `consul-boundaries` (checkout fetch-depth 0)
+
+## Desviación de baseline (documentada)
+
+task-25 §3 cita el commit `af15791` como base para comparar `routing.yml`. Ese commit
+existe solo en el repositorio externo de `docs/` y no contiene `routing.yml`.
+En el repositorio `infra`, el último commit que tocó `traefik/dynamic/routing.yml` es
+`4766290` y `git log 4766290..HEAD -- traefik/dynamic/routing.yml` está vacío.
+
+Baseline usado: `4766290`, sobreescribible con `ROUTING_BASELINE_COMMIT`.
+
+Check 4 es **aditivo**: solo falla si se elimina o modifica una línea preexistente
+respecto del baseline. Las adiciones son legítimas (C09 agrega `r-consul-ui`,
+`consul-ui` y `consul-ui-transport`). Una comparación byte-a-byte sería insatisfacible
+por diseño y no representa la frontera (§0: el ruteo no se mueve a Consul).
+
+## Ejecución en verde
+
+```
+$ bash scripts/verify-consul-boundaries.sh
+PASS: Check 1: no consulCatalog en traefik.yml
+SKIP: Check 2: Consul no disponible / sin credenciales (§0, C25)
+PASS: Check 3: sin dns: apuntando a Consul
+PASS: Check 4: pre-existing routers intact; additions permitted
+SKIP: Check 5: ocr-worker no desplegado (§0.2 no cerrado)
+PASS: Check 6: svc-ocr-worker ausente de consul_sd_configs (§0.2)
+
+Boundaries OK.
+exit=0
+```
+
+Check 2 es SKIP: este host no tiene `consul` CLI ni credenciales de agente en el
+entorno de ejecución. El check se ejercitó con export sintético (ver abajo) y se
+activará solo cuando haya agente alcanzable.
+
+Check 5 es SKIP y Check 6 PASS porque `ocr-worker` no tiene bloque en el compose y
+`svc-ocr-worker` no figura en `consul_sd_configs.services` (§0.2 abierto, C31).
+
+## Pruebas negativas (todas bajo `mktemp -d`, nunca en el worktree)
+
+| # | Violación inyectada | Resultado observado |
+|---|---|---|
+| 1 | `providers.consulCatalog` agregado a traefik.yml | `FAIL: consulCatalog detectado en infra/traefik/traefik.yml (frontera §0)`, exit 1 |
+| 2a | KV export con clave `main_db_password` (forma de export de Consul) | `FAIL: clave o valor con forma de credencial en Consul KV (prefijo config/)`, exit 1 |
+| 2b | KV export limpio (texto plano y forma JSON `[{"Key":..,"Value":<b64>}]`) | `PASS: Check 2: KV config/ sin credenciales`, exit 0 |
+| 3a | `dns:` con lista YAML `- consul` | `FAIL: servicio con dns: apuntando a Consul en docker-compose.yml (frontera §0)`, exit 1 |
+| 3b | `dns: [consul]` en línea | mismo FAIL, exit 1 |
+| 4 | router preexistente `r-inv-health` eliminado de una copia de routing.yml | `FAIL: routing.yml difiere del commit base del plan (4766290)`, exit 1 |
+| 4b | control positivo: router nuevo agregado a una copia | `PASS: Check 4: pre-existing routers intact; additions permitted`, exit 0 |
+| 5 | compose sintético con `ocr-worker` y `extraction-worker` compartiendo `minio_worker_access_key` | `FAIL: ocr-worker comparte credenciales MinIO/Mongo con extraction-worker (SPEC §3.4, mínimo privilegio)`, exit 1 |
+| 6a | `svc-ocr-worker` agregado a `consul_sd_configs.services` sin ruta `/metrics` | `FAIL: svc-ocr-worker en consul_sd_configs sin /metrics verificado (§0.2, C31)`, exit 1 |
+| 6b | control positivo: `.route("/metrics", ...)` agregado a una copia de ocr-worker `main.rs` | `PASS: Check 6: svc-ocr-worker con /metrics`, exit 0 |
+
+## Otras verificaciones
+
+```
+$ bash -n scripts/verify-consul-boundaries.sh      -> syntax ok
+$ shellcheck scripts/verify-consul-boundaries.sh   -> no instalado en este host
+$ yamllint -d relaxed .github/workflows/ci.yml     -> exit 0 (solo warnings preexistentes de longitud)
+$ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))" -> ci.yml yaml=ok
+```
+
+## Notas de implementación
+
+- Check 2 normaliza el export de `consul kv export` (JSON con campos `Key`/`Value` en
+  base64) antes de buscar credenciales. Sin esa normalización el nombre de campo `Key`
+  dispararía un falso positivo en todas las entradas. gitleaks, cuando está instalado,
+  se usa como defensa en profundidad: exit 1 (leaks) = fallo del check, exit 0 = limpio.
+- Check 3 cubre la forma en línea (`dns: consul`, `dns: [consul]`) y la forma de lista
+  YAML (`dns:` seguido de `- consul`); la forma de lista era invisible para el grep
+  de una sola línea propuesto en la tarea.
+- Check 6 exige una ruta registrada (`route("/metrics"` o `resource("/metrics"`);
+  la mera dependencia `metrics_exporter_prometheus` no cuenta.
+- `ocr-worker` vive fuera del repositorio `infra` (hermano `../extraction-worker/`), por
+  eso el default de `OCR_MAIN_RS` se resuelve contra `$REPO_ROOT/..`.
