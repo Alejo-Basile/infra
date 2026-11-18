@@ -183,6 +183,16 @@ validate_value() {
       _n="$(printf '%s' "$_v" | awk -F, '{ print NF }')"
       [ "$_n" -ge "$_mn" ] && [ "$_n" -le "$_mx" ] || { echo "out of range"; return 1; }
       ;;
+    string)
+      [ -n "$_v" ] || { echo "empty value"; return 1; }
+      _len="$(printf '%s' "$_v" | wc -c)"
+      if [ -n "$_mn" ]; then
+        [ "$_len" -ge "$_mn" ] || { echo "out of range"; return 1; }
+      fi
+      if [ -n "$_mx" ]; then
+        [ "$_len" -le "$_mx" ] || { echo "out of range"; return 1; }
+      fi
+      ;;
     *)
       echo "unknown schema type"
       return 1

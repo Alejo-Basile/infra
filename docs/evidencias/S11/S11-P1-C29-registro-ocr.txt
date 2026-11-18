@@ -1,0 +1,39 @@
+S11-P1-C29 — registro y desregistro de ocr-worker en Consul
+Fecha: 2026-11-18
+Proyecto compose: infra
+
+Gates (extraction-worker):
+- cargo fmt --all --check: PASS
+- cargo build --locked -p ocr-worker: PASS
+- cargo clippy -p ocr-worker --all-targets -- -D warnings: PASS
+- cargo test -p ocr-worker: PASS
+- cargo test -p ocr-worker consul_reg: PASS (9 tests)
+- cargo build --locked -p extraction-worker: PASS
+
+Infra:
+- bash -n scripts/consul-bootstrap-acl.sh && sh -n compose/ocr-worker/entrypoint.sh: PASS
+- docker compose --env-file .env -f compose/docker-compose.yml --profile full config --quiet: PASS
+- bash scripts/consul-bootstrap-acl.sh (1ra ejecucion): crea svc-ocr-worker; prefijo a0bf453a
+- bash scripts/consul-bootstrap-acl.sh (2da ejecucion): "bootstrap already done" con prefijo a0bf453a
+- bash scripts/verify-consul-boundaries.sh: PASS (Check 5 y Check 6 PASS)
+
+Fix prerequisito de entorno (C28 omitio el chmod):
+- chmod 0644 infra/secrets/ocr_minio_access_key.txt infra/secrets/ocr_minio_secret_key.txt infra/secrets/ocr_mongo_password.txt
+- modos despues: 644 los tres (antes 600)
+
+Imagen:
+- docker build -f Dockerfile.ocr-worker -t ocr-worker:c29 . : PASS
+- image ID: sha256:2b7b4df78c4516d06cd49a5930663608ca2598cecb35775c6217a3a6b2278798
+
+Runtime smoke (DoD):
+- 2 replicas: 2 entradas svc-ocr-worker con check passing (IDs: ocr-worker-0ef6be8fdb28, ocr-worker-8dfa841abcaa)
+- ACL: ocr token -> GET /v1/catalog/service/svc-ocr-worker = 200; ocr token -> GET /v1/kv/config/doc-service/max_pdf_bytes = 403
+- stop ocr-worker -> 0 entradas tras 1s
+- kill -9 de 1 replica -> entrada purgada tras 11s (DeregisterCriticalServiceAfter 1m)
+- cleanup: rm -sf ocr-worker, override y logs eliminados; stack intacto
+
+Deudas:
+- Sin /metrics ni /readyz: C31 gatea Prometheus.
+- C30 extiende policy svc-ocr-worker con key_prefix config/ocr-worker/ y config/meta/ (read).
+- Identidades MinIO/Mongo de OCR no provisionadas: errores de data-plane esperables mientras /healthz devuelve 200.
+- shutdown_signal agregado como cableado de plataforma en el entrypoint del crate; sin cambio de pipeline.

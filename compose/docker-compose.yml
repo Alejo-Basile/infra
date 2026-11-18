@@ -59,6 +59,7 @@ volumes:
   consul-agent-data:
   worker-config-cache:
   doc-service-config-cache:
+  ocr-worker-config-cache:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -86,6 +87,7 @@ secrets:
   consul_doc_service_token: { file: ../secrets/consul_doc_service_token.txt }
   consul_ratelimitd_token: { file: ../secrets/consul_ratelimitd_token.txt }
   consul_worker_token: { file: ../secrets/consul_worker_token.txt }
+  consul_ocr_worker_token: { file: ../secrets/consul_ocr_worker_token.txt }
   consul_prometheus_token: { file: ../secrets/consul_prometheus_token.txt }
   consul_ui_password: { file: ../secrets/consul_ui_password.txt }
   consul_ui_users: { file: ../secrets/consul_ui_users.txt }
@@ -893,7 +895,9 @@ services:
     command: ["/usr/local/bin/ocr-worker"]
     volumes:
       - "./ocr-worker/entrypoint.sh:/entrypoint.sh:ro"
-    secrets: [ocr_minio_access_key, ocr_minio_secret_key, ocr_mongo_password, redis_streams_password]
+      # S11-P1-C30: last-known-good KV cache (rootfs is read_only).
+      - "ocr-worker-config-cache:/var/lib/ocr-worker"
+    secrets: [ocr_minio_access_key, ocr_minio_secret_key, ocr_mongo_password, redis_streams_password, consul_ocr_worker_token, consul_ca_cert]
     environment:
       REDIS_HOST: redis-streams
       REDIS_PORT: "6379"
@@ -925,6 +929,16 @@ services:
       REDIS_OCR_GROUP: ${REDIS_OCR_GROUP:-ocr-workers}
       REDIS_OCR_DLQ_STREAM: ${REDIS_OCR_DLQ_STREAM:-stream:ocr-processing-dlq}
       METRICS_ADDR: "0.0.0.0:8080"
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: ocr-worker
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
+      CONSUL_CACERT: "/run/secrets/consul_ca_cert"
+      CONSUL_TOKEN_FILE: /run/secrets/consul_ocr_worker_token
+      # S11-P1-C30: KV overlay (restart-only keys) + last-known-good cache.
+      CONSUL_HTTP_ADDR: https://consul-agent:8501
+      CONSUL_KV_PREFIX: config/ocr-worker/
+      CONSUL_KV_CACHE_PATH: /var/lib/ocr-worker/config-cache.json
+      CONSUL_KV_DISABLED: ${CONSUL_KV_DISABLED:-false}
       RUST_LOG: ${RUST_LOG:-info}
     networks: [internal, data]
     depends_on:
