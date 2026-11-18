@@ -1,0 +1,9 @@
+{
+  "_expected": {
+    "verdict": "rejected",
+    "key": "sensitive_routes",
+    "reason": "coherence"
+  },
+  "sensitive_routes": "POST /api/v2/documents=5:10",
+  "exempt_paths": "/internal,/healthz,/metrics,/api/v2"
+}

@@ -1,0 +1,31 @@
+S11-P1-C10 fixtures parity matrix
+date: 2026-11-17T22:15:37-03:00
+note: fixture set under infra/compose/consul/testdata/ was restored after an accidental deletion during S11-P1-C11; content re-derived from infra/compose/consul/config/schema.json (source of truth) and this manifest.
+
+fixture                                    verdict   key                          reason
+-----------------------------------------------------------------------------------------------
+doc-service.broken-coherence.json          rejected  doc_upload_grace_minutes     coherence  exits=True expected_match=True
+doc-service.malformed.json                 rejected  None                         malformed_json  exits=True expected_match=True
+doc-service.out-of-range.json              rejected  max_pdf_bytes                range  exits=True expected_match=True
+doc-service.unknown-key.json               rejected  shadow_ttl_minutes           unknown_key  exits=True expected_match=True
+doc-service.valid.json                     accepted  None                         None  exits=True expected_match=True
+doc-service.wrong-type.json                rejected  reconcile_dry_run            type  exits=True expected_match=True
+extraction-worker.broken-coherence.json    rejected  min_idle_ms                  coherence  exits=True expected_match=True
+extraction-worker.malformed.json           rejected  None                         malformed_json  exits=True expected_match=True
+extraction-worker.out-of-range.json        rejected  bulkhead_max_concurrency     range  exits=True expected_match=True
+extraction-worker.unknown-key.json         rejected  bulkhead_queue_limit         unknown_key  exits=True expected_match=True
+extraction-worker.valid.json               accepted  None                         None  exits=True expected_match=True
+extraction-worker.wrong-type.json          rejected  retry_multiplier             type  exits=True expected_match=True
+rate-limiter.broken-coherence.json         rejected  sensitive_routes             coherence  exits=True expected_match=True
+rate-limiter.malformed.json                rejected  None                         malformed_json  exits=True expected_match=True
+rate-limiter.out-of-range.json             rejected  exempt_paths                 range  exits=True expected_match=True
+rate-limiter.unknown-key.json              rejected  shadow_paths                 unknown_key  exits=True expected_match=True
+rate-limiter.valid.json                    accepted  None                         None  exits=True expected_match=True
+rate-limiter.wrong-type.json               rejected  exempt_paths                 type  exits=True expected_match=True
+
+schema keys:
+  doc-service: max_pdf_bytes, presign_upload_ttl_seconds, presign_download_ttl_seconds, reconcile_interval_minutes, reconcile_stuck_after_minutes, reconcile_dry_run, doc_upload_grace_minutes, min_safety_age_minutes
+  rate-limiter: sensitive_routes, exempt_paths
+  extraction-worker: bulkhead_max_concurrency, retry_max_elapsed_seconds, retry_initial_interval_ms, retry_multiplier, retry_max_interval_ms, retry_randomization_factor, breaker_failure_threshold, breaker_timeout_seconds, job_timeout_seconds, max_pages, min_idle_ms
+
+RESULT: PASS

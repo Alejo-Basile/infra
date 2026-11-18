@@ -1,0 +1,15 @@
+{
+  "_expected": {
+    "verdict": "rejected",
+    "key": "reconcile_dry_run",
+    "reason": "type"
+  },
+  "max_pdf_bytes": 26214400,
+  "presign_upload_ttl_seconds": 900,
+  "presign_download_ttl_seconds": 300,
+  "reconcile_interval_minutes": 10,
+  "reconcile_stuck_after_minutes": 30,
+  "reconcile_dry_run": "false",
+  "doc_upload_grace_minutes": 30,
+  "min_safety_age_minutes": 15
+}
