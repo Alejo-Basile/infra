@@ -1,0 +1,34 @@
+S11-P1-C26 snapshot drill transcript
+Date UTC: 2026-11-18
+Image: hashicorp/consul:1.22.7 digest sha256:a230dcea0bb107bd7958a912d1429fb7f9d399637de7ffb814b34412b9e8c543
+
+$ docker volume create consul-snapshot-test
+consul-snapshot-test
+$ docker run -d --name c26-consul-snap -p 127.0.0.1:18500:8500 -v consul-snapshot-test:/consul/data hashicorp/consul:1.22.7 agent -server -bootstrap-expect=1 -data-dir=/consul/data -bind=0.0.0.0 -client=0.0.0.0 -ui=false
+<container id>
+$ curl -s http://127.0.0.1:18500/v1/status/leader
+"172.17.0.3:8300"
+$ docker exec c26-consul-snap consul kv put c26/restore-proof before
+Success! Data written to: c26/restore-proof
+$ docker exec c26-consul-snap consul snapshot save /tmp/c26-drill.snap
+Saved and verified snapshot to index 18
+$ docker exec c26-consul-snap consul snapshot inspect /tmp/c26-drill.snap
+ ID           2-18-1794989983782
+ Size         6134
+ Index        18
+ Term         2
+ Version      1
+$ docker exec c26-consul-snap consul kv delete c26/restore-proof
+Success! Deleted key
+$ docker exec c26-consul-snap consul kv get c26/restore-proof
+Error! No key exists at: c26/restore-proof
+restore_ms=403
+$ docker exec c26-consul-snap consul kv get c26/restore-proof
+before
+$ CONSUL_HTTP_ADDR=http://127.0.0.1:18500 bash infra/scripts/consul-snapshot.sh restore /tmp/x.snap; echo exit=$?
+ERROR: restore requiere confirmacion explicita --yes (exit 2)
+exit=2
+$ docker rm -f c26-consul-snap; docker volume rm consul-snapshot-test
+$ docker volume ls | grep consul-snapshot-test  (empty)
+$ docker ps -a --format '{{.Names}}' | grep c26  (empty)
+EOF

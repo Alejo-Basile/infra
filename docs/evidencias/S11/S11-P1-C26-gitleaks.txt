@@ -1,0 +1,15 @@
+S11-P1-C26 gitleaks
+gitleaks version: (installed)
+Date UTC: 2026-11-18
+Command: gitleaks detect --source infra/secrets/ --no-git --redact
+Exit code: 1
+Findings:
+1. RuleID private-key, File infra/secrets/consul_ca_key.pem, StartLine 1, EndLine 28, Match REDACTED
+2. RuleID private-key, File infra/secrets/consul_server_key.pem, StartLine 1, EndLine 28, Match REDACTED
+gitignore proof:
+$ grep -n secrets infra/.gitignore
+(secrets/ entry present)
+$ git -C infra check-ignore -v secrets/consul_server_key.pem
+(infra/.gitignore:... secrets/)
+Note: these are local lab TLS private keys; infra/secrets/ is gitignored by design.
+EOF
