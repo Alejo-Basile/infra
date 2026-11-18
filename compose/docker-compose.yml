@@ -673,6 +673,11 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 300
+    # El drenaje interno de doc-service es de 15s (shutdownTimeout en
+    # cmd/api/main.go). El default de Docker es 10s, así que sin este margen
+    # el runtime podría mandar SIGKILL antes de que el drain limpie. 20s deja
+    # 5s de colchón para el desregistro de Consul (2s) + cierre de clientes.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
@@ -745,6 +750,10 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 300
+    # Misma imagen y mismo binario que doc-service: comparte el drenaje
+    # interno de 15s (shutdownTimeout). 20s > default de Docker (10s) para
+    # no recibir SIGKILL antes de que termine el drain.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
