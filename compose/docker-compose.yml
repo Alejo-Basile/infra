@@ -58,6 +58,7 @@ volumes:
   consul-data:
   consul-agent-data:
   worker-config-cache:
+  doc-service-config-cache:
 
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
@@ -610,6 +611,7 @@ services:
       - consul_ca_cert
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
+      - doc-service-config-cache:/var/lib/doc-service
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     command: ["/usr/local/bin/api"]
     environment:
@@ -646,6 +648,7 @@ services:
       CONSUL_HTTP_ADDR: https://consul:8501
       CONSUL_CACERT: /run/secrets/consul_ca_cert
       CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONFIG_CACHE_PATH: /var/lib/doc-service/config-cache.json
       # S11-P1-C14: el registro va contra el agente local, no contra el
       # server; el cliente KV lee CONSUL_HTTP_TOKEN_FILE (mismo secreto).
       CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
