@@ -1,0 +1,32 @@
+Date: 2026-11-18
+Scope: vendored fixture re-sync after upstream oracle update.
+
+Pre-fix drift table (vendored stale 2026-11-17 23:40 vs upstream 2026-11-18 01:09):
+- extraction-worker.malformed.json: vendored {"a":1,} vs upstream truncated invalid JSON with _expected (rejected / malformed_json)
+- extraction-worker.out-of-range.json: vendored bulkhead_max_concurrency: 0 vs upstream bulkhead_max_concurrency: 100
+- extraction-worker.unknown-key.json: vendored bulkhead_queue_limit: 8 vs upstream bulkhead_queue_limit: 10
+- manifest.json: vendored no _description; rate-limiter entries diverge vs upstream has _description; rate-limiter entries use exempt_paths/shadow_paths
+
+RED output before copy:
+cargo test -p configkv --test fixtures_parity
+test malformed_fixture_reports_no_key ... ok
+test vendored_matches_upstream ... FAILED
+test parity ... ok
+test result: FAILED. 2 passed; 1 failed
+
+Copy commands executed:
+cp infra/compose/consul/testdata/extraction-worker.malformed.json extraction-worker/crates/configkv/tests/fixtures/extraction-worker.malformed.json
+cp infra/compose/consul/testdata/extraction-worker.out-of-range.json extraction-worker/crates/configkv/tests/fixtures/extraction-worker.out-of-range.json
+cp infra/compose/consul/testdata/extraction-worker.unknown-key.json extraction-worker/crates/configkv/tests/fixtures/extraction-worker.unknown-key.json
+cp infra/compose/consul/testdata/manifest.json extraction-worker/crates/configkv/tests/fixtures/manifest.json
+
+Post-fix cmp loop output (clean): no DRIFT: lines.
+
+GREEN verification:
+- cargo test -p configkv: all tests pass (fixtures_parity::vendored_matches_upstream, parity, malformed_fixture_reports_no_key ok)
+- cargo test -p extraction-worker --lib: 123 passed, 0 failed
+- cargo fmt --check: exit 0
+- cargo clippy -p configkv --all-targets -- -D warnings: 0 warnings
+
+Note: upstream infra/compose/consul/testdata/ is the source of truth; vendored copies must be re-synced whenever it changes.
+Note: rate-limiter entries in the re-synced manifest also changed (exempt_paths/shadow_paths); parity only asserts the six extraction-worker.* fixtures, so no test behavior depends on those entries.
