@@ -1,0 +1,10 @@
+# S11-P1-C12 — arranque con Consul caido
+# Fecha: 2026-11-17T23:00:36-03:00
+# KV no disponible (connection refused) + sin cache: defaults de entorno.
+startup_ms=26
+# Umbral exigido: < 2 s (Init acota la lectura inicial a 2 s)
+2026/11/17 23:00:14 configkv: token de Consul no disponible (/tmp/opencode/c12/none.tok): open /tmp/opencode/c12/none.tok: no such file or directory
+2026/11/17 23:00:14 configkv: CONSUL_CACERT ausente (/tmp/opencode/c12/none.pem): se usan raices del sistema
+2026/11/17 23:00:14 configkv: lectura inicial fallida, se sigue con defaults/cache: Get "https://127.0.0.1:1/v1/kv/config/rate-limiter?recurse&index=0&wait=5m0s": dial tcp 127.0.0.1:1: connect: connection refused
+2026/11/17 23:00:14 consul registration hook listo para ratelimitd (implementacion completa en C17)
+2026/11/17 23:00:14 ratelimitd escuchando en 127.0.0.1:18090 (redis=redis-ratelimit:6379)

@@ -1,0 +1,4 @@
+# S11-P1-C11: go vet ./... (empty output = clean)
+2026-11-17T22:46:57-03:00
+$ go vet ./...
+exit=0

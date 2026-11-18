@@ -1,0 +1,13 @@
+# S11-P1-C12 — hardening de compose
+# Fecha: 2026-11-17T23:00:36-03:00
+$ grep -n "ratelimitd-config-cache" infra/compose/docker-compose.yml
+56:  ratelimitd-config-cache:
+363:      - ratelimitd-config-cache:/var/lib/ratelimitd
+
+# YAML parseado:
+volumen declarado: True
+montajes ratelimitd: ['ratelimitd-config-cache:/var/lib/ratelimitd']
+read_only: True
+CONSUL_HTTP_ADDR: https://consul:8501
+
+# docker compose config --quiet no es ejecutable en este host: faltan variables obligatorias del .env (MONGO_WORKER_PASSWORD, MONOLITO_MONGO_*, DOCKER_GID), error preexistente ajeno a C12.

@@ -1,1 +1,8 @@
-{"a":1
+{
+  "_expected": {
+    "verdict": "rejected",
+    "key": null,
+    "reason": "malformed_json"
+  },
+  "sensitive_routes": "POST /api/v2/documents=5:10",
+  "exempt_paths": "/internal,

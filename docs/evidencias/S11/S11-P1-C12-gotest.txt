@@ -1,0 +1,6 @@
+# S11-P1-C12 — go test ./...
+# Fecha: 2026-11-17T23:00:32-03:00
+$ go test ./... -count=1
+ok  	github.com/Alejo-Basile/platform-services/rate-limiter/cmd/ratelimitd	0.005s
+ok  	github.com/Alejo-Basile/platform-services/rate-limiter/internal/configkv	3.201s
+ok  	github.com/Alejo-Basile/platform-services/rate-limiter/internal/limiter	0.005s

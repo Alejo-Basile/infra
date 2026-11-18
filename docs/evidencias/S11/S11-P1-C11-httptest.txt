@@ -1,0 +1,94 @@
+=== RUN   TestCacheMissing
+--- PASS: TestCacheMissing (0.00s)
+=== RUN   TestCacheCorrupt
+2026/11/17 22:46:55 WARN corrupt cache ignored path=/tmp/TestCacheCorrupt794083117/001/c.json err="invalid character 'n' looking for beginning of object key string"
+--- PASS: TestCacheCorrupt (0.00s)
+=== RUN   TestSaveAtomicRoundTrip
+--- PASS: TestSaveAtomicRoundTrip (0.00s)
+=== RUN   TestSaveAtomicFailureLeavesNoTmp
+--- PASS: TestSaveAtomicFailureLeavesNoTmp (0.00s)
+=== RUN   TestGetBlockingQuery
+2026/11/17 22:46:55 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestGetBlockingQuery (0.00s)
+=== RUN   TestGetNotModified
+2026/11/17 22:46:55 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestGetNotModified (0.00s)
+=== RUN   TestPairsToMapBadBase64
+--- PASS: TestPairsToMapBadBase64 (0.00s)
+=== RUN   TestPairsToMapStripsPrefix
+--- PASS: TestPairsToMapStripsPrefix (0.00s)
+=== RUN   TestLoadInitialHonorsContext
+2026/11/17 22:46:55 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestLoadInitialHonorsContext (2.00s)
+=== RUN   TestTokenHeader
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestTokenHeader (0.01s)
+=== RUN   TestWatchAppliesIncreasingIndex
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestWatchAppliesIncreasingIndex (0.01s)
+=== RUN   TestWatchContextCancelReturnsPromptly
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestWatchContextCancelReturnsPromptly (0.15s)
+=== RUN   TestWatchResyncsOnLowerIndex
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestWatchResyncsOnLowerIndex (0.02s)
+=== RUN   TestStartKV500UsesDefaultsWithin2s
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 WARN configkv load failed err="consul kv get config/doc-service: 500"
+--- PASS: TestStartKV500UsesDefaultsWithin2s (0.00s)
+=== RUN   TestStartCorruptCacheDoesNotBreak
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 WARN corrupt cache ignored path=/tmp/TestStartCorruptCacheDoesNotBreak1494190110/001/config-cache.json err="invalid character 'n' looking for beginning of object key string"
+2026/11/17 22:46:57 WARN configkv load failed err="consul kv get config/doc-service: 500"
+--- PASS: TestStartCorruptCacheDoesNotBreak (0.00s)
+=== RUN   TestStartAppliesCacheWhenConsulDown
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 WARN configkv load failed err="consul kv get config/doc-service: 500"
+--- PASS: TestStartAppliesCacheWhenConsulDown (0.00s)
+=== RUN   TestStartAppliesKV
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestStartAppliesKV (0.00s)
+=== RUN   TestInvalidValueRejectedKeepsPrevious
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 WARN configkv rejection key=max_pdf_bytes reason=range
+--- PASS: TestInvalidValueRejectedKeepsPrevious (0.00s)
+=== RUN   TestCoherenceRejectedKeepsPrevious
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 WARN configkv rejection key=doc_upload_grace_minutes reason=coherence
+--- PASS: TestCoherenceRejectedKeepsPrevious (0.00s)
+=== RUN   TestDisabledSkipsConsul
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+2026/11/17 22:46:57 INFO configkv disabled
+--- PASS: TestDisabledSkipsConsul (0.00s)
+=== RUN   TestCachePersistedAfterApply
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestCachePersistedAfterApply (0.00s)
+=== RUN   TestValidateDoesNotMutate
+2026/11/17 22:46:57 WARN consul CA file missing, degrading path=/etc/ssl/certs/consul-ca.pem err="open /etc/ssl/certs/consul-ca.pem: no such file or directory"
+--- PASS: TestValidateDoesNotMutate (0.00s)
+=== RUN   TestDecodeDropsMetadata
+--- PASS: TestDecodeDropsMetadata (0.00s)
+=== RUN   TestDecodeMalformed
+--- PASS: TestDecodeMalformed (0.00s)
+=== RUN   TestApplyKeepsPreviousValue
+--- PASS: TestApplyKeepsPreviousValue (0.00s)
+=== RUN   TestApplyFixtures
+=== RUN   TestApplyFixtures/doc-service.broken-coherence.json
+=== RUN   TestApplyFixtures/doc-service.malformed.json
+=== RUN   TestApplyFixtures/doc-service.out-of-range.json
+=== RUN   TestApplyFixtures/doc-service.unknown-key.json
+=== RUN   TestApplyFixtures/doc-service.valid.json
+=== RUN   TestApplyFixtures/doc-service.wrong-type.json
+--- PASS: TestApplyFixtures (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.broken-coherence.json (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.malformed.json (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.out-of-range.json (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.unknown-key.json (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.valid.json (0.00s)
+    --- PASS: TestApplyFixtures/doc-service.wrong-type.json (0.00s)
+=== RUN   TestDefaults
+--- PASS: TestDefaults (0.00s)
+=== RUN   TestSchemaParity
+--- PASS: TestSchemaParity (0.00s)
+PASS
+ok  	github.com/Alejo-Basile/doc-service/internal/configkv	2.214s

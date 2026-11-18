@@ -4,6 +4,6 @@
     "key": "sensitive_routes",
     "reason": "coherence"
   },
-  "sensitive_routes": "POST /api/v2/documents=abc:10",
-  "exempt_paths": "/internal,/healthz,/metrics"
+  "sensitive_routes": "POST /api/v2/documents=5:10",
+  "exempt_paths": "/internal,/healthz,/metrics,/api/v2"
 }

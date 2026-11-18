@@ -15,32 +15,37 @@ scrape_configs:
     static_configs:
       - targets: ["traefik:8082"]
 
-  - job_name: doc-service
+  - job_name: app-services
     metrics_path: /metrics
-    # dns_sd_configs para descubrir todas las réplicas de doc-service
-    # en la red Docker 'infra_internal' (donde Traefik hace load balancing).
-    # Requiere Docker Engine 20.10+ y que los contenedores tengan DNS resoluble.
-    dns_sd_configs:
-      - names:
-          - "doc-service"
-        type: "A"
-        port: 8080
-        refresh_interval: 30s
-    # Fallback static_configs para entornos sin DNS SD
-    # Se descomenta si dns_sd falla; en ese caso solo scrapea una réplica.
-    # static_configs:
-    #   - targets: ["doc-service:8080"]
+    consul_sd_configs:
+      - server: https://consul:8501
+        authorization:
+          credentials_file: /run/secrets/consul_prometheus_token
+        tls_config:
+          ca_file: /run/secrets/consul_ca_cert
+        services:
+          - svc-doc-service
+          - svc-extraction-worker
+    relabel_configs:
+      - source_labels: [__meta_consul_service_id]
+        target_label: instance
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      - source_labels: [__meta_consul_service_port]
+        regex: ""
+        action: drop
 
-  # Worker (SPEC 10): expone /healthz, /readyz y /metrics en 8081 con los
-  # gauges de cola, PEL y DLQ. Sin este job las metricas worker_* se exponen
-  # pero nadie las recoge, y las alertas de cola solo pueden depender del
-  # exporter de Redis (que en la version actual no publica backlog real).
-  # El target solo existe con el perfil `full`; si el worker no esta
-  # levantado figura `down`, que es el estado esperado.
-  - job_name: extraction-worker
-    metrics_path: /metrics
+  - job_name: consul
+    metrics_path: /v1/agent/metrics
+    params:
+      format: ["prometheus"]
+    scheme: https
+    tls_config:
+      ca_file: /run/secrets/consul_ca_cert
+    authorization:
+      credentials_file: /run/secrets/consul_prometheus_token
     static_configs:
-      - targets: ["extraction-worker:8081"]
+      - targets: ["consul:8501"]
 
   - job_name: redis-exporter
     static_configs:

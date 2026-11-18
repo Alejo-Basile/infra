@@ -1,0 +1,27 @@
+# S11-P1-C12 — paridad de fixtures C10
+# Fecha: 2026-11-17T23:00:36-03:00
+$ go test ./internal/configkv/... -run TestFixtureParity -v -count=1
+=== RUN   TestFixtureParity
+=== RUN   TestFixtureParity/rate-limiter.broken-coherence.json
+=== RUN   TestFixtureParity/rate-limiter.malformed.json
+=== RUN   TestFixtureParity/rate-limiter.out-of-range.json
+=== RUN   TestFixtureParity/rate-limiter.unknown-key.json
+=== RUN   TestFixtureParity/rate-limiter.valid.json
+=== RUN   TestFixtureParity/rate-limiter.wrong-type.json
+--- PASS: TestFixtureParity (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.broken-coherence.json (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.malformed.json (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.out-of-range.json (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.unknown-key.json (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.valid.json (0.00s)
+    --- PASS: TestFixtureParity/rate-limiter.wrong-type.json (0.00s)
+PASS
+ok  	github.com/Alejo-Basile/platform-services/rate-limiter/internal/configkv	0.003s
+
+# Tabla esperada (manifest.json):
+# rate-limiter.valid.json            accepted
+# rate-limiter.malformed.json        rejected key=<none>          reason=malformed_json
+# rate-limiter.out-of-range.json     rejected key=exempt_paths    reason=range
+# rate-limiter.unknown-key.json      rejected key=shadow_paths    reason=unknown_key
+# rate-limiter.wrong-type.json       rejected key=exempt_paths    reason=type
+# rate-limiter.broken-coherence.json rejected key=sensitive_routes reason=coherence
