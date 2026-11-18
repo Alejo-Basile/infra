@@ -200,7 +200,9 @@ groups:
       # (NoData) y Alertmanager no alerta por NoData: el backlog crece en
       # silencio. Esta regla es la que rompe ese silencio.
       - alert: WorkerDown
-        expr: up{job="extraction-worker"} == 0
+        # Migrado en S11-P1-C08: el worker ahora se descubre via app-services.
+        # Dispara hasta que C14/C18 registren svc-extraction-worker en Consul.
+        expr: absent(up{job="app-services", service="svc-extraction-worker"} == 1)
         for: 10m
         labels:
           severity: critical
@@ -237,7 +239,9 @@ groups:
           runbook_url: "infra/runbooks/errores-extraccion.md"
 
       - alert: DocServiceNotReady
-        expr: up{job="doc-service"} == 0
+        # Migrado en S11-P1-C08: doc-service ahora se descubre via app-services.
+        # Dispara hasta que C14/C18 registren svc-doc-service en Consul.
+        expr: absent(up{job="app-services", service="svc-doc-service"} == 1)
         for: 2m
         labels:
           severity: critical
@@ -278,3 +282,46 @@ groups:
           summary: "Certificado TLS expira en menos de 14 dias"
           description: "Revisar almacenamiento ACME, resolucion DNS, challenge y logs de Traefik; no borrar acme.json sin respaldo."
           runbook_url: "infra/runbooks/certificados-traefik.md"
+
+  - name: s11-p1-consul
+    interval: 30s
+    rules:
+      - alert: ConsulServerDown
+        expr: up{job="consul"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consul server/agent no responde al scrape"
+          description: "El job 'consul' esta down. Verificar contenedor consul/consul-agent y TLS/ACL. Los servicios siguen operando con defaults/cache (Consul no es camino critico)."
+          runbook_url: "infra/runbooks/consul.md"
+
+      - alert: ConsulNoLeader
+        expr: max({__name__=~"consul_.+_server_isLeader"}) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consul sin lider raft"
+          description: "No hay lider elegido; el catalogo y KV quedan en solo lectura/no disponibles. Verificar quorum y gossip."
+          runbook_url: "infra/runbooks/consul.md"
+
+      - alert: ConfigKVStale
+        expr: (time() - max by (job) ({__name__=~".+_config_kv_last_success_timestamp_seconds"})) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ultima lectura valida de Consul KV hace mas de 15 min"
+          description: "El watcher de configuracion no ha aplicado un valor valido en los ultimos 15 min. Posible caida de Consul o rechazo sostenido. Metricas: *_config_kv_last_success_timestamp_seconds."
+          runbook_url: "infra/runbooks/consul.md"
+
+      - alert: ConfigKVRejected
+        expr: sum by (job, key) (rate({__name__=~".+_config_kv_rejected_total"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasa de rechazo de valores KV mayor a 0 durante 10 min"
+          description: "Al menos un valor fue rechazado por validacion (tipo/rango/coherencia). Revisar logs y el valor en git. Metricas: *_config_kv_rejected_total."
+          runbook_url: "infra/runbooks/consul.md"

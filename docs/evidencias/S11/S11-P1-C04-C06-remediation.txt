@@ -1,0 +1,101 @@
+S11-P1-C04/C06 — Remediacion de plataforma (agente Consul + modos de token)
+UTC date: 2026-11-17T23:56:00Z
+Repositorio de trabajo: infra/ (compose project "infra", env file infra/.env)
+Origen: dos gaps detectados al cerrar S11-P1-C08 (Prometheus con consul_sd_configs).
+
+1. Defectos y estado previo observado (RED)
+
+Defecto 1 (C04) - el agente Consul escuchaba solo en loopback.
+  agent.hcl definia `bind_addr = "0.0.0.0"` pero no `client_addr`, y Consul
+  defaulta client_addr a 127.0.0.1. Evidencia pre-fix, desde un contenedor en
+  infra_internal:
+    * connect to 172.24.0.14 port 8501 ... failed: Connection refused
+    * (control) https://consul:8501/v1/status/leader => 200
+  Efecto: C14/C18 no pueden registrar replicas contra el agente.
+
+Defecto 2 (C06) - tokens de servicio ilegibles para consumidores no-root.
+  consul-bootstrap-acl.sh escribia los tokens con `chmod 600` y el file-secret de
+  Docker hereda el modo del archivo host. Usuarios reales (verificado con `id`):
+    infra-doc-service-1      uid=10001(appuser)
+    infra-ratelimitd-1       uid=10001(ratelimitd)
+    infra-extraction-worker-1 uid=10001(worker)
+  Los archivos quedaban 0600 owner 1000: lectura imposible para uid 10001. Es el
+  mismo fallo que sufrio Prometheus con consul_prometheus_token en C08 (arreglado
+  ahi con chmod 0644 manual).
+
+2. Cambios
+
+- infra/compose/consul/config/agent.hcl
+  * `client_addr = "0.0.0.0"` (el agente sigue solo en la red `internal`, sin
+    puertos publicados al host).
+- infra/scripts/consul-bootstrap-acl.sh
+  * `create_service_token`: `chmod 600` -> `chmod 644` en las DOS rutas (token
+    reutilizado por descripcion y token recien creado).
+  * Nuevo `normalize_token_modes()` ejecutado ANTES del guard de idempotencia
+    ("bootstrap already done"), para que una re-ejecucion corrija modos de
+    archivos preexistentes. Los cuatro tokens de servicio/lectura quedan 0644;
+    el token de operador y el TMPF de bootstrap siguen 0600/0600.
+- infra/secrets/consul_doc_service_token.txt, consul_ratelimitd_token.txt,
+  consul_worker_token.txt: modo 0600 -> 0644 (contenido intacto).
+  consul_prometheus_token.txt ya estaba 0644 desde C08.
+
+Correcciones aplicadas por el orquestador sobre el primer intento del worker
+(se registran porque el primer intento NO estaba correcto):
+  * agent.hcl quedo con `client_addr = "0.0.0.0"retry_join = ["consul"]` en una
+    sola linea (HCL invalido). Corregido a dos lineas y se reinicio el agente.
+  * Solo se habia cambiado uno de los dos `chmod 600`; la rama de creacion nueva
+    de token seguia en 600. Corregida.
+
+3. Verificacion (todo ejecutado, salida decisiva)
+
+$ bash -n infra/scripts/consul-bootstrap-acl.sh            => exit 0
+$ docker compose --env-file ../.env --profile discovery config --quiet => exit 0
+$ docker compose --env-file ../.env --profile discovery restart consul-agent
+  => infra-consul-agent-1 Started
+
+Miembros (server + agente, ambos vivos):
+  dff81ab582a6  172.24.0.13:8301  alive  server  1.22.7  dc1  <all>
+  06b059d7ee3b  172.24.0.14:8301  alive  client  1.22.7  dc1  <default>
+
+Alcance del agente desde infra_internal (antes: connection refused):
+  https://consul-agent:8501/v1/status/leader => agent_leader:200
+
+Registro a traves del AGENTE con el token de svc-doc-service (lo que hara C14):
+  PUT /v1/agent/service/register => register_via_agent:200
+  consul catalog services => consul, svc-doc-service
+  PUT /v1/agent/service/deregister/tmp-c04c06-doc-1 => deregister_via_agent:200
+  consul catalog services => consul  (catalogo limpio, sin residuos)
+
+Lectura de tokens como el UID real de los consumidores (10001), sin recrear apps:
+  consul_doc_service_token.txt 36
+  consul_ratelimitd_token.txt 36
+  consul_worker_token.txt 36
+  consul_prometheus_token.txt 36
+  (sin permission denied)
+
+Idempotencia del sync (dos corridas consecutivas):
+  run 1 => bootstrap already done; prefijos: doc=f2bf1286 ratelimitd=af1ded34
+           worker=357de61d prometheus=520d8d49; exit 0
+  run 2 => identicos prefijos; exit 0
+  ls -l => los cuatro tokens -rw-r--r-- (0644)
+
+Sin regresion en el observador de Consul:
+  Prometheus /api/v1/targets job="consul" => health=up, lastError vacio.
+
+4. Notas honestas / deuda
+
+- No se recrearon doc-service, ratelimitd ni extraction-worker: los secretos
+  Consul que consumiran se verificaron out-of-band con el UID 10001. Tomaran los
+  archivos montados en su proximo recreate (C11-C14).
+- El agente queda con `verify_incoming = false` y el token de agente del override
+  dev (`dev-agent.local.hcl`) sigue siendo el token de management inicial. No es
+  parte de este fix; anotarlo para el hardening de C26.
+- El error de logs `Failed to check for updates ... checkpoint-api.hashicorp.com`
+  es esperado: la red `internal` no tiene egress.
+
+5. Rollback
+
+  git checkout -- infra/compose/consul/config/agent.hcl infra/scripts/consul-bootstrap-acl.sh
+  docker compose --env-file ../.env --profile discovery restart consul-agent
+  chmod 0600 infra/secrets/consul_doc_service_token.txt infra/secrets/consul_ratelimitd_token.txt infra/secrets/consul_worker_token.txt
+  (el ultimo paso vuelve a romper la lectura no-root; solo como reversion literal)
