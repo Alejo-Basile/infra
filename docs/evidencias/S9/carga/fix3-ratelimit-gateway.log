@@ -1,0 +1,64 @@
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /home/alejobasilesoca/Desktop/Desarrollo-de-Software/proyecto-microservicio/platform-services/tests/k6/ratelimit/gateway.js
+        output: -
+
+     scenarios: (100.00%) 1 scenario, 12 max VUs, 1m30s max duration (incl. graceful stop):
+              * main: 60 iterations shared among 12 VUs (maxDuration: 1m0s, gracefulStop: 30s)
+
+
+
+  █ THRESHOLDS 
+
+    checks
+    ✓ 'rate==1' rate=100.00%
+
+    denied_total
+    ✓ 'count>0' count=39
+
+    server_error_total
+    ✓ 'count==0' count=0
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 240     1160.319723/s
+    checks_succeeded...: 100.00% 240 out of 240
+    checks_failed......: 0.00%   0 out of 240
+
+    ✓ status is 200 or 429
+    ✓ zero 5xx
+    ✓ 429 has Retry-After
+    ✓ 200 has X-RateLimit-Remaining
+
+    CUSTOM
+    allowed_total..................: 21     101.527976/s
+    denied_total...................: 39     188.551955/s
+    server_error_total.............: 0      0/s
+
+    HTTP
+    http_req_duration..............: avg=35.59ms min=1.87ms  med=8.96ms  max=161.67ms p(90)=117.24ms p(95)=132.26ms
+      { expected_response:true }...: avg=87.93ms min=30.85ms med=93.96ms max=161.67ms p(90)=141.63ms p(95)=150.34ms
+    http_req_failed................: 65.00% 39 out of 60
+    http_reqs......................: 60     290.079931/s
+
+    EXECUTION
+    iteration_duration.............: avg=40.03ms min=1.81ms  med=9.44ms  max=176.41ms p(90)=142.18ms p(95)=159.7ms 
+    iterations.....................: 60     290.079931/s
+
+    NETWORK
+    data_received..................: 327 kB 1.6 MB/s
+    data_sent......................: 25 kB  120 kB/s
+
+
+
+
+running (0m00.2s), 00/12 VUs, 60 complete and 0 interrupted iterations
+main ✓ [ 100% ] 12 VUs  0m00.2s/1m0s  60/60 shared iters

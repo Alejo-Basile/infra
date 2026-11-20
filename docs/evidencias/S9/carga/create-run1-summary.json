@@ -1,0 +1,161 @@
+{
+    "metrics": {
+        "data_sent": {
+            "count": 11222,
+            "rate": 1121.0692643159525
+        },
+        "data_received": {
+            "count": 95236,
+            "rate": 9514.003961539302
+        },
+        "vus": {
+            "min": 0,
+            "max": 0,
+            "value": 0
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 7.854980274509802,
+            "min": 4.227348,
+            "med": 7.505704,
+            "max": 14.90765,
+            "p(90)": 11.39604,
+            "p(95)": 13.555608500000002
+        },
+        "http_req_blocked": {
+            "avg": 0.12034539215686271,
+            "min": 0.000164,
+            "med": 0.000636,
+            "max": 3.865871,
+            "p(90)": 0.000932,
+            "p(95)": 0.0012465
+        },
+        "http_req_connecting": {
+            "med": 0,
+            "max": 0.254675,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.007906313725490196,
+            "min": 0
+        },
+        "checks": {
+            "passes": 255,
+            "fails": 0,
+            "thresholds": {
+                "rate==1": false
+            },
+            "value": 1
+        },
+        "http_req_duration": {
+            "med": 7.505704,
+            "max": 14.90765,
+            "p(90)": 11.39604,
+            "p(95)": 13.555608500000002,
+            "avg": 7.854980274509802,
+            "min": 4.227348
+        },
+        "http_req_receiving": {
+            "p(90)": 0.264395,
+            "p(95)": 0.363961,
+            "avg": 0.1576026078431372,
+            "min": 0.056599,
+            "med": 0.119484,
+            "max": 0.783289
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0.1064498431372549,
+            "min": 0,
+            "med": 0,
+            "max": 3.452951,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 51,
+            "thresholds": {
+                "rate==0": false
+            },
+            "value": 0
+        },
+        "http_reqs": {
+            "count": 51,
+            "rate": 5.09486120835088
+        },
+        "http_req_sending": {
+            "p(90)": 0.283863,
+            "p(95)": 0.5220335,
+            "avg": 0.26392817647058814,
+            "min": 0.078796,
+            "med": 0.210655,
+            "max": 2.254467
+        },
+        "iterations": {
+            "count": 51,
+            "rate": 5.09486120835088
+        },
+        "iteration_duration": {
+            "p(90)": 11.758627,
+            "p(95)": 13.974385,
+            "avg": 8.401580529411763,
+            "min": 4.720476,
+            "med": 7.98052,
+            "max": 15.20461
+        },
+        "http_req_waiting": {
+            "avg": 7.433449490196078,
+            "min": 4.071322,
+            "med": 7.141342,
+            "max": 13.593268,
+            "p(90)": 10.882132,
+            "p(95)": 12.783870499999999
+        },
+        "vus_max": {
+            "max": 2,
+            "value": 2,
+            "min": 2
+        }
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "create 201": {
+                    "name": "create 201",
+                    "path": "::create 201",
+                    "id": "156654209db568811cc0f7da2d599478",
+                    "passes": 51,
+                    "fails": 0
+                },
+                "create document_id": {
+                    "name": "create document_id",
+                    "path": "::create document_id",
+                    "id": "241040afc0cb1f1b0a9107705dfbfb03",
+                    "passes": 51,
+                    "fails": 0
+                },
+                "create presigned url": {
+                    "name": "create presigned url",
+                    "path": "::create presigned url",
+                    "id": "26fc272bc3b72160c953881668453d00",
+                    "passes": 51,
+                    "fails": 0
+                },
+                "create form_fields": {
+                    "name": "create form_fields",
+                    "path": "::create form_fields",
+                    "id": "bbff8a880dc4b585da86820135ccb0a2",
+                    "passes": 51,
+                    "fails": 0
+                },
+                "create expires_at": {
+                    "passes": 51,
+                    "fails": 0,
+                    "name": "create expires_at",
+                    "path": "::create expires_at",
+                    "id": "7ff5b2ca0ae7108fc451cff04a18a9da"
+                }
+            }
+    }
+}
