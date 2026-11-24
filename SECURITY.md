@@ -43,7 +43,7 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 | `gaiaadm/pumba:0.11.0` | 2 | 37 | Excepción aceptada |
 | `ghcr.io/alejo-basile/doc-service:latest` | 0 | 0 | Limpio |
 | `ghcr.io/alejo-basile/extraction-worker:latest` | 0 | 106 | Excepción aceptada |
-| `ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b` | 1 | 149 | Excepción aceptada |
+| `ghcr.io/alejo-basile/ocr-worker@sha256:f0e715a96334fcb2d1007091d7755244188205dfaf59195e92159563080061a1` | 1 | 149 | Excepción aceptada |
 | `grafana/grafana:11.6.0` | 10 | 156 | Excepción aceptada |
 | `grafana/loki:3.4.2` | 2 | 58 | Excepción aceptada |
 | `grafana/promtail@sha256:6140a3158fddd7ef2276908bd321ad5265ee6ad2abd9fb3c937394827df3ea4d` | 1 | 59 | Excepción aceptada |
@@ -57,6 +57,8 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 | `redis:7.2` | 4 | 45 | Excepción aceptada |
 | `slo-exporter:s5-p4-03` | 0 | 16 | Excepción aceptada |
 | `traefik:v3.7` | 0 | 10 | Excepción aceptada |
+
+Los conteos de CRITICAL/HIGH de esta tabla son el snapshot de la auditoría S9-X-04 (2026-11-18). El digest de `ocr-worker` que escanea el job `security` vive en `.github/workflows/ci.yml` y se actualiza con cada rebuild; el próximo barrido completo refresca los conteos.
 
 ### Deuda consciente
 
