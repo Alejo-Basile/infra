@@ -245,6 +245,8 @@ CVE-2026-9547 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-u
 CVE-2026-96748 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2026-96749 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2026-97031 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
+CVE-2026-124709 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
+CVE-2026-107494 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 GHSA-5p4m-2wfm-xmqj # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 GHSA-hrxh-6v49-42gf # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 GHSA-r277-6w6q-xmqw # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
