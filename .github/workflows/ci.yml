@@ -44,7 +44,7 @@ jobs:
           {
             echo 'ghcr.io/alejo-basile/doc-service:latest'
             echo 'ghcr.io/alejo-basile/extraction-worker:latest'
-            echo 'ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b'
+            echo 'ghcr.io/alejo-basile/ocr-worker@sha256:f0e715a96334fcb2d1007091d7755244188205dfaf59195e92159563080061a1'
           } >> /tmp/images.txt
           sort -u -o /tmp/images.txt /tmp/images.txt
           cat /tmp/images.txt
