@@ -32,3 +32,16 @@ http:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         referrerPolicy: "strict-origin-when-cross-origin"
+
+    # S11-P1-C09: Consul UI detras de Traefik, basic auth obligatorio.
+    consul-ui-auth:
+      basicAuth:
+        usersFile: /run/secrets/consul_ui_users
+        realm: "Consul UI"
+
+    # S11-P1-C09: la UI vive en /ui/; el root pide la UI explicita.
+    # replacePathRegex deja el path intacto cuando el regex no matchea.
+    consul-ui-root:
+      replacePathRegex:
+        regex: "^/$"
+        replacement: "/ui/"

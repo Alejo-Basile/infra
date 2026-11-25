@@ -1,0 +1,36 @@
+# Host de carga (QA): mismo doc-service por Traefik, SIN forwardAuth.
+#
+# Motivo: un perfil de 100 VUs crea decenas de documentos por segundo. El borde
+# real tiene dos limites que lo impiden: el global de api.localhost (10/s) y la
+# ruta sensible POST /api/v2/documents=5/s burst 10 (Consul KV). Con cualquiera
+# de los dos, la prueba mide 429 en vez del pipeline. Este host conserva TLS,
+# ruteo, body-limit y sec-headers, y no aplica rate-limit.
+#
+# api.localhost NO cambia: sigue en 10/20, y la ruta sensible en 5/10. Sus
+# pruebas (tests/k6/ratelimit/run-gateway.sh y run-limit-verification.sh siguen
+# siendo validas.
+#
+# Uso:
+#   BASE_URL=https://load.localhost:8543 k6 run <script.js>
+#
+# El certificado servido es el default (api.localhost), que no incluye
+# load.localhost como SAN: los arneses usan -k / insecureSkipTLSVerify.
+#
+# Laboratorio unicamente: no exponer este host fuera de la red local.
+http:
+  routers:
+    r-load-healthz:
+      rule: "Host(`load.localhost`) && Path(`/healthz`)"
+      entryPoints: [websecure]
+      tls: true
+      service: docv2
+      priority: 300
+      middlewares: [sec-headers@file]
+
+    r-load-api-v2:
+      rule: "Host(`load.localhost`) && PathPrefix(`/api/v2`)"
+      entryPoints: [websecure]
+      tls: true
+      service: r-api-v2-weighted
+      priority: 300
+      middlewares: [body-limit-1mb@file, sec-headers@file]

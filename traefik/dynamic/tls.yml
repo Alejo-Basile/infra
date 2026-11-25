@@ -6,6 +6,10 @@ tls:
       keyFile: /etc/traefik/certs/api.localhost-key.pem
     - certFile: /etc/traefik/certs/s3.localhost.pem
       keyFile: /etc/traefik/certs/s3.localhost-key.pem
+    - certFile: /etc/traefik/certs/consul.localhost.pem
+      keyFile: /etc/traefik/certs/consul.localhost-key.pem
+    - certFile: /etc/traefik/certs/grafana.localhost.pem
+      keyFile: /etc/traefik/certs/grafana.localhost-key.pem
   stores:
     default:
       defaultCertificate:

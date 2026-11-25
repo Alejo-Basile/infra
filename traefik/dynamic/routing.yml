@@ -122,6 +122,25 @@ http:
       priority: 100
       middlewares: [sec-headers@file]
 
+    # S11-P1-C09: UI de Consul, solo por Traefik y con basic auth.
+    r-consul-ui:
+      rule: "Host(`consul.localhost`)"
+      entryPoints: [websecure]
+      tls: true
+      service: consul-ui
+      priority: 300
+      middlewares: [consul-ui-auth@file, sec-headers@file, consul-ui-root@file]
+
+    # Grafana: unico acceso es por el gateway; no publica puerto al host.
+    # La autenticacion la resuelve Grafana (admin + password file).
+    r-grafana:
+      rule: "Host(`grafana.localhost`)"
+      entryPoints: [websecure]
+      tls: true
+      service: grafana
+      priority: 300
+      middlewares: [sec-headers@file]
+
   services:
     legacy-monolito:
       loadBalancer:
@@ -144,6 +163,17 @@ http:
       loadBalancer:
         servers:
           - url: "http://minio:9000"
+
+    consul-ui:
+      loadBalancer:
+        servers:
+          - url: "https://consul:8501"
+        serversTransport: consul-ui-transport@file
+
+    grafana:
+      loadBalancer:
+        servers:
+          - url: "http://grafana:3000"
 
     r-inv-pdf-process-weighted:
       weighted:
@@ -176,3 +206,11 @@ http:
             weight: 100
           - name: docv2-canary
             weight: 0
+
+  serversTransports:
+    # S11-P1-C09: confia en la CA local de Consul (sin insecureSkipVerify).
+    consul-ui-transport:
+      serverName: consul
+      rootCAs:
+        - /run/secrets/consul_ca_cert
+      insecureSkipVerify: false
