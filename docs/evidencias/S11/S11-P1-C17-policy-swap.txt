@@ -1,0 +1,88 @@
+S11-P1-C17 ratelimitd: registro en Consul y swap de politica en caliente
+Fecha: 2026-11-18
+Entorno: compose local (perfil full), imagen ratelimitd:p4-04 reconstruida.
+
+== 1. Build, vet y tests ==
+$ cd platform-services/rate-limiter && go build ./... && go vet ./...
+build+vet OK
+
+$ go test -count=1 ./...
+ok   github.com/Alejo-Basile/platform-services/rate-limiter/cmd/ratelimitd   0.062s
+ok   github.com/Alejo-Basile/platform-services/rate-limiter/internal/configkv 3.138s
+ok   github.com/Alejo-Basile/platform-services/rate-limiter/internal/consulreg 0.065s
+ok   github.com/Alejo-Basile/platform-services/rate-limiter/internal/limiter  0.025s
+
+== 2. Validacion del compose ==
+El fichero de entorno vive en infra/.env (no en infra/compose/.env) y el flag
+global debe ir antes del subcomando:
+$ docker compose --env-file infra/.env -f infra/compose/docker-compose.yml --profile full config --quiet
+config --quiet: exit 0
+
+== 3. Registro y desregistro por replica ==
+$ docker compose ... --scale ratelimitd=2 up -d ratelimitd
+GET /v1/health/service/svc-ratelimitd?passing=true (via agente, token de operador):
+"ServiceID":"ratelimitd-d9bd2aa618bc"
+"ServiceID":"ratelimitd-ff4805558088"
+
+$ docker compose ... --scale ratelimitd=1 up -d ratelimitd
+GET /v1/health/service/svc-ratelimitd?passing=true:
+"ServiceID":"ratelimitd-d9bd2aa618bc"
+
+Dos IDs distintos con `--scale`, y el desregistro en SIGTERM deja solo uno:
+el ID se deriva del hostname del contenedor, no hay colision.
+
+Catalogo:
+$ consul catalog services
+consul
+svc-doc-service
+svc-extraction-worker
+svc-ratelimitd
+
+== 4. Swap en caliente (sin reinicio) ==
+Politica vigente al inicio: POST /api/v2/documents=5:10 (limit de ruta 10).
+
+$ consul kv put config/rate-limiter/sensitive_routes "POST /api/v2/documents=1:1"
+Success! Data written to: config/rate-limiter/sensitive_routes
+
+Probe contra /check (ruta sensible, rate global 100 para aislar la ruta):
+  request 1 (IP 198.51.100.99): {"allowed":true,"remaining":0}
+  request 2 (misma IP):         wget: server returned error: HTTP/1.1 429 Too Many Requests
+
+La ruta paso de 10 a 1 sin reiniciar: el puntero atomico se publico por el
+watcher KV y handleCheck lo leyo en el siguiente request.
+
+Restauracion del valor original:
+$ consul kv put config/rate-limiter/sensitive_routes "POST /api/v2/documents=5:10"
+Probe posterior: {"allowed":true,"remaining":9}
+
+== 5. Politica invalida: descarte total, valor anterior vigente ==
+$ consul kv put config/rate-limiter/sensitive_routes "POST /api/v2/documents=abc"
+
+Log del contenedor (sin token ni valores sensibles):
+  configkv: politica invalida, se conserva la anterior: rutas sensibles: limite invalido "abc": se esperaba rate:burst
+  configkv: apply error: rutas sensibles: limite invalido "abc": se esperaba rate:burst
+
+/check siguio aplicando la politica anterior (5:10) hasta restaurar la clave.
+
+Metrica (el lote entero se descarta, por eso se atribuye a las claves del lote):
+ratelimitd_config_kv_rejected_total{key="exempt_paths"} 1
+ratelimitd_config_kv_rejected_total{key="sensitive_routes"} 1
+
+ratelimitd_config_kv_last_success_timestamp_seconds 1794977787
+ratelimitd_consul_registration_failed_total 0
+
+webhook_token y webhook_path nunca provienen de KV: se conservan del valor
+previo y del entorno (RL_WEBHOOK_TOKEN/RL_WEBHOOK_TOKEN_FILE).
+
+== 6. Observaciones fuera del alcance de C17 (defectos preexistentes de C12) ==
+1. La cache last-known-good no se puede escribir en el volumen:
+   configkv: no se pudo guardar la cache: open /var/lib/ratelimitd/config-cache.json.tmp: permission denied
+   El volumen nombrado queda con dueno root y el contenedor corre como 10001.
+2. El cliente KV corta la blocking query a los 10 s (http.Client.Timeout=10s)
+   mientras usa wait=5m, asi que cada ciclo largo termina en:
+   configkv: error de Consul: ... wait=5m0s ... context deadline exceeded (status 0)
+   y reintenta con backoff. El swap funciona porque el watcher reintenta, pero
+   el long-poll no se sostiene.
+
+Ambos son del cliente KV (C12) y quedan registrados como seguimiento, no se
+corrigieron en C17.

@@ -1,0 +1,76 @@
+S11-P1-C24 — Escalado real con consul_sd
+Fecha: 2026-11-18 (UTC)
+Entorno: docker compose project `infra`, infra/compose/docker-compose.yml, env infra/.env
+Agente: infra-consul-agent-1 (HTTPS 8501, CA /run/secrets/consul_ca_cert)
+Imagen definitiva: extraction-worker:local (digest sha256:064cd7710fd46a3f49ed1b1e780f00dde2a6b431a698187194be63e43d9edd63), build local con codigo C18.
+
+INTENTO 1 (fallido): imagen ghcr.io/alejo-basile/extraction-worker:latest no contiene registro C18.
+INTENTO 2 (definitivo): extraction-worker:local.
+
+BASELINE (pre-escalado): 2 entradas stale en catalogo:
+  extraction-worker-0821e0e724d0
+  extraction-worker-fbf134c58eb4
+
+ESCALADO A 3
+$ EXTRACTION_WORKER_IMAGE=extraction-worker EXTRACTION_WORKER_TAG=local docker compose ... up -d --no-deps --scale extraction-worker=3 extraction-worker
+T0=2026-11-18T08:03:07Z (epoch 1794988987)
+Polling cada 5 s. A los ~10 s catalogo mostro 3 entradas nuevas mas 2 stale = 5 distinct IDs:
+  extraction-worker-0821e0e724d0 (stale)
+  extraction-worker-9cd0f88dcedb
+  extraction-worker-b2fa201d0729
+  extraction-worker-d51da0ac08c3
+  extraction-worker-fbf134c58eb4 (stale)
+Las 3 nuevas coinciden con hostnames de los 3 contenedores y estan passing.
+Propagacion a 3 passing catalog entries: ~10 s (tolerancia 60 s). OK.
+Prometheus (in-network): 5 active targets job=app-services service=svc-extraction-worker, todos health=up, distinct instance=5.
+Propagacion a 3 Prometheus targets: ~10 s. OK.
+
+ESCALADO A 1
+$ ... --scale extraction-worker=1 extraction-worker
+T2=epoch 1794989073
+Post: 3 distinct IDs (1 actual + 2 stale), 3 Prometheus targets (1 actual + 2 stale), todos up, sin down residuales para la replica actual.
+Remocion: catalogo/prometheus reflejan la reduccion en ~8 s. OK.
+
+ESTADO FINAL
+- extraction-worker=1 (infra-extraction-worker-1 healthy)
+- doc-service=1 (no se escalo, opcional omitido por tiempo)
+- Prometheus healthy (query via red interna)
+- Host port deviation: binding 9090 presente pero NetworkSettings.Ports null; curl localhost:9090 refused. Evidencia: docker port muestra mapping, docker inspect PortBindings={"9090/tcp":[{"HostIp":"","HostPort":"9090"}]}, NetworkSettings.Ports null. Mitigacion: consultar via red interna infra_internal.
+
+DO D
+- 3 replicas => 3 entradas con ID unico y 3 targets: OBSERVADO (3 nuevos IDs coinciden con hostnames; 2 stale preexistentes documentados).
+- Bajar a 1 => 1 entrada y 1 target: OBSERVADO para la replica actual (stale persisten).
+- Sin duplicados ni down residuales para la replica actual: OK.
+- Propagacion <= 60 s ambos sentidos: OK (~10 s up, ~8 s down).
+
+--------------------------------------------------------------------------
+LIMPIEZA DE ENTRADAS STALE
+
+Baseline (pre-limpieza):
+  svc-extraction-worker: 3 IDs (extraction-worker-d51da0ac08c3 actual + 2 stale:
+    extraction-worker-0821e0e724d0, extraction-worker-fbf134c58eb4)
+  svc-doc-service: 2 IDs (doc-service-eea485913b0d actual + 1 stale:
+    doc-service-cfa7453d8c24)
+
+Deregistro (agent CLI, CA + operator token):
+  $ consul services deregister -id=extraction-worker-0821e0e724d0  -> Deregistered
+  $ consul services deregister -id=extraction-worker-fbf134c58eb4  -> Deregistered
+  $ consul services deregister -id=doc-service-cfa7453d8c24        -> Deregistered
+
+Post-limpieza:
+  svc-extraction-worker: extraction-worker-d51da0ac08c3 (passing)
+  svc-doc-service: doc-service-eea485913b0d (passing)
+  Prometheus job=app-services: 1 target por servicio, todos health=up, sin down.
+
+--------------------------------------------------------------------------
+RESULTADO DEFINITIVO
+
+- Escalado extraction-worker 3 -> 1 verificado con imagen local (extraction-worker:local).
+- Propagacion: registro ~10 s, desregistro ~8 s (tolerancia 60 s). OK.
+- Entradas stale limpiadas (3 IDs). Sin duplicados ni targets down residuales.
+- Desviacion de entorno: host port 9090 de Prometheus no reachable (binding presente pero
+  NetworkSettings.Ports null); consultas realizadas por red interna infra_internal.
+- Stack final: extraction-worker=1, doc-service=1, todo healthy.
+
+config --quiet: exit 0
+git status --porcelain scoped to infra/: ?? infra/ (solo los dos archivos intencionados)

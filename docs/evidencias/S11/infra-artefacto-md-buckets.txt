@@ -1,0 +1,131 @@
+# Infra — preparación de MinIO para el artefacto Markdown (extracted-md)
+
+Fecha: 2026-11-18
+Alcance: solo `infra`. No toca `doc-service` ni `extraction-worker`.
+Motivo: la migración `.txt` → `.md` tiene el lado de `doc-service` cerrado
+(commit `80fb376`, `md_ref` + bucket `extracted-md`) y el del worker pendiente
+(T4.1 del contrato). Sin bucket y policies para `extracted-md`, el worker migrado
+fallaría con `AccessDenied` aunque su código estuviera correcto.
+
+## Archivos modificados
+
+- `compose/minio/init-buckets.sh`: crea `extracted-md`; policies de docservice y
+  worker lo incluyen; aplicación de policies convergente.
+- `compose/minio/lifecycle-buckets.sh`: regla de 30 días para `extracted-md`
+  (`EXTRACTED_MD_EXPIRE_DAYS`).
+- `compose/docker-compose.yml`: `MINIO_BUCKET_MD`/`MINIO_LEGACY_BUCKET_TXT` en
+  doc-service y canary; `S3_BUCKET_MD` en extraction-worker; env de retención en
+  `minio-init`.
+- `docs/permisos-minio.md`, `runbooks/minio-lifecycle.md`: matriz y retención.
+
+## Por qué se cambió la aplicación de policies
+
+`mc admin policy create` falla si la policy existe y **no** actualiza su
+contenido: un entorno ya inicializado se quedaba con la policy vieja (sin
+`extracted-md`) y el script lo reportaba como "ya existe", en silencio.
+
+`mc admin policy remove` no es alternativa: falla con
+`The policy cannot be removed, as it is in use.` si está adjunta, y desadjuntar
+primero abre una ventana de `AccessDenied`.
+
+Solución: nombre versionado por hash del contenido (`<prefijo>-<sha256 corto>`).
+Secuencia sin ventana: crear el nombre nuevo → adjuntar (unión de permisos) →
+desadjuntar y borrar los nombres viejos del mismo prefijo.
+
+## Validación estática
+
+```
+$ sh -n compose/minio/init-buckets.sh && sh -n compose/minio/lifecycle-buckets.sh
+OK
+
+$ docker compose -f compose/docker-compose.yml --env-file .env --profile full config -q
+exit 0
+
+$ command -v shellcheck
+no instalado en el host (no se pudo ejecutar; `sh -n` es la única validación de sintaxis)
+```
+
+## Ejecución del bootstrap (entorno local, perfil full)
+
+```
+$ docker compose -f compose/docker-compose.yml --env-file .env --profile full \
+    run --rm --no-deps minio-init
+Policy creada: docservice-rw-c2cb76c7
+Policy retirada: docservice-rw (reemplazada por docservice-rw-c2cb76c7)
+Policy creada: worker-extract-356a421d
+Policy retirada: worker-extract (reemplazada por worker-extract-356a421d)
+Verificado: <docservice-key> con policy docservice-rw-c2cb76c7 (incluye extracted-md).
+Verificado: <worker-key> con policy worker-extract-356a421d (incluye extracted-md).
+Lifecycle configuration rule added with ID `dbutoeu2a170254ujc00` to local/extracted-md.
+Lifecycle aplicado y verificado: raw-pdfs=7d, extracted-md=30d, extracted-txt=30d.
+MinIO bootstrap completo: buckets + identidades + lifecycle.
+```
+
+Segunda ejecución: no crea policies nuevas ni reglas duplicadas (convergencia).
+
+## Guardarraíl de verificación (RED observado → GREEN)
+
+`verify_policy` exige ARN **exactos** (`grep -Fxq`), no subcadena: un `grep` de
+`extracted-md` aceptaría solo `extracted-md/*` y daría por buena una policy
+incompleta. Los ARN requeridos se pasan por policy porque no son iguales: solo
+doc-service lista/head el bucket (`arn:aws:s3:::extracted-md` sin `/*`); el
+worker solo opera objetos.
+
+RED observado al exigir por error el ARN de bucket también al worker:
+
+```
+ERROR: la policy worker-extract-356a421d no incluye arn:aws:s3:::extracted-md.
+```
+
+GREEN tras corregir el conjunto requerido por identidad:
+
+```
+Verificado: <docservice-key> con policy docservice-rw-c2cb76c7 (incluye extracted-md).
+Verificado: <worker-key> con policy worker-extract-356a421d (incluye extracted-md).
+```
+
+También se agregó un guardarraíl en `policy_name_for`: si `sha256sum` no
+devuelve hash, el script falla en vez de crear una policy llamada `<prefijo>-`.
+
+## Matriz de permisos verificada con las credenciales de servicio reales
+
+```
+worker      PUT    extracted-md/qa-perm-check.txt   -> ok
+docservice  LIST   extracted-md                      -> ok (1 objeto visible)
+docservice  GET    extracted-md/qa-perm-check.txt    -> ok (14B, contenido correcto)
+worker      PUT    raw-pdfs/qa-perm-check.txt        -> DENEGADO (Insufficient permissions)
+docservice  DELETE extracted-md/qa-perm-check.txt    -> DENEGADO (Access Denied)
+worker      DELETE extracted-md/qa-perm-check.txt    -> ok (objeto de prueba eliminado)
+worker      PUT/DELETE extracted-txt (transición)    -> ok
+docservice  STAT   extracted-txt/bench-0001.txt      -> ok (1.4 MiB, fallback legacy intacto)
+```
+
+Estado final: `extracted-md` vacío (0 objetos), sin residuos de la prueba.
+
+## Salud del servicio tras el cambio de policy
+
+```
+$ docker exec <doc-service> wget -q -O- http://127.0.0.1:8080/readyz
+{"status":"ready",...,"checks":{"minio":"ok","mongo":"ok","redis":"ok"}}
+
+$ curl ... https://api.localhost:8543/healthz
+200
+```
+
+`/readyz` devuelve 404 a través de Traefik por diseño (solo se publica
+`/api/v2/*` y `/healthz`); la verificación se hizo sobre el puerto interno.
+
+## Hallazgo no corregido (pre-existente)
+
+`extracted-txt` tiene **dos** reglas de expiración activas de 30 días
+(`db7pnsbf61i00958n5ng`, `dbutkv1lij601a48g440`). No lo introdujo este cambio:
+la ejecución reportó "Lifecycle ya presente … (sin cambios)". El chequeo de
+idempotencia (`rule_has_days`) no detecta duplicados ya existentes. Queda como
+deuda: agregar un paso de deduplicación o aceptar dos reglas equivalentes.
+
+## Hallazgo no corregido (fuera de alcance)
+
+El usuario de MinIO del `ocr-worker` (`ocr_minio_access_key`) no lo crea ningún
+script de este repositorio y no existe en el MinIO local; cualquier operación S3
+de ese servicio daría `AccessDenied`. Tampoco se agregó `S3_BUCKET_MD` a su
+compose, para no introducir configuración muerta.

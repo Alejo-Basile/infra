@@ -1,0 +1,22 @@
+S11-P1-C31 evidence - svc-ocr-worker in consul_sd_configs + scale 3->1
+UTC date: 2026-11-18
+
+/metrics gate: HTTP 200; body contains worker_ocr_started_total
+Published image: ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b (tag sha-5bc3e57, latest)
+Compose pin changed from sha256:c406bb... to sha256:3e10b6... in infra/compose/docker-compose.yml (2 occurrences)
+
+Consul health (3 replicas): 3 passing, ServiceIDs:
+ocr-worker-567d09b7c446
+ocr-worker-c186a53406de
+ocr-worker-ca90e61be500
+
+Prometheus targets before scale-down: 3 active svc-ocr-worker, instances:
+ocr-worker-567d09b7c446
+ocr-worker-c186a53406de
+ocr-worker-ca90e61be500
+
+After scale-down: 1 active svc-ocr-worker, 0 down. ServiceID:
+ocr-worker-567d09b7c446
+
+promtool check rules: SUCCESS: 25 rules found
+verify-consul-boundaries.sh: exit 0, Check 6 PASS

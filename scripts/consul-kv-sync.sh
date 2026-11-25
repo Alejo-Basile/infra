@@ -179,15 +179,25 @@ validate_value() {
     bool)
       case "$_v" in true|false) ;; *) echo "wrong type (expected bool)"; return 1 ;; esac
       ;;
-    list)
-      _n="$(printf '%s' "$_v" | awk -F, '{ print NF }')"
-      [ "$_n" -ge "$_mn" ] && [ "$_n" -le "$_mx" ] || { echo "out of range"; return 1; }
-      ;;
-    *)
-      echo "unknown schema type"
-      return 1
-      ;;
-  esac
+     list)
+       _n="$(printf '%s' "$_v" | awk -F, '{ print NF }')"
+       [ "$_n" -ge "$_mn" ] && [ "$_n" -le "$_mx" ] || { echo "out of range"; return 1; }
+       ;;
+     string)
+       [ -n "$_v" ] || { echo "empty value"; return 1; }
+       _len="$(printf '%s' "$_v" | wc -c)"
+       if [ -n "$_mn" ] && [ "$_mn" != "null" ]; then
+         [ "$_len" -ge "$_mn" ] || { echo "out of range"; return 1; }
+       fi
+       if [ -n "$_mx" ] && [ "$_mx" != "null" ]; then
+         [ "$_len" -le "$_mx" ] || { echo "out of range"; return 1; }
+       fi
+       ;;
+     *)
+       echo "unknown schema type"
+       return 1
+       ;;
+   esac
   return 0
 }
 

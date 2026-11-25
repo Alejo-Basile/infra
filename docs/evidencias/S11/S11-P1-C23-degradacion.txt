@@ -1,0 +1,152 @@
+=== S11-P1-C23 — Degradacion y recuperacion de Consul ===
+Fecha: 2026-11-18
+Compose: docker compose -p infra --env-file infra/.env -f infra/compose/docker-compose.yml
+Imagenes en uso:
+  doc-service        ghcr.io/alejo-basile/doc-service:latest (build local 2026-11-18)
+  ratelimitd         ratelimitd:p4-04 (build local 2026-11-18)
+  extraction-worker  extraction-worker:local (build local 2026-11-18)
+Metricas: prefijos docservice_, ratelimitd_, worker_ con sufijos
+  _config_kv_stale, _config_kv_last_success_timestamp_seconds, _config_kv_rejected_total{key}.
+Healthz: doc-service :8080, ratelimitd :8090, extraction-worker :8081.
+
+=== Estado previo corregido antes de ejecutar (plumbing) ===
+1. extraction-worker corria una imagen `extraction-worker:local` anterior al wiring
+   de C13 y NO exponia worker_config_kv_*. Reconstruida y recreada.
+   Nota: infra/.env tiene EXTRACTION_WORKER_IMAGE comentado, por lo que un
+   `up --force-recreate` sin override toma ghcr.io/alejo-basile/extraction-worker
+   y vuelve a perder la familia de metricas. El override usado fue
+   `EXTRACTION_WORKER_IMAGE=extraction-worker EXTRACTION_WORKER_TAG=local`.
+2. doc-service no tenia volumen de cache: agregados `doc-service-config-cache`
+   montado en /var/lib/doc-service, `CONFIG_CACHE_PATH` y
+   `RUN mkdir -p /var/lib/doc-service && chown 10001:10001 /var/lib/doc-service`
+   en su Dockerfile. Verificado: /var/lib/doc-service WRITABLE por appuser.
+3. ratelimitd y extraction-worker tenian sus volumenes de cache creados root:root,
+   por lo que la escritura de config-cache.json fallaba en silencio. Se agrego
+   `mkdir -p /var/lib/<svc> && chown 10001:10001 /var/lib/<svc>` en
+   platform-services/rate-limiter/Dockerfile y extraction-worker/Dockerfile.
+   Verificado tras el rebuild:
+     infra_ratelimitd-config-cache/config-cache.json  -rw------- 10001 10001
+     infra_worker-config-cache/config-cache.json      -rw------- 10001 10001
+4. infra-mongo-1 corria con pids_limit 200 y estaba en 200/200; el healthcheck
+   fallaba con "/bin/sh: 1: Cannot fork" y bloqueaba --force-recreate de los
+   dependientes. Recreado con el valor declarado en compose (512): healthy.
+5. Redis, MinIO y Mongo sanos durante toda la prueba.
+
+=== Escenario 1 ===
+Objetivo: Consul caido al arrancar, sin cache -> defaults.
+Comando: docker compose -p infra ... --profile discovery stop consul consul-agent consul-kv-sync
+         docker run --rm -v infra_<svc>-config-cache:/v alpine:3 sh -c 'rm -f /v/config-cache.json'
+         docker compose -p infra ... --profile full up -d --force-recreate doc-service ratelimitd extraction-worker
+Timestamp: 2026-11-18T04:37:59-03:00
+Cache borrada: doc-service ABSENT, ratelimitd ABSENT, extraction-worker ABSENT
+Metricas:
+  docservice_config_kv_stale 1
+  ratelimitd_config_kv_stale 1
+  worker_config_kv_stale 1
+Healthz:
+  doc-service        HTTP/1.1 200 OK
+  ratelimitd         HTTP/1.1 200 OK
+  extraction-worker  HTTP/1.1 200 OK
+Estado: los tres healthy. PIDs: doc-service 3649860, ratelimitd 3649659, extraction-worker 3649748.
+Logs (mensaje real; no existe la cadena literal "consul_unavailable_using_defaults"):
+  doc-service: "registro en Consul fallido, el servicio sigue operando y se reintentara"
+               "error":"consul register: Put \"https://consul-agent:8501/...\": dial tcp: lookup consul-agent ... server misbehaving"
+  ratelimitd:  "configkv: error de Consul: Get \"https://consul:8501/v1/kv/config/rate-limiter...\": dial tcp: lookup consul ... server misbehaving"
+  worker:      "registro en consul fallido; el servicio sigue operando y se reintentara"
+Defaults aplicados: servicios arriba con los valores de entorno (MAX_PDF_BYTES=26214400,
+RECONCILE_INTERVAL_MIN=10, DOC_UPLOAD_GRACE_MIN=30, MIN_SAFETY_AGE_MIN=15).
+RESULT: PASS
+
+=== Escenario 2 ===
+Objetivo: Consul caido al arrancar, con cache -> ultima configuracion valida.
+Preparacion (Consul arriba, KV sincronizado):
+  PUT config/doc-service/max_pdf_bytes = 10485760
+  PUT config/extraction-worker/bulkhead_max_concurrency = 6
+  PUT config/rate-limiter/sensitive_routes = "POST /api/v2/documents=7:12"
+Cache persistida antes de parar Consul:
+  doc-service        {"...","max_pdf_bytes":"10485760",...}  -rw------- appuser appuser
+  ratelimitd         {"exempt_paths":"/internal,/healthz,/metrics","sensitive_routes":"POST /api/v2/documents=7:12"}
+  extraction-worker  {"values":{...,"bulkhead_max_concurrency": 6, ...}}
+Comando: stop consul consul-agent consul-kv-sync; up -d --force-recreate doc-service ratelimitd extraction-worker
+doc-service:
+  pid=3663643 healthy
+  docservice_config_kv_stale 1
+  healthz HTTP/1.1 200 OK
+  cache: max_pdf_bytes":"10485760
+  log: {"msg":"config_source","source":"cache","kv_disabled":false}
+  Prueba funcional por Traefik (Host: api.localhost, POST /api/v2/documents size_bytes=20000000):
+    HTTP 400 "size_bytes excede el maximo permitido: 10485760 bytes"
+    -> el valor del cache esta vigente y NO se usaron los defaults (26214400 habria aceptado).
+ratelimitd:
+  pid=3707574 healthy
+  healthz HTTP/1.1 200 OK
+  cache aplicada: sensitive_routes="POST /api/v2/documents=7:12" (valor no-default)
+  ratelimitd_config_kv_stale 0
+  Nota de semantica: su gauge es "1 cuando la ultima configuracion valida supera 15 min".
+  Al cargar cache valida y reciente reporta 0 aunque Consul este caido. Es
+  comportamiento del metrico, no fallo de carga (la cache se aplico).
+extraction-worker:
+  pid=3707659 healthy
+  healthz HTTP/1.1 200 OK
+  cache aplicada: bulkhead_max_concurrency=6 (valor no-default)
+  worker_config_kv_stale 1
+RESULT: PASS (cache aplicada en los tres servicios; ver nota de semantica de stale)
+
+=== Escenario 3 ===
+Objetivo: valor invalido en caliente -> rechazo por clave, sin reinicio.
+Baseline: doc-service pid=3663643, cache max_pdf_bytes=26214400; rejected_total ausente.
+Comandos (Consul arriba, sin reiniciar servicios):
+  PUT config/doc-service/max_pdf_bytes = 1
+  PUT config/rate-limiter/sensitive_routes = "garbage"
+  PUT config/extraction-worker/bulkhead_max_concurrency = 999
+Resultado:
+  docservice_config_kv_rejected_total{key="max_pdf_bytes"} 1
+  worker_config_kv_rejected_total{key="bulkhead_max_concurrency"} 1
+  ratelimitd_config_kv_rejected_total{key="sensitive_routes"} 1 -> 2 (segunda escritura "GET")
+Logs:
+  doc-service: {"msg":"configkv rejection","key":"max_pdf_bytes","reason":"range"}
+  ratelimitd:  "configkv: politica invalida, se conserva la anterior: rutas sensibles: ruta sensible invalida \"garbage\": falta =rate:burst"
+  worker:      {"message":"config kv rejected","key":"Some(\"bulkhead_max_concurrency\")","reason":"range"}
+Valor anterior vigente:
+  cache doc-service: max_pdf_bytes":"26214400
+  Prueba por Traefik con size_bytes=20000000: HTTP 201 PENDING_UPLOAD
+  (con el valor invalido 1 habria sido 400; con 26214400 se acepta: el valor previo sigue vigente)
+PIDs sin cambio: doc-service 3663643, ratelimitd 3649659, extraction-worker 3649748.
+Healthz: HTTP/1.1 200 OK en los tres.
+RESULT: PASS
+
+=== Escenario 4 ===
+Objetivo: Consul vuelve -> reconexion, stale=0 y aplicacion sin reinicio.
+Antes: doc-service pid=3663643, docservice_config_kv_stale 0,
+       last_success_timestamp_seconds 1794987759
+Comando: stop consul consul-agent consul-kv-sync; (12 s) ; up -d consul consul-agent;
+         PUT config/doc-service/max_pdf_bytes = 52428800
+Despues:
+  docservice_config_kv_stale 0
+  docservice_config_kv_last_success_timestamp_seconds 1794987886 (avanzo)
+  cache: max_pdf_bytes":"52428800
+  Prueba por Traefik con size_bytes=30000000: HTTP 201 PENDING_UPLOAD
+    -> con el limite anterior (26214400) habria sido 400: el valor nuevo se aplico.
+  Traefik antes=200 despues=200 (sin perdida de trafico)
+  pid=3663643 health=healthy (sin reinicio)
+Nota de semantica: durante la caida corta (12 s) docservice_config_kv_stale siguio en 0
+porque el gauge mide "ultima lectura valida > 15 min", no "Consul inalcanzable".
+RESULT: PASS
+
+=== Restauracion ===
+  consul-kv-sync.sh -> changes: 2 y luego changes: 3 (idempotente despues)
+  config/doc-service/max_pdf_bytes = 26214400
+  config/rate-limiter/sensitive_routes = POST /api/v2/documents=5:10
+  config/extraction-worker/bulkhead_max_concurrency = 4
+  consul kv get -recurse config/ coincide con infra/compose/consul/kv/*.json
+  test-consul.sh: PASS 1..8, FAIL=0 SKIP=0
+  Servicios: consul, consul-agent, mongo, doc-service, ratelimitd, extraction-worker
+  todos healthy. Metricas finales: stale=0 en los tres servicios.
+RESULT: PASS
+
+=== Resumen ===
+  Escenario 1: PASS
+  Escenario 2: PASS
+  Escenario 3: PASS
+  Escenario 4: PASS
+  Restauracion: PASS

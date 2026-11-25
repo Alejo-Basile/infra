@@ -173,6 +173,30 @@ backlog (`lag + PEL`) antes y después, `docservice_documents_non_terminal` como
 `N` aplicado, timestamp del escalado y minuto en que el backlog se redujo a la mitad. Sin
 credenciales ni valores de secretos en el archivo.
 
+### Propagacion consul_sd (S11-P1-C24)
+
+Los tiempos de propagacion del escalado a consul_sd se miden en catálogo y en
+`/api/v1/targets` (job `app-services`), sin targets duplicados ni `down` residuales,
+tolerancia 60 s en ambos sentidos. Comandos de verificación:
+
+```bash
+docker exec -e CONSUL_HTTP_ADDR=https://127.0.0.1:8501 infra-consul-agent-1 sh -c \
+  'curl -sS --cacert /run/secrets/consul_ca_cert -H "X-Consul-Token: $(cat /run/secrets/consul_operator_token)" \
+   "https://127.0.0.1:8501/v1/health/service/svc-extraction-worker?passing"' | jq '[.[].Service.ID] | unique | length'
+docker exec infra-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/targets?state=active' | \
+  jq '[.data.activeTargets[] | select(.labels.job=="app-services" and .labels.service=="svc-extraction-worker")] | length'
+```
+
+Nota: el escalado debe verificarse tanto en el catálogo de Consul como en `/api/v1/targets`;
+la ausencia de targets `down` residuales es tan importante como el conteo positivo.
+
+Imagen requerida: la imagen publicada `ghcr.io/alejo-basile/extraction-worker:latest` no incluye
+el registro C18; usar `EXTRACTION_WORKER_IMAGE=extraction-worker EXTRACTION_WORKER_TAG=local`
+con la imagen construida desde un checkout que contenga C18. Consultar Prometheus por la red
+interna: `docker run --rm --network infra_internal curlimages/curl:8.10.1 -sS 'http://prometheus:9090/api/v1/targets?state=active'`.
+
+Tiempos observados (S11-P1-C24): registro ~10 s, desregistro ~8 s, dentro de la tolerancia de 60 s.
+
 > Estado: **ensayado** (2026-11-04, 700 documentos, `docs/evidencias/S5/S5-P1-02-ensayo-escalado.txt`).
 > La alerta disparó a los 5 min, el runbook se siguió tal cual y el backlog drenó completo. La
 > señal canónica es `lag + PEL`; `docservice_documents_non_terminal` queda como corroboración, no

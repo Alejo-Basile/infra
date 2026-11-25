@@ -1,0 +1,22 @@
+S11-P1-C20 bulkhead hot reload evidence
+Date: 2026-11-18
+
+Commands:
+- cargo test -p extraction-worker --lib: test result: ok. 113 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out
+- cargo test -p extraction-worker --lib pipeline::tests::job_timeout_se_captura_al_inicio_del_job: test result: ok. 1 passed
+- cargo clippy -p extraction-worker --all-targets -- -D warnings: Finished, 0 errors
+- cargo fmt --check: (no output) OK
+
+Real test names:
+- runner::hot_reload_tests::bulkhead_aumento_aplica_permisos
+- runner::hot_reload_tests::bulkhead_reduccion_no_aplica_y_pide_reinicio
+- extract::tests::max_pages_vivo_afecta_al_siguiente_job
+- pipeline::tests::tunables_se_siembran_desde_limits
+- pipeline::tests::job_timeout_se_captura_al_inicio_del_job
+- resilience::hot_reload_tests2::worker_tunables_desde_config_siembra_env
+
+Reduction log message: bulkhead_decrease_requires_restart
+Metric name: worker_bulkhead_decrease_rejected_total
+
+Note: end-to-end 4->6 concurrency observation requires the full compose stack; not executed.
+Manual verification steps: change KV key bulkhead_max_concurrency, watch worker_bulkhead_* / log, restart for reduction.
