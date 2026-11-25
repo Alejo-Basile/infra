@@ -1,0 +1,149 @@
+Task: S9-P1-08 — cierre de las deudas detectadas en S9-P1-CARGA
+Fecha: 2026-11-20 (UTC)  ·  Repo afectado: doc-service (Go)  ·  Imagen: doc-service:local (rebuild + redeploy del servicio doc-service)
+Alcance: 3 deudas. No se modificó extraction-worker, Traefik ni compose. Sin commits.
+
+====================================================================
+DEUDA 1 y 2 — El reconciliador no decidía lotes masivos de PENDING_UPLOAD
+vencidos y el TTL borraba documentos terminales
+====================================================================
+
+Causa raíz (medida en S9-P1-CARGA)
+- sweepExpiredPending usaba List(PENDING_UPLOAD, Limit 200) y List ordena por
+  _id DESC (internal/adapters/mongo/repository.go). Con un lote grande los 200
+  primeros eran los documentos MÁS NUEVOS, todavía no vencidos: el sweep
+  devolvía 0 y el TTL (expires_at, expireAfterSeconds 0) borraba el lote sin
+  estado terminal. Evidencia: 3 llamadas a /internal/reconcile devolvieron
+  executed_actions=0 mientras PENDING_UPLOAD caía de 2121 a 0 por TTL.
+- El mismo índice TTL gobernaba documentos COMPLETED, cuyo expires_at nunca se
+  limpia: COMPLETED cayó de 2426 a 1971 durante esa misma ventana.
+
+Diseño aplicado (decidir antes de expirar)
+- Nuevo campo persistido `retention_at` (domain.Document.RetentionAt,
+  bson:"retention_at,omitempty", json:"-"): el TTL recolecta, no decide.
+  `expires_at` queda como campo de elegibilidad del reconciliador.
+- Repository: ventanas configurables (WithRetention). Insert fija
+  retention_at = expires_at + DOC_PENDING_RETENTION_MIN (default 60 min).
+  Toda transición a estado terminal fija retention_at = now +
+  DOC_TERMINAL_RETENTION_HOURS (default 168 h); un re-presign a PENDING_UPLOAD
+  recalcula la retención pendiente desde el nuevo expires_at.
+- Paging de vencidos: ListFilter gana ExpiredBefore, ExpiredCursorAt,
+  ExpiredCursorID y SortByExpires. Con SortByExpires el adaptador ordena por
+  (expires_at ASC, _id ASC) y el cursor compuesto recorre sin repetir ni
+  saltar. sweepExpiredPending pagina 200 por página, hasta 10 páginas, con
+  guarda anti-repetición si un repositorio ignora el cursor.
+- Migración v2 `retention_at_ttl_and_backfill` (idempotente):
+  (a) backfill retention_at: PENDING_UPLOAD -> max(expires_at, $$NOW) + 60 min
+      (garantiza una ventana completa al reconciliador incluso para documentos
+      ya vencidos al migrar); terminales -> now + 168 h; intermedios -> now + 60 min;
+  (b) crea el índice `retention_at_ttl` (expireAfterSeconds 0);
+  (c) sólo después de (a) y (b), dropea `expires_at_1`.
+- Red de seguridad para el worker (Rust) que escribe COMPLETED directo:
+  sweepMissingRetention fija retention_at en terminales sin el campo (máx. 200
+  por corrida), reportado como `retention_backfilled` en el resultado del
+  reconciler.
+- Config nueva: DOC_PENDING_RETENTION_MIN (default 60) y
+  DOC_TERMINAL_RETENTION_HOURS (default 168). Validación:
+  DOC_PENDING_RETENTION_MIN >= 2 x RECONCILE_INTERVAL_MIN cuando está definido.
+
+Pruebas (doc-service)
+- internal/adapters/mongo (replica set real, DB desechable):
+  TestList_SortByExpires_DevuelveLosMasViejos -> PASS
+    (con ids "zzz-newest"/"mmm-mid"/"aaa-oldest" y Limit 2 devuelve
+     [aaa-oldest, mmm-mid]: el orden por defecto habría devuelto el nuevo).
+  TestInsert_PoblaRetentionAtDesdedExpires -> PASS
+  TestUpdateStatus_TerminalFijaRetencionTerminal -> PASS
+    (expires_at en el pasado + transición a UPLOAD_EXPIRED => retention_at ~now+48h)
+  TestMigrations_RetentionTTLIdempotente -> PASS
+    (dos Up seguidos: retention_at_ttl presente, expires_at_1 ausente, backfill no nulo)
+  TestMigrator_UpIdempotente -> PASS (actualizado a la última versión de esquema)
+- internal/reconciler:
+  TestSweepExpiredPending_PaginaPorExpires -> PASS
+  TestSweepMissingRetention_FijaRetencionTerminal -> PASS
+  Resto de la suite del paquete -> PASS
+- Paquetes verdes: adapters/mongo, adapters/minio, adapters/changestream,
+  reconciler, resilience, domain, config, api, webhook, pdfsvc, transport/http.
+- Fallos NO relacionados con este cambio (entorno): internal/adapters/redis y
+  internal/adapters/relay requieren REDIS_TEST_ADDR (127.0.0.1:6379 no existe
+  en el contenedor de test); internal/configkv requiere el árbol del workspace
+  completo (testdata de Consul) y falla cuando sólo se monta doc-service.
+
+Verificación en vivo (stack real, imagen reconstruida y redeployada)
+- Migración al arrancar: {"msg":"aplicando migración","version":2,...} y
+  {"msg":"migraciones aplicadas","count":1,"current_version":2}.
+- Índices: retention_at_ttl (expireAfterSeconds 0) presente;
+  hasExpiresTTL=false (expires_at_1 dropeado).
+- missingRetention=0 sobre toda la colección.
+- POST /api/v2/documents -> 201; documento almacenado:
+  expires_at 2026-11-20T05:05:22.963Z, retention_at 2026-11-20T06:05:22.963Z
+  (expires + 60 min).
+- Seeds de prueba (3 documentos PENDING_UPLOAD vencidos, creados hace 2 h,
+  con ids "1debt-seed-*" que ordenan POR DEBAJO de todos los ids existentes):
+  POST /internal/reconcile?dry_run=true  -> expired_pending=3, planned_actions=3
+  POST /internal/reconcile?dry_run=false -> expired_pending=3, executed_actions=3, errors=0
+  Estado final de los seeds: UPLOAD_EXPIRED con retention_at 2026-11-27
+  (aunque expires_at quedó en el pasado: el TTL ya no los puede borrar).
+- Backfill del worker: a un COMPLETED se le quitó retention_at y el sweep
+  devolvió retention_backfilled=1, fijando retention_at a +7 días.
+- Limpieza: deleteMany sólo de los ids de prueba
+  (1debt-seed-1..3, s9debt-live-create-001, s9debt-smoke-1..3) => deleted=7,
+  remainingS9debt=0. Estado de la colección: COMPLETED=1425, sin no terminales.
+
+====================================================================
+DEUDA 3 — El breaker compartido de MinIO se abría durante los barridos del
+reconciliador y devolvía 500 en POST /api/v2/documents
+====================================================================
+
+Causa raíz
+- Un único breaker "minio" (5 fallos consecutivos => Open 30 s) envolvía
+  PresignPost/Stat/StatMD/StatLegacyTXT de todos los consumidores. Los barridos
+  del reconciliador (sweepCompletedMissingMd hacía hasta 200 HEADs por corrida,
+  más sweepStuck* y sweepOrphans) consumían el presupuesto del breaker: el
+  2026-11-20T03:00:43Z pasó closed->open y los 65 POST siguientes devolvieron
+  500 con "presign post: circuit breaker is open".
+
+Diseño aplicado (aislar sondas de usuario)
+- El reconciliador recibe su propio almacenamiento decorado con un breaker
+  dedicado "minio-probe" (cmd/api/main.go): una ráfaga de probes no puede
+  abrir el breaker que protege los handlers.
+- sweepCompletedMissingMd baja de 200 a 50 HEADs por corrida (menos presión
+  sobre MinIO por sweep).
+- El breaker compartido "minio" sigue protegiendo todo el tráfico de usuario.
+
+Pruebas
+- Suite de internal/resilience -> PASS (sin regresiones en la exclusión de
+  NotFound/cancelación).
+
+Verificación en vivo
+- Reconcile completo ejecutado en paralelo con 3 POST /api/v2/documents:
+  create1=201, create2=201, create3=201.
+- docker logs infra-doc-service-1 | grep '"breaker":"minio"' -> 0 transiciones
+  durante la ventana de la prueba (antes: closed->open en cada sweep pesado).
+
+====================================================================
+LIMITACIONES Y RIESGO DE ROLLBACK
+====================================================================
+- retention_at es un campo nuevo: una imagen anterior ignora el campo y vuelve
+  a gobernar el TTL por expires_at. Si se hace rollback de imagen, el índice
+  expires_at_1 fue dropeado: hay que recrearlo o los documentos nunca serán
+  recolectados por TTL. Recreación:
+    db.documents.createIndex({expires_at:1},{expireAfterSeconds:0,name:"expires_at_1"})
+  y opcionalmente drop de retention_at_ttl.
+- La retención terminal (168 h por default) es una política de negocio
+  elegible: se documenta como decisión configurable, no como requisito.
+- La migración se ejecuta en el arranque del servicio: sobre una colección muy
+  grande el backfill puede tardar; es idempotente y ordenado (no dropea el TTL
+  viejo hasta que el nuevo índice existe).
+- Los seeds de prueba se eliminaron; no se tocó ningún documento ajeno a los
+  prefijos de prueba.
+
+====================================================================
+ASSESSMENT
+====================================================================
+- Deuda 1 (decidir antes de expirar): CERRADA — evidencia: paging por
+  expires_at ASC + migración v2 + seeds decididos en vivo
+  (expired_pending=3, executed_actions=3).
+- Deuda 2 (TTL borraba COMPLETED): CERRADA — evidencia: TTL sobre
+  retention_at, expires_at_1 ausente, COMPLETED con expires_at pasado conserva
+  retention_at futuro.
+- Deuda 3 (breaker compartido): CERRADA — evidencia: 0 transiciones del breaker
+  "minio" con reconcile en paralelo y 3/3 POST 201.

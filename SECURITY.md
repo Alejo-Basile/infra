@@ -37,7 +37,7 @@ Este repositorio es público y contiene configuración de infraestructura. Si en
 
 | Imagen | CRITICAL | HIGH | Estado |
 |---|---|---|---|
-| `bitnamilegacy/minio-client:2025.7.21` | 21 | 195 | Excepción aceptada |
+| `bitnamilegacy/minio-client:2025.7.21` | 21 | 196 | Excepción aceptada |
 | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | 34 | 410 | Excepción aceptada |
 | `curlimages/curl:8.10.1` | 2 | 22 | Excepción aceptada |
 | `gaiaadm/pumba:0.11.0` | 2 | 37 | Excepción aceptada |

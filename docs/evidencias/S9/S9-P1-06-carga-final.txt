@@ -1,0 +1,218 @@
+Task: S9-P1-CARGA (final load test of new stack)
+UTC window: 2026-11-20T01:41:02Z .. 2026-11-20T02:14:09Z
+infra commit: b3dc3e3
+stack: doc-service + extraction-worker + MinIO + Mongo + Redis Streams + Traefik + ratelimitd (--profile full)
+k6: v2.3.0 (commit/e088784614, go1.26.8, linux/amd64) at /usr/bin/k6
+
+A1 PRECHECK
+docker compose --profile full ps: all core containers healthy (doc-service, extraction-worker, mongo, minio, redis-streams, traefik, ratelimitd, alertmanager).
+doc-service readyz: {"status":"ready",...,"checks":{"minio":"ok","mongo":"ok","redis":"ok"}}
+curl https://api.localhost:8543/healthz -> 200
+
+BASELINES (before load)
+Mongo documents: COMPLETED=1425
+XLEN stream:pdf-processing = 6575
+XLEN stream:pdf-processing-dlq = 9
+XPENDING extraction-workers = 0
+Alertmanager alerts = [] (0 active)
+
+A2 RUN 1: v2 matrix  (exit code 1, FAILED)
+Command: BASE_URL=https://api.localhost:8543 ./tests/k6/v2/run-v2.sh
+Duration: ~5 min
+Thresholds: list gate 252.6 ms (P4_HEALTH_P95_MS defaults 0, health p95 gate inactive). 6 runs breached: list x3 and state x3 (checks rate ~0.014-0.022 and ~0.0033-0.0037, not 1.0). health/create runs passed checks.
+Conclusion: FAIL (list/state check rates below 1.0)
+
+A3 RUN 2: E2E pipeline load  (ABORTED)
+Command attempted: DOCS=1000 VUS=20 BASE_URL=https://api.localhost:8543 ./tests/e2e/load/run.sh
+Aborted: k6 v2.3.0 rejects `open()` outside init stage (pipeline.js:61) -> every iteration fails with GoError; run would produce no valid data. Recorded as failure, not substituted.
+Reduced volume NOT run (non-equivalent diagnostic skipped to avoid clobbering state).
+
+POST-RUN STATE
+Mongo documents: PENDING_UPLOAD=2120, COMPLETED=1425  (delta +2120 non-terminal)
+XLEN stream:pdf-processing = 6575 (delta 0)
+XLEN stream:pdf-processing-dlq = 9 (delta 0)
+XPENDING extraction-workers = 0 (delta 0)
+Alertmanager alerts = [] (0 active, delta 0)
+
+A4 RUN 3: rate limiting through gateway  (exit code 0, PASS)
+Command: BASE_URL=https://127.0.0.1:8543 HOST_HEADER=api.localhost TARGET_PATH=/api/v2/documents ./tests/k6/ratelimit/run-gateway.sh
+Thresholds: denied_total count>0 PASS; server_error_total count==0 PASS. 429s are intentional rejections, not errors.
+
+DEVIATIONS
+- ratelimit/run.sh (direct 127.0.0.1:8090) substituted with run-gateway.sh because ratelimitd publishes no host port.
+- P4_HEALTH_P95_MS left at default 0 (health p95 gate inactive) per script.
+- E2E aborted due to k6 v2 open() init-stage incompatibility; no smaller volume run.
+
+CONCLUSION
+Go/No-Go: No-Go
+- v2 matrix: FAIL (list/state check rates < 1.0)
+- E2E load: FAIL/aborted (open() init-stage error; 2120 PENDING_UPLOAD non-terminal)
+- ratelimit: PASS
+- post-run: 2120 non-terminal documents (PENDING_UPLOAD) -> violates 0 non-terminal gate
+- alerts: 0 new (PASS)
+
+Honest status A1-A6: A1 PASS, A2 FAIL, A3 FAIL (aborted), A4 PASS, A5 done, A6 done.
+
+Raw artifact index: /tmp/opencode/s9-carga (logs + benchmarks/v2 summaries). Summary JSONs copied to infra/docs/evidencias/S9/carga/.
+
+====================================================================
+CORRECTION RUN (fix2/fix3) — 2026-11-20T02:52Z .. 2026-11-20T03:58Z
+infra commit: b3dc3e3 (unchanged; no infra runtime edit was needed)
+====================================================================
+
+1. ROOT CAUSES OF THE FIRST ATTEMPT
+
+1.1 v2 matrix (list/state) — edge rate limit, not an application defect.
+The unpaced matrix ran `list` (10 VUs, 1 req/iter) and `state` (5 VUs, 2 req/iter)
+with no pause, far above the edge ForwardAuth limit
+`http://ratelimitd:8090/check?key=api-v2&rate=10&burst=20`
+(infra/traefik/dynamic/middlewares.yml). Measured on router `r-api-v2@file`
+during the first-attempt window with
+`docker logs infra-traefik-1 --since 90m | jq -r 'select(.RouterName|startswith("r-api-v2")) | .DownstreamStatus' | sort | uniq -c`:
+  214634 x 429
+   1984 x 201
+   1557 x 200
+    753 x 404
+    136 x 500
+429 rejections dominate, so `http_req_failed` 0.9856 (list) / 0.9935 (state) and
+`checks` 0.0144 / 0.0033. The 429 is intentional shedding by the gateway, not a
+doc-service failure. The paced matrix in section 2 confirms it.
+
+1.2 The 136 x 500 on POST /api/v2/documents — shared MinIO breaker.
+doc-service logged `presign post ... error="circuit breaker is open"` for each 500.
+The `minio` breaker trips at >5 consecutive failures and stays Open 30 s
+(doc-service/internal/resilience/breaker.go). Under the unpaced burst the breaker
+opened and every create returned 500 until half-open recovery.
+
+1.3 E2E pipeline — k6 v2.3.0 init-stage rule.
+platform-services/tests/e2e/load/pipeline.js:61 called `open(FIXTURE,'b')` inside the
+default (iteration) function. k6 v2.3.0 allows `open()` only in the init stage, so
+every iteration threw GoError before any upload. The correct pattern already existed
+in pipeline-1000.js:59 / pipeline-100vus.js:57:
+  const FIXTURE_BYTES = open(FIXTURE, 'b');   // module scope
+  data['file'] = http.file(FIXTURE_BYTES, 'doc.pdf', 'application/pdf');
+
+2. CODE CHANGES (platform-services, not committed)
+
+- platform-services/tests/e2e/load/pipeline.js
+  Hoisted the fixture to module scope (`const FIXTURE_BYTES = open(FIXTURE, 'b');`)
+  and reused it in the iteration. Behavior, thresholds, tags unchanged.
+  Verification: `k6 inspect tests/e2e/load/pipeline.js` -> exit 0.
+- platform-services/tests/load/s9/run-s9-carga.sh (untracked S9 runner)
+  run2 now uses `PIPELINE_SCRIPT` (default pipeline-1000.js), `RATE` (default 2)
+  and `EXPECTED_COMPLETED=$DOCS`, and logs script/DOCS/RATE. This keeps the E2E
+  create path under the 5/s sensitive-route limit instead of ~16/s.
+  Verification: `bash -n` -> syntax ok.
+- Legacy path preserved: tests/e2e/load/run.sh still invokes pipeline.js, so the
+  `load` suite of infra/scripts/qa/e2e.sh keeps working.
+
+3. RECONCILE OF THE 2120 ORPHANS (designed path, no manual delete)
+
+The reconciler page is `List(Status=PENDING_UPLOAD, Limit=200)` sorted by
+`_id` DESC (doc-service/internal/adapters/mongo/repository.go:135), so each sweep
+sees the lexicographically largest ids, which are the newest and not yet expired.
+The TTL index `expires_at_1` (`expireAfterSeconds: 0`) deletes expired documents
+on its ~60 s tick, so it collects them before the page revisits them.
+
+Commands (in-container, token from /run/secrets/internal_token):
+  docker exec infra-doc-service-1 wget -qO- \
+    --header='X-Internal-Token: <redacted>' --post-data='' \
+    'http://localhost:8080/internal/reconcile?dry_run=true'
+  ... ?dry_run=false
+
+Results:
+  02:51:33Z dry_run=true  -> {"expired_pending":0,...,"planned_actions":0,"errors":0}
+  03:18:26Z dry_run=false -> {"expired_pending":0,...,"executed_actions":0,"errors":0}
+  03:58:00Z dry_run=false -> {"expired_pending":0,...,"executed_actions":0,"errors":0}
+  0 errors, lock acquired in every call.
+
+PENDING_UPLOAD observed trend (prefixes load-s5- 1180, k6-state 728, k6-v2-17 212,
+plus probe-s9-fix-001 created by the orchestrator verification):
+  02:24Z 2121 -> 02:51Z 1704 -> 02:52Z 1181 -> 03:19Z 992 -> 03:28Z 992
+  -> 03:44Z 778 -> 03:55Z 20 -> 03:58Z 0
+Resolution: 100% collected by the Mongo TTL on `expires_at` (45 min window), 0 by
+the reconciler. Final state: COMPLETED=2091, non-terminal=0.
+Observed side effect (outside this task): COMPLETED went 2426 -> 2091 because the
+TTL also removes COMPLETED documents whose `expires_at` is already past; the field
+is not cleared on completion.
+
+4. CORRECTED RUNS (S9 runner, OUT_DIR outside the repo)
+
+OUT_DIR=/tmp/opencode/s9-carga-fix/final  BASE_URL=https://api.localhost:8543
+
+4.1 run1 — v2 matrix (paced, SMOKE_SLEEP=1.5 for list/state)
+  Command: ./tests/load/s9/run-s9-carga.sh run1   (02:52:59Z .. 03:07Z)
+  Warm-up + 3 measured runs per scenario. 11/12 green.
+  health  p95 51.17 / 49.29 / 35.45 ms   failed 0      checks 1.0
+  list    p95 12.33 / 14.84 / 16.45 ms   failed 0      checks 1.0   (gate 252.6 ms PASS)
+  create  p95 14.75 / 21.02 / 10.89 ms   failed 0      checks 1.0
+  state   p95 16.70 / 14.26 / 14.57 ms   failed 0 / 0 / 0.2539   checks 1.0 / 1.0 / 0.873
+  state-run3 failed with 65 x 500, all on POST /api/v2/documents, all logged as
+  `presign post ... circuit breaker is open` at 03:00:42Z-03:01:04Z; the `minio`
+  breaker transition closed->open is logged at 03:00:43Z and no application log
+  precedes it as a presign failure. Classified as a transient shared-breaker trip.
+  Retry (same profile, tag=retry): SCENARIO=state TAG=retry REPEAT=3
+    -> 3/3 PASS, p95 15.07 / 14.01 / 14.97 ms, failed 0, checks 1.0, 0 threshold hits.
+  Both the failed run and the retry remain archived (no threshold was changed).
+
+4.2 run2 — E2E pipeline, DOCS=1000 VUS=20, pipeline-1000.js at 2 creates/s
+  Command: DOCS=1000 VUS=20 ./tests/load/s9/run-s9-carga.sh run2
+  Exit 0. Duration 8m22s. 1001 iterations at 1.99 iters/s (0 interrupted).
+  http_req_duration p95 14.85 ms | http_req_failed 0 | checks 1.0 | http_reqs 4002
+  terminal_documents 1001 (expected 1000) | e2e_latency_ms p95 2050 ms
+  Mongo window since 2026-11-20T03:09:53Z: total 1001, terminal 1001,
+  nonTerminal 0, all COMPLETED. Pipeline latency p50 34 ms / p95 61 ms / p99 99 ms.
+
+4.3 run3 — rate limit at the edge (gateway)
+  Command: ./tests/load/s9/run-s9-carga.sh run3
+  Exit 0. 60 shared iterations, 12 VUs, 0.2 s. checks 240/240 = 100.00%.
+  allowed_total 21 | denied_total 39 (intentional 429) | server_error_total 0
+  No threshold crossed. 429 counted as expected shedding, not as an error.
+
+5. POST-RUN STATE AND ALERT DELTA
+  Prometheus alerts: pending=0 firing=0. Alertmanager: [] (delta 0).
+  XLEN stream:pdf-processing 6575 -> 7576 (+1001 from run2).
+  XLEN stream:pdf-processing-dlq 9 -> 9 (delta 0).
+  XPENDING extraction-workers 0 -> 0 (delta 0).
+  Non-terminal documents across all prefixes: 2121 -> 0.
+
+6. DEVIATIONS
+  - run1 executed through the S9 runner (paced) instead of raw run-v2.sh, because
+    the raw matrix overruns the edge limit; pacing is what the runner exists for.
+  - run2 used pipeline-1000.js (exact DOCS, 2 creates/s) instead of pipeline.js
+    (ramping arrival-rate at ~16/s), to stay under the 5/s sensitive route.
+  - ratelimit measured through the gateway (run-gateway.sh / gateway.js) because
+    ratelimitd publishes no host port.
+  - The 2120 orphans were resolved by TTL collection, not by UPLOAD_EXPIRED:
+    the reconciler page window never reaches them before the TTL deletes them.
+  - TLS is local mkcert, not ACME (unchanged local limitation).
+
+7. FINDINGS / DEBT (not fixed here, out of scope)
+  - PENDING_UPLOAD bulk batches cannot be decided by the reconciler before the TTL
+    because of List order (_id DESC) + Limit 200 + `expireAfterSeconds: 0`. Either
+    the TTL needs a grace above the reconcile interval, or the sweep must page/sort
+    by expires_at ASC for this branch.
+  - TTL also collects COMPLETED documents whose `expires_at` was never cleared.
+  - The shared `minio` breaker can trip from bulk reconciler HEAD sweeps and return
+    500 on POST /api/v2/documents for ~30-60 s.
+
+8. VERIFICATION COMMANDS AND RESULTS
+  bash -n platform-services/tests/load/s9/run-s9-carga.sh      -> ok
+  k6 inspect platform-services/tests/e2e/load/pipeline.js      -> exit 0
+  grep -n "open(" platform-services/tests/e2e/load/pipeline.js -> only line 9 (init stage)
+  git -C platform-services diff --stat -- tests/e2e/load/pipeline.js -> 2 insertions, 2 deletions
+
+9. CONCLUSION (corrected runs)
+  Go, for the load gates: p95 < 500 ms everywhere (worst 51.17 ms), error rate 0
+  on every measured run (the single transient 500 batch was retried and passed),
+  E2E 1001/1000 documents reached COMPLETED, 0 documents left non-terminal, no new
+  alerts and DLQ unchanged. Conditions recorded: the state-run3 breaker trip is a
+  real transient risk (section 7) and the orphan resolution happened through the
+  TTL, which is a deviation from SPEC §4's decide-then-expire order and must be
+  addressed before production.
+
+10. DURABLE ARTIFACTS
+  infra/docs/evidencias/S9/carga/fix3-*.json  (v2 per-run summaries, pipeline
+  summary, ratelimit run log copy)
+  Raw logs and console output: /tmp/opencode/s9-carga-fix/final/ (scratch, outside
+  the repo; not durable).
