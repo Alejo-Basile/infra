@@ -2,8 +2,10 @@
 
 Este runbook cubre cómo reejecutar el bootstrap de MinIO, cómo inspeccionar y
 cambiar las reglas de expiración, y cómo revertirlas. Las retencias vigentes son
-**7 días en `raw-pdfs`** y **30 días en `extracted-txt`** (decisión de negocio en
-`plan-S2-P1.md` §4; ajustables por env sin editar scripts).
+**7 días en `raw-pdfs`** y **30 días en `extracted-md`** (salida vigente, Markdown)
+y en `extracted-txt` (objetos `.txt` legacy) — decisión de negocio en
+`plan-S2-P1.md` §4; ajustables por env sin editar scripts
+(`RAW_PDFS_EXPIRE_DAYS`, `EXTRACTED_MD_EXPIRE_DAYS`, `EXTRACTED_TXT_EXPIRE_DAYS`).
 
 Evidencia de la verificación: `docs/evidencias/S2/S1-P1-06-lifecycle.txt`
 (sección T-06, ejecutada en un MinIO aislado el 2026-11-06).
@@ -43,13 +45,13 @@ docker run --rm --network infra_data --entrypoint mc \
   bitnamilegacy/minio-client:2025.7.21 ilm rule ls local/<bucket>
 ```
 
-Repetir con `<bucket>` = `raw-pdfs` y `extracted-txt`.
+Repetir con `<bucket>` = `raw-pdfs`, `extracted-md` y `extracted-txt`.
 
-| Qué esperar | raw-pdfs | extracted-txt |
-| --- | --- | --- |
-| `DAYS TO EXPIRE` | 7 | 30 |
-| `STATUS` | `Enabled` | `Enabled` |
-| Cantidad de reglas | 1 | 1 |
+| Qué esperar | raw-pdfs | extracted-md | extracted-txt |
+| --- | --- | --- | --- |
+| `DAYS TO EXPIRE` | 7 | 30 | 30 |
+| `STATUS` | `Enabled` | `Enabled` | `Enabled` |
+| Cantidad de reglas | 1 | 1 | 1 |
 
 Estado sin reglas: `Unable to get lifecycle. The lifecycle configuration does not exist.`
 (significa que el bootstrap **no** corrió o fue revertido).
@@ -108,8 +110,8 @@ un objeto que "ya no está".
 
 ### (a) Expiración por edad (lifecycle) — la red de seguridad
 
-- Reglas: `raw-pdfs` 7 días / `extracted-txt` 30 días, aplicadas por el
-  **scanner asíncrono de MinIO** por antigüedad del objeto.
+- Reglas: `raw-pdfs` 7 días / `extracted-md` 30 días / `extracted-txt` 30 días,
+  aplicadas por el **scanner asíncrono de MinIO** por antigüedad del objeto.
 - **Independiente del estado de procesamiento**: MinIO no consulta Mongo ni a la
   aplicación; borra por edad, punto.
 - Es un **backstop** contra objetos huérfanos y coste de almacenamiento
@@ -149,6 +151,7 @@ bucket. Ante un backlog > 7 días, revisar este runbook junto con
 ## Checklist
 
 - [ ] `ilm rule ls local/raw-pdfs` muestra 7 días, `Enabled`, 1 regla
+- [ ] `ilm rule ls local/extracted-md` muestra 30 días, `Enabled`, 1 regla
 - [ ] `ilm rule ls local/extracted-txt` muestra 30 días, `Enabled`, 1 regla
 - [ ] Reejecutar el bootstrap sale exit 0 y **no** cambia los IDs de regla
 - [ ] Cambiar la retención implica revertir (§4) primero; si no, el job falla con exit 1
