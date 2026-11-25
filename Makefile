@@ -11,9 +11,7 @@ help:
 	@echo "  test    Run service tests"
 	@echo "  e2e     Run end-to-end suites"
 	@echo "  doctor  Run QA doctor diagnostics"
-	@echo "  lint    Lint infra scripts
-
-ARGS="..." se pasa al subcomando (ej: make test ARGS="doc-service --unit")"
+	@echo "  lint    Lint infra scripts"
 
 up:
 	./scripts/qa/qa.sh up $(ARGS)
