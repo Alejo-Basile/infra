@@ -4,12 +4,13 @@ S9-X-04 bloque d — minimo privilegio y roles
 ## Matriz de hardening
 
 Comando: docker compose ... ps -q -> docker inspect formato user/ro/caps/sec/mem/pids
-Total contenedores: 21
+Total contenedores: 22
 
 /infra-alertmanager-1 user=65534 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=134217728 pids=50
 /infra-doc-service-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=300
 /infra-doc-service-canary-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=300
 /infra-extraction-worker-1 user=10001:10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=805306368 pids=200
+/infra-ocr-worker-1 user=10001:10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=1073741824 pids=200
 /infra-grafana-1 user=472 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=100
 /infra-loki-1 user=10001 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=536870912 pids=100
 /infra-minio-1 user=1001 ro=false caps=[ALL] sec=[no-new-privileges:true] mem=1073741824 pids=200
@@ -29,7 +30,7 @@ Total contenedores: 21
 /infra-traefik-1 user=65532 ro=true caps=[ALL] sec=[no-new-privileges:true] mem=268435456 pids=100
 
 Clasificacion:
-- App services (ro=true salvo minio): doc-service, doc-service-canary, extraction-worker, ratelimitd, monolito, traefik, promtail, redis-exporter -> todos ro=true, CapDrop=[ALL], no-new-privileges.
+- App services (ro=true salvo minio): doc-service, doc-service-canary, extraction-worker, ocr-worker, ratelimitd, monolito, traefik, promtail, redis-exporter -> todos ro=true, CapDrop=[ALL], no-new-privileges.
 - Data/infra con ro=false justificadas (ver S1-P1-15-hardening.txt): minio, mongo, redis-streams. Excepciones pre-existentes documentadas.
 
 ## Rol Mongo del worker
@@ -78,8 +79,8 @@ doc-service/worker usan Sentinel (compose lineas 560, 620).
 ## Veredicto
 
 - Non-root: PASS (app services usan UID no-root; mongo/minio usan root internamente justificado)
-- CapDrop=[ALL]: PASS (21/21)
-- no-new-privileges: PASS (21/21)
+- CapDrop=[ALL]: PASS (22/22)
+- no-new-privileges: PASS (22/22)
 - read_only excepciones justificadas: PASS (minio, mongo, redis-streams documentados)
 - worker update-only: PASS
 
