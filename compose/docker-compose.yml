@@ -805,9 +805,11 @@ services:
       REDIS_PORT: "6379"
       REDIS_DB: "0"
       REDIS_PASSWORD_FILE: /run/secrets/redis_streams_password
-      # Compose los omite si no estan definidos; definir ambos activa Sentinel.
-      REDIS_SENTINEL_ADDRS:
-      REDIS_MASTER_NAME:
+      # S6-P1-01: modo Sentinel (SPEC 3.5). Sin esto el worker queda clavado
+      # en `redis-streams` y, tras un failover, escribe contra una replica
+      # de solo lectura hasta que alguien lo reinicie a mano.
+      REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: myprimary
       REDIS_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}
       REDIS_GROUP: extraction-workers
       REDIS_DLQ_STREAM: ${REDIS_STREAM_KEY:-stream:pdf-processing}-dlq
