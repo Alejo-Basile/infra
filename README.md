@@ -47,14 +47,27 @@ cp .env.example .env   # y completar valores
 # 3. Generar TLS local (mkcert) — ver docs/adr/ADR-0016.md
 ./scripts/gen-certs.sh
 
-# 4a. Solo datos (P2/P3)
-docker compose -f compose/docker-compose.yml --env-file .env --profile core up -d
+# 4. Arrancar la aplicacion completa (full + sentinel) y esperar salud real
+./scripts/start-all.sh
 
-# 4b. Stack completo (gateway + monolito + observabilidad)
-docker compose -f compose/docker-compose.yml --env-file .env --profile full up -d
+# 5. Ver estado y detener sin borrar datos
+./scripts/qa/qa.sh status
+./scripts/stop-all.sh
 
-# 5. Verificar la topologia de redes
+# 6. Verificar la topologia de redes
 ./scripts/verify-networks.sh
+```
+
+`start-all.sh` equivale a `qa.sh up` con el perfil por defecto `full`, que
+incluye `sentinel` porque `doc-service` resuelve Redis por Sentinel.
+`stop-all.sh` equivale a `qa.sh down`: hace `stop` y **conserva volumenes y
+datos**. El borrado de volumenes solo existe como `qa.sh down --volumes` y exige
+escribir literalmente `infra`.
+
+Si solo se necesitan las dependencias de datos:
+
+```bash
+./scripts/qa/qa.sh up --profile core
 ```
 
 ## Topología de redes (S0-P1-05)
