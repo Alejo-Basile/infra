@@ -1,0 +1,63 @@
+name: qa
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/qa/**'
+      - 'compose/docker-compose.test.yml'
+      - 'scripts/bootstrap.sh'
+      - 'Makefile'
+      - '.github/workflows/qa.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/qa/**'
+      - 'compose/docker-compose.test.yml'
+      - 'scripts/bootstrap.sh'
+      - 'Makefile'
+      - '.github/workflows/qa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          pip install yamllint
+      - name: Lint
+        working-directory: infra
+        run: ./scripts/qa/qa.sh test infra --lint
+
+  e2e:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl openssl
+      - name: Bring up stack
+        working-directory: infra
+        run: ./scripts/qa/qa.sh up --init-secrets --profile full --timeout 300
+      - name: Run e2e
+        working-directory: infra
+        run: ./scripts/qa/qa.sh e2e ci
+      - name: Status on failure
+        if: failure()
+        working-directory: infra
+        run: ./scripts/qa/qa.sh status
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-artifacts
+          path: infra/.local/qa
+          retention-days: 7
