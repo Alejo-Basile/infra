@@ -49,6 +49,18 @@ OUT=/tmp/sentinel.conf
 PW_ESC=$(printf '%s' "$REDIS_STREAMS_PASSWORD" | sed 's/[\\&]/\\&/g')
 
 sed "s|\${REDIS_STREAMS_PASSWORD}|${PW_ESC}|g" "$TMPL" > "$OUT"
+
+# Ajustes para los tests de integracion efimeros (docker-compose.test.yml):
+# - El host alcanza a los Sentinels por IP publicada, no por hostname de la red.
+# - protected-mode bloquea clientes sin password/bind fuera de la red interna.
+# En el stack de desarrollo ambos quedan en su default (hostnames + protegido).
+if [ "${SENTINEL_ANNOUNCE_HOSTNAMES:-yes}" = "no" ]; then
+  sed -i 's/^sentinel announce-hostnames yes$/sentinel announce-hostnames no/' "$OUT"
+fi
+if [ "${SENTINEL_PROTECTED_MODE:-}" = "no" ]; then
+  printf '%s\n' 'protected-mode no' >>"$OUT"
+fi
+
 chown redis:redis "$OUT"
 
 # El entrypoint oficial hace el drop de privilegios a `redis` (setpriv).

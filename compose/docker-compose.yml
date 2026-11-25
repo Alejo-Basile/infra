@@ -34,12 +34,12 @@ x-hardening-data: &hardening-data
 # -----------------------------------------------------------------------------
 networks:
   edge: # salida a internet: solo Traefik
-    name: infra_edge
+    name: ${COMPOSE_NET_PREFIX:-infra}_edge
   internal: # servicios de aplicacion, sin salida a internet
-    name: infra_internal
+    name: ${COMPOSE_NET_PREFIX:-infra}_internal
     internal: true
   data: # solo datos, sin salida a internet (Mongo, Redis, MinIO)
-    name: infra_data
+    name: ${COMPOSE_NET_PREFIX:-infra}_data
     internal: true
 
 volumes:
@@ -58,7 +58,8 @@ volumes:
   consul-data:
   consul-agent-data:
   worker-config-cache:
-
+  doc-service-config-cache:
+  ocr-worker-config-cache:
 secrets:
   mongo_initdb_root_password: { file: ../secrets/mongo_initdb_root_password.txt }
   mongo_app_password: { file: ../secrets/mongo_app_password.txt }
@@ -74,6 +75,9 @@ secrets:
   svc_docservice_secret_key: { file: ../secrets/svc_docservice_secret_key.txt }
   svc_worker_access_key: { file: ../secrets/svc_worker_access_key.txt }
   svc_worker_secret_key: { file: ../secrets/svc_worker_secret_key.txt }
+  ocr_minio_access_key: { file: ../secrets/ocr_minio_access_key.txt }
+  ocr_minio_secret_key: { file: ../secrets/ocr_minio_secret_key.txt }
+  ocr_mongo_password: { file: ../secrets/ocr_mongo_password.txt }
   consul_gossip_key: { file: ../secrets/consul_gossip_key.txt }
   consul_server_cert: { file: ../secrets/consul_server_cert.pem }
   consul_server_key: { file: ../secrets/consul_server_key.pem }
@@ -82,7 +86,10 @@ secrets:
   consul_doc_service_token: { file: ../secrets/consul_doc_service_token.txt }
   consul_ratelimitd_token: { file: ../secrets/consul_ratelimitd_token.txt }
   consul_worker_token: { file: ../secrets/consul_worker_token.txt }
+  consul_ocr_worker_token: { file: ../secrets/consul_ocr_worker_token.txt }
   consul_prometheus_token: { file: ../secrets/consul_prometheus_token.txt }
+  consul_ui_password: { file: ../secrets/consul_ui_password.txt }
+  consul_ui_users: { file: ../secrets/consul_ui_users.txt }
 
 services:
   # ===========================================================================
@@ -360,6 +367,9 @@ services:
       # que MinIO inyecta como `Authorization: Bearer <secreto>`.
       RL_WEBHOOK_TOKEN_FILE: /run/secrets/minio_webhook_secret
       RL_WEBHOOK_PATH: ${DOC_SERVICE_WEBHOOK_PATH:-/internal/storage/events}
+      SERVICE_NAME: ratelimitd
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
     volumes:
       - ratelimitd-config-cache:/var/lib/ratelimitd
     networks: [internal, data]
@@ -468,6 +478,7 @@ services:
       SVC_WORKER_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
       # Retencion configurable por entorno (T-05); defaults = decision de negocio.
       RAW_PDFS_EXPIRE_DAYS: ${RAW_PDFS_EXPIRE_DAYS:-7}
+      EXTRACTED_MD_EXPIRE_DAYS: ${EXTRACTED_MD_EXPIRE_DAYS:-30}
       EXTRACTED_TXT_EXPIRE_DAYS: ${EXTRACTED_TXT_EXPIRE_DAYS:-30}
     volumes:
       - ./minio/init-buckets.sh:/init-buckets.sh:ro
@@ -525,6 +536,7 @@ services:
     profiles: ["full"]
     <<: *hardening
     read_only: true
+    secrets: [consul_ui_users, consul_ca_cert]
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
     environment:
@@ -603,6 +615,7 @@ services:
       - consul_ca_cert
     volumes:
       - ./doc-service/entrypoint.sh:/entrypoint.sh:ro
+      - doc-service-config-cache:/var/lib/doc-service
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     command: ["/usr/local/bin/api"]
     environment:
@@ -615,7 +628,10 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
-      MINIO_BUCKET_TXT: extracted-txt
+      # Salida vigente: Markdown (bucket extracted-md, campo md_ref).
+      MINIO_BUCKET_MD: extracted-md
+      # Fallback de lectura para objetos .txt anteriores al cambio de artefacto.
+      MINIO_LEGACY_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       # Redis Streams (con password): publica los trabajos de extraccion.
       # S6-P1-01: modo Sentinel (SPEC 3.5). Con REDIS_ADDR fija el cliente queda
@@ -638,6 +654,7 @@ services:
       CONSUL_HTTP_ADDR: https://consul:8501
       CONSUL_CACERT: /run/secrets/consul_ca_cert
       CONSUL_TOKEN_FILE: /run/secrets/consul_doc_service_token
+      CONFIG_CACHE_PATH: /var/lib/doc-service/config-cache.json
     networks: [internal, data]
     depends_on:
       mongo:
@@ -649,6 +666,11 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 300
+    # El drenaje interno de doc-service es de 15s (shutdownTimeout en
+    # cmd/api/main.go). El default de Docker es 10s, así que sin este margen
+    # el runtime podría mandar SIGKILL antes de que el drain limpie. 20s deja
+    # 5s de colchón para el desregistro de Consul (2s) + cierre de clientes.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
@@ -685,7 +707,8 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?definir en .env}
       MINIO_BUCKET_RAW: raw-pdfs
-      MINIO_BUCKET_TXT: extracted-txt
+      MINIO_BUCKET_MD: extracted-md
+      MINIO_LEGACY_BUCKET_TXT: extracted-txt
       MINIO_WEBHOOK_SECRET: ${MINIO_WEBHOOK_SECRET:?definir en .env}
       REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
       REDIS_MASTER_NAME: myprimary
@@ -707,6 +730,10 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 300
+    # Misma imagen y mismo binario que doc-service: comparte el drenaje
+    # interno de 15s (shutdownTimeout). 20s > default de Docker (10s) para
+    # no recibir SIGKILL antes de que termine el drain.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
@@ -734,6 +761,19 @@ services:
   #
   # Nada de este servicio se publica al host: escucha /healthz, /readyz y
   # /metrics en la red interna para Prometheus (SPEC 10).
+  # Digest pinning (S11-P1-C27): el digest inmutable se publica por
+  # publish-image.yml y se fija por el operador con la referencia completa
+  # `<imagen>@sha256:<digest>`. Compose solo soporta interpolacion de un
+  # nivel (`${VAR:-default}`), por lo que no se puede combinar imagen/tag y
+  # digest en una sola expresion sin romper el path basado en tags. La
+  # variable opcional EXTRACTION_WORKER_DIGEST queda documentada en .env.example
+  # (vacía = se usa la ruta por tag). Si se completa, el operador reemplaza
+  # manualmente la linea `image:` por la referencia con digest. El bloque de
+  # servicio de `ocr-worker` vive mas abajo (S11-P1-C28), no dentro de este.
+  #
+  # Digests publicados (run 44272090569, commit 374d339, linux/amd64):
+  #   ghcr.io/alejo-basile/extraction-worker@sha256:839710e3457b14a66f4b59c4baf43ce96ba948431dafe61710bea07ebd4de88d
+  #   ghcr.io/alejo-basile/ocr-worker@sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b
   extraction-worker:
     image: ${EXTRACTION_WORKER_IMAGE:-ghcr.io/alejo-basile/extraction-worker}:${EXTRACTION_WORKER_TAG:-latest}
     profiles: ["full"]
@@ -778,8 +818,12 @@ services:
       MONGO_DB: ${MONGO_DATABASE:-documents}
       MONGO_TIMEOUT_MS: "3000"
       # MinIO con credenciales propias del worker, nunca la root (SPEC 3.4).
+      # S3_BUCKET_MD es el destino objetivo del artefacto Markdown. El binario
+      # actual todavia lee S3_BUCKET_TXT (migracion pendiente en el repo
+      # extraction-worker, T4.1); se dejan ambos hasta que ese cambio aterrice.
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET_RAW: raw-pdfs
+      S3_BUCKET_MD: extracted-md
       S3_BUCKET_TXT: extracted-txt
       S3_ACCESS_KEY_FILE: /run/secrets/svc_worker_access_key
       S3_SECRET_KEY_FILE: /run/secrets/svc_worker_secret_key
@@ -837,6 +881,89 @@ services:
       timeout: 3s
       retries: 6
       start_period: 15s
+
+  # --- ocr-worker (S11-P1-C28): consumidor OCR de Redis Streams ---------------
+  # Imagen fijada por digest publicado en C27 (infra/docs/evidencias/S11/S11-P1-C27-digests.txt).
+  ocr-worker:
+    image: ${OCR_WORKER_IMAGE:-ghcr.io/alejo-basile/ocr-worker}@${OCR_WORKER_DIGEST:-sha256:3e10b697a35f5fe22b4a3d4bbb148c6bbbd6e7e4fefeb7c341639f7210d0d83b}
+    profiles: ["full"]
+    <<: *hardening
+    read_only: true
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: ["/usr/local/bin/ocr-worker"]
+    volumes:
+      - "./ocr-worker/entrypoint.sh:/entrypoint.sh:ro"
+      # S11-P1-C30: last-known-good KV cache (rootfs is read_only).
+      - "ocr-worker-config-cache:/var/lib/ocr-worker"
+    secrets: [ocr_minio_access_key, ocr_minio_secret_key, ocr_mongo_password, redis_streams_password, consul_ocr_worker_token, consul_ca_cert]
+    environment:
+      REDIS_HOST: redis-streams
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_PASSWORD_FILE: "/run/secrets/redis_streams_password"
+      MONGO_OCR_HOST: mongo
+      MONGO_OCR_USER: ${OCR_MONGO_USER:-ocr-worker}
+      MONGO_OCR_PASSWORD_FILE: /run/secrets/ocr_mongo_password
+      MONGO_OCR_DB: ${MONGO_DATABASE:-documents}
+      # El binario lee MONGO_DB: se mantiene separado de MONGO_OCR_DB (que arma
+      # el URI + authSource en el entrypoint) y se cita para no compartir la
+      # linea exacta con extraction-worker (guardarrail C25 Check 5).
+      MONGO_DB: "${MONGO_DATABASE:-documents}"
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_RAW: raw-pdfs
+      S3_BUCKET_TXT: extracted-txt
+      S3_ACCESS_KEY_FILE: /run/secrets/ocr_minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/ocr_minio_secret_key
+      OCR_DPI: "150"
+      OCR_LIMIT_W: "3500"
+      OCR_LIMIT_PIX: "12000000"
+      OCR_LANG: spa+eng
+      OCR_OEM: "1"
+      OCR_PSM: "3"
+      OCR_MAX_ATTEMPTS: "3"
+      OCR_CONSUMER_BLOCK_MS: "5000"
+      OCR_CONSUMER_COUNT: "1"
+      REDIS_OCR_STREAM: ${REDIS_OCR_STREAM:-stream:ocr-processing}
+      REDIS_OCR_GROUP: ${REDIS_OCR_GROUP:-ocr-workers}
+      REDIS_OCR_DLQ_STREAM: ${REDIS_OCR_DLQ_STREAM:-stream:ocr-processing-dlq}
+      METRICS_ADDR: "0.0.0.0:8080"
+      CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
+      SERVICE_NAME: ocr-worker
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
+      CONSUL_CACERT: "/run/secrets/consul_ca_cert"
+      CONSUL_TOKEN_FILE: /run/secrets/consul_ocr_worker_token
+      # S11-P1-C30: KV overlay (restart-only keys) + last-known-good cache.
+      CONSUL_HTTP_ADDR: https://consul-agent:8501
+      CONSUL_KV_PREFIX: config/ocr-worker/
+      CONSUL_KV_CACHE_PATH: /var/lib/ocr-worker/config-cache.json
+      CONSUL_KV_DISABLED: ${CONSUL_KV_DISABLED:-false}
+      RUST_LOG: ${RUST_LOG:-info}
+    networks: [internal, data]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis-streams:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 200
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+      nproc:
+        soft: 200
+        hard: 200
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
 
   # --- Observabilidad (SPEC 10) ---------------------------------------------
   prometheus:
@@ -967,8 +1094,6 @@ services:
     image: grafana/grafana:11.6.0
     profiles: ["full"]
     <<: *hardening
-    ports:
-      - "3000:3000"
     secrets: [grafana_admin_password]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
@@ -977,6 +1102,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks: [internal]
     mem_limit: 512m
     cpus: 0.5
