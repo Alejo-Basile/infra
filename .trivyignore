@@ -246,6 +246,8 @@ CVE-2026-96748 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-
 CVE-2026-96749 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2026-97031 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 CVE-2026-124709 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
+CVE-2026-124851 # owner=P1 review=2026-12-01 mitigation=accepted-exception no-bookworm-fix image-upgrade-backlog
+CVE-2026-129975 # owner=P1 review=2026-12-01 mitigation=accepted-exception fixable-rebuild-pending image-upgrade-backlog
 CVE-2026-107494 # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 GHSA-5p4m-2wfm-xmqj # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
 GHSA-hrxh-6v49-42gf # owner=P1 review=2026-12-01 mitigation=accepted-exception image-upgrade-backlog
