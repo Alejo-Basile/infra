@@ -162,14 +162,3 @@ Cambios de infraestructura acompanantes:
 Rollback verificado por tests (no ejecutado para no dejar el entorno sin
 registro): CONSUL_REGISTRATION_DISABLED=true hace register/deregister no-op y
 no arranca el loop de reintento (test disabled_no_hace_http).
-
-=== RE-VERIFICACION 2026-11-18 ===
-DoD 1 registro no bloqueante: verificado por codigo + cargo test verde.
-DoD 2 ID/name/tags: verificado (svc-extraction-worker, tags http,s11,extraction-worker,metrics_path=/metrics).
-DoD 3 check HTTP /healthz 10s/3s/1m: verificado en tests.
-DoD 4 desregistro 2s dentro 6s: verificado (shutdown_it::sigterm_drena_en_menos_de_6s ok).
-DoD 5 CONSUL_REGISTRATION_DISABLED no-op: test disabled_no_hace_http ok.
-DoD 6 TLS+token por archivo, sin secretos en logs: verificado.
-Gates: cargo fmt --all --check ok; cargo build --locked ok; cargo clippy -D warnings ok; cargo test ok (102 passed); docker compose config --quiet ok.
-Live: 1 replica registrada passing (extraction-worker-c975a34b33d5).
-Resultado: PASS

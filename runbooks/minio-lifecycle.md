@@ -2,8 +2,8 @@
 
 Este runbook cubre cómo reejecutar el bootstrap de MinIO, cómo inspeccionar y
 cambiar las reglas de expiración, y cómo revertirlas. Las retencias vigentes son
-**7 días en `raw-pdfs`** y **30 días en `extracted-md`** (salida vigente, Markdown)
-y en `extracted-txt` (objetos `.txt` legacy) — decisión de negocio en
+**7 días en `raw-pdfs`** y **30 días en `extracted-md`** (salida vigente,
+Markdown) y en `extracted-txt` (objetos `.txt` legacy) — decisión de negocio en
 `plan-S2-P1.md` §4; ajustables por env sin editar scripts
 (`RAW_PDFS_EXPIRE_DAYS`, `EXTRACTED_MD_EXPIRE_DAYS`, `EXTRACTED_TXT_EXPIRE_DAYS`).
 

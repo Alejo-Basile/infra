@@ -132,25 +132,12 @@ http:
       priority: 300
       middlewares: [consul-ui-auth@file, sec-headers@file, consul-ui-root@file]
 
-    # Grafana: unico acceso es por el gateway; no publica puerto al host.
-    # La autenticacion la resuelve Grafana (admin + password file).
-    r-grafana:
-      rule: "Host(`grafana.localhost`)"
-      entryPoints: [websecure]
-      tls: true
-      service: grafana
-      priority: 300
-      middlewares: [sec-headers@file]
-
   services:
     legacy-monolito:
       loadBalancer:
         servers:
           - url: "http://monolito:8000"
 
-    # docv2-canary stays a static file-provider child: a weighted child must
-    # always exist, and it is single-instance by design. Keeping it static
-    # guarantees the weighted router stays valid even with the canary stopped.
     # docv2-canary: servicio canary ahora declarado en compose (weight 0 por
     # defecto). Promocion via set-canary-weight.sh.
     docv2-canary:
@@ -168,11 +155,6 @@ http:
         servers:
           - url: "https://consul:8501"
         serversTransport: consul-ui-transport@file
-
-    grafana:
-      loadBalancer:
-        servers:
-          - url: "http://grafana:3000"
 
     r-inv-pdf-process-weighted:
       weighted:

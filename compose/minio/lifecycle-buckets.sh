@@ -10,8 +10,8 @@ ALIAS="local"
 # Valores de retencion configurables por entorno; los defaults son la decision
 # registrada en §4 (raw-pdfs 7 dias, extracted-md/extracted-txt 30 dias —
 # retencion de negocio, ajustable sin tocar el script).
-# extracted-txt solo aplica a objetos .txt legacy; extracted-md es la salida
-# vigente (cambio de artefacto .txt -> .md).
+# extracted-md es la salida vigente (Markdown); extracted-txt solo aplica a
+# objetos .txt legacy que doc-service sigue sirviendo por el read-fallback.
 RAW_PDFS_EXPIRE_DAYS="${RAW_PDFS_EXPIRE_DAYS:-7}"
 EXTRACTED_MD_EXPIRE_DAYS="${EXTRACTED_MD_EXPIRE_DAYS:-30}"
 EXTRACTED_TXT_EXPIRE_DAYS="${EXTRACTED_TXT_EXPIRE_DAYS:-30}"
