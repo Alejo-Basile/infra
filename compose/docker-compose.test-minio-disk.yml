@@ -60,6 +60,7 @@ services:
     volumes:
       - ./prometheus/minio-disk.test.yml:/etc/prometheus/minio-disk.test.yml:ro
       - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - ./prometheus/alert.rules.minio-test.yml:/etc/prometheus/alert.rules.minio-test.yml:ro
     ports:
       - "19090:9090"
     tmpfs:

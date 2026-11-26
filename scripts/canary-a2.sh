@@ -60,7 +60,7 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 children = d["http"]["services"]["r-api-v2-weighted"]["weighted"]["services"]
 w = {c["name"]: c["weight"] for c in children}
-print(w["docv2"], w["docv2-canary"])
+print(w["docv2@docker"], w["docv2-canary"])
 PY
 }
 
@@ -267,7 +267,7 @@ for a in data:
   docker logs "$TRAEFIK_CID" >/tmp/a2-baseline.log 2>&1 || true
   log_stats_since /tmp/a2-baseline.log "$cutoff" | tee -a "$EVIDENCE_PATH" >/tmp/a2-baseline-stats.txt
   # Referencias: docv2 estable y monolito. Si no hay trafico, se registra NA.
-  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@file_p95_ms)
+  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@docker_p95_ms)
   base_mono=$(kv /tmp/a2-baseline-stats.txt legacy-monolito@file_p95_ms)
   say "referencia p95: docv2=${base_stable:-NA} monolito=${base_mono:-NA}"
 }
@@ -345,7 +345,7 @@ observe(){
   CURRENT_PHASE=observe
   say "=== 4. OBSERVACION (samples=$OBSERVE_SAMPLES interval=${OBSERVE_INTERVAL_SECONDS}s probe=${PROBE_RPS}rps) ==="
 
-  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@file_p95_ms)
+  base_stable=$(kv /tmp/a2-baseline-stats.txt docv2@docker_p95_ms)
   base_mono=$(kv /tmp/a2-baseline-stats.txt legacy-monolito@file_p95_ms)
   base_nt=$(cat /tmp/a2-baseline-nonterminal.txt 2>/dev/null || echo NA)
   base_alerts=$(cat /tmp/a2-baseline-alerts.txt 2>/dev/null || echo "")
@@ -371,7 +371,7 @@ observe(){
     canary=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_n); canary="${canary:-0}"
     c5xx=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_err); c5xx="${c5xx:-0}"
     p95c=$(kv /tmp/a2-sample-stats.txt docv2-canary@file_p95_ms); p95c="${p95c:-NA}"
-    p95s=$(kv /tmp/a2-sample-stats.txt docv2@file_p95_ms); p95s="${p95s:-NA}"
+    p95s=$(kv /tmp/a2-sample-stats.txt docv2@docker_p95_ms); p95s="${p95s:-NA}"
     cum_n=$((cum_n + canary)); cum_err=$((cum_err + c5xx))
 
     nt=$(nonterminal_docs); nt="${nt:-NA}"
@@ -443,8 +443,8 @@ rollback(){
   docker logs "$cid" 2>&1 | tail -n +$((cbefore + 1)) >/tmp/a2-rollback.log
   log_stats /tmp/a2-rollback.log | tee -a "$EVIDENCE_PATH" >/tmp/a2-rollback-stats.txt
   rcanary=$(kv /tmp/a2-rollback-stats.txt docv2-canary@file_n); rcanary="${rcanary:-0}"
-  rstable=$(kv /tmp/a2-rollback-stats.txt docv2@file_n); rstable="${rstable:-0}"
-  say "distribucion post-rollback: docv2=$rstable canary=$rcanary"
+  rstable=$(kv /tmp/a2-rollback-stats.txt docv2@docker_n); rstable="${rstable:-0}"
+  say "distribucion post-rollback: docv2@docker=$rstable canary=$rcanary"
 
   if (( rs >= 60 )); then say "FAIL rollback: ${rs}s >= 60s"; exit 40; fi
   if (( rcanary > 0 )); then say "FAIL rollback: el canary sigue recibiendo $rcanary peticiones"; exit 40; fi

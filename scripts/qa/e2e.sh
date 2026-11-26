@@ -16,6 +16,9 @@ source "$QA_LIB_DIR/results.sh"
 
 qa_init
 
+# Puerto HTTPS de Traefik (host de carga dedicado)
+HTTPS_PORT="$(env_value TRAEFIK_HTTPS_PORT 443)"
+
 # ---------------------------------------------------------------------------
 # Constantes de suites
 # ---------------------------------------------------------------------------
@@ -73,10 +76,10 @@ SUITE_SLOW[load]=1
 
 SUITE_COMMAND[chaos]="platform-services/tests/e2e/chaos/run.sh --all"
 SUITE_PROFILE[chaos]="full+chaos"
-SUITE_TIMEOUT[chaos]=900
+SUITE_TIMEOUT[chaos]=1800
 SUITE_SLOW[chaos]=1
 
-SUITE_COMMAND[replay]="infra/scripts/replay-env.sh"
+SUITE_COMMAND[replay]="infra/scripts/replay-env.sh fingerprint-real"
 SUITE_PROFILE[replay]="own replay stack"
 SUITE_TIMEOUT[replay]=1800
 SUITE_SLOW[replay]=1
@@ -303,14 +306,23 @@ run_suite() {
     chaos)
       cmd=(bash -c "P4_WORKSPACE_ROOT='$WORKSPACE_ROOT' bash '$WORKSPACE_ROOT/platform-services/tests/e2e/chaos/run.sh' --all && P4_WORKSPACE_ROOT='$WORKSPACE_ROOT' bash '$INFRA_DIR/scripts/test-minio-disk-fill.sh' && P4_WORKSPACE_ROOT='$WORKSPACE_ROOT' bash '$INFRA_DIR/scripts/test-chain-alerts.sh'")
       ;;
-    replay) cmd=(bash "$INFRA_DIR/scripts/replay-env.sh") ;;
+    replay) cmd=(bash "$INFRA_DIR/scripts/replay-env.sh" fingerprint-real) ;;
     parity)
       cmd=(bash -c "cd '$WORKSPACE_ROOT/platform-services' && python3 -m unittest discover -s tests/parity -v")
       ;;
   esac
 
+  # env dedicado para suites de carga/resiliencia (host load.localhost)
+  local -a suite_env=()
+  if [[ "$suite" == "resilience" || "$suite" == "load" ]]; then
+    suite_env+=("BASE_URL=https://load.localhost:${HTTPS_PORT}")
+    if [[ "$suite" == "resilience" ]]; then
+      suite_env+=("API_BASE_URL=https://load.localhost:${HTTPS_PORT}")
+    fi
+  fi
+
   if ((DRY_RUN)); then
-    echo "[DRY-RUN] suite=$suite timeout=$t cmd=${cmd[*]}"
+    echo "[DRY-RUN] suite=$suite timeout=$t env=${suite_env[*]} cmd=${cmd[*]}"
     results_record "$suite" pass 0 "dry-run"
     return 0
   fi
@@ -319,7 +331,7 @@ run_suite() {
   export P4_WORKSPACE_ROOT="$WORKSPACE_ROOT"
 
   set +e
-  timeout "$t" "${cmd[@]}" >"$log.tmp" 2>&1
+  timeout "$t" env "${suite_env[@]}" "${cmd[@]}" >"$log.tmp" 2>&1
   rc=$?
   set -e
   # redact

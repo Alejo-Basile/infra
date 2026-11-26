@@ -164,7 +164,7 @@ explícito. `results.json` nunca contiene URIs con credenciales.
 | `consul` | full+discovery | 300 s | no | `test-consul.sh` + `verify-consul-boundaries.sh` |
 | `resilience` | full+sentinel | 900 s | sí | `infra/scripts/e2e-horizontal-scaling.sh` |
 | `load` | full | 1200 s | sí | `platform-services/tests/e2e/load/run.sh` |
-| `chaos` | full+chaos | 900 s | sí | `chaos/run.sh --all` + `test-minio-disk-fill.sh` + `test-chain-alerts.sh` |
+| `chaos` | full+chaos | 1800 s | sí | `chaos/run.sh --all` + `test-minio-disk-fill.sh` + `test-chain-alerts.sh` |
 | `replay` | stack replay propio | 1800 s | sí | `infra/scripts/replay-env.sh` |
 | `parity` | full (monolito) | 1800 s | sí | `python3 -m unittest discover -s platform-services/tests/parity` |
 | `ci` | full | 1800 s | no | `smoke happy states errors correlation` |

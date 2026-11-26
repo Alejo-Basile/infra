@@ -15,8 +15,9 @@ cd "$ROOT"
 compose() { docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 real_compose() { docker compose -p infra --env-file "$REAL_ENV" -f "$REAL_COMPOSE" "$@"; }
 
-cmd="${1:-help}"
+usage() { echo "Usage: $0 {up|reset|down|fingerprint|fingerprint-real|check-isolation|check-drift|help}"; }
 
+cmd="${1:-}"
 # ---------- helpers ----------
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -293,5 +294,7 @@ case "$cmd" in
   fingerprint) fingerprint ;;
   fingerprint-real) fingerprint_real ;;
   check-drift) check_drift ;;
-  help|*) echo "Usage: $0 {up|reset|down|fingerprint|fingerprint-real|check-isolation|check-drift|help}" ;;
+  help) usage; exit 0 ;;
+  "") usage >&2; exit 2 ;;
+  *) echo "ERROR: subcomando desconocido: $cmd" >&2; usage >&2; exit 2 ;;
 esac
