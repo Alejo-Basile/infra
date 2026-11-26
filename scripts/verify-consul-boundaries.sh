@@ -170,7 +170,9 @@ fi
 
 # Check 6
 if grep -q 'svc-ocr-worker' "$PROMETHEUS_CONFIG" 2>/dev/null; then
-  if grep -Eq 'route\("/metrics"|resource\("/metrics"' "$OCR_MAIN_RS" 2>/dev/null; then
+  if [ ! -r "$OCR_MAIN_RS" ] || [ ! -f "$OCR_MAIN_RS" ]; then
+    skip "Check 6: fuente ocr-worker no disponible en este checkout (§0.2, C31)"
+  elif grep -Eq 'route\("/metrics"|resource\("/metrics"' "$OCR_MAIN_RS" 2>/dev/null; then
     pass "Check 6: svc-ocr-worker con /metrics"
   else
     failm "FAIL: svc-ocr-worker en consul_sd_configs sin /metrics verificado (§0.2, C31)"

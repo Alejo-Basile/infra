@@ -32,7 +32,6 @@ jobs:
           sudo apt-get install -y shellcheck
           pip install yamllint
       - name: Lint
-        working-directory: infra
         run: ./scripts/qa/qa.sh test infra --lint
 
   e2e:
@@ -45,19 +44,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl openssl
       - name: Bring up stack
-        working-directory: infra
         run: ./scripts/qa/qa.sh up --init-secrets --profile full --timeout 300
       - name: Run e2e
-        working-directory: infra
         run: ./scripts/qa/qa.sh e2e ci
       - name: Status on failure
         if: failure()
-        working-directory: infra
         run: ./scripts/qa/qa.sh status
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qa-artifacts
-          path: infra/.local/qa
+          path: .local/qa
           retention-days: 7
