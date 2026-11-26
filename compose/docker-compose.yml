@@ -662,6 +662,20 @@ services:
       CONSUL_HTTP_TOKEN_FILE: /run/secrets/consul_doc_service_token
       CONSUL_REGISTRATION_ADDR: https://consul-agent:8501
       SERVICE_NAME: doc-service
+      # vacio = autodetecta la interfaz que alcanza consul-agent:8501; fallback/escape hatch cuando la deteccion falla.
+      CONSUL_SERVICE_ADDR: ${CONSUL_SERVICE_ADDR:-}
+      CONSUL_REGISTRATION_DISABLED: ${CONSUL_REGISTRATION_DISABLED:-false}
+    # Descubrimiento por replica para Traefik (Docker provider). Todas las
+    # replicas comparten estas labels: Traefik las agrega en un unico service
+    # `docv2@docker` con un server por contenedor y solo enruta a las replicas
+    # que responden GET /healthz. No replicar en doc-service-canary: ese sigue
+    # siendo un hijo estatico del file provider (ver routing.yml).
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.docv2.loadBalancer.server.port=8080
+      - traefik.http.services.docv2.loadBalancer.healthCheck.path=/healthz
+      - traefik.http.services.docv2.loadBalancer.healthCheck.interval=10s
+      - traefik.http.services.docv2.loadBalancer.healthCheck.timeout=3s
     networks: [internal, data]
     depends_on:
       mongo:

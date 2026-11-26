@@ -1,0 +1,72 @@
+# docker-compose.test.yml — override efímero SOLO para tests de integración.
+#
+# Se mergea DESPUÉS de docker-compose.yml + docker-compose.build.yml y se usa
+# únicamente con proyectos `qa-it-*` (lib/deps.sh). NUNCA con el proyecto
+# `infra`: publica puertos en 127.0.0.1 para que los tests corran en el host
+# sin tocar el stack de desarrollo.
+#
+# Aislamiento de red: el compose base declara las redes con `name:` explícito
+# (infra_data et al.), así que sin este override un proyecto efímero se uniría a
+# las MISMAS redes que el stack de desarrollo y el DNS de `minio`/`mongo`
+# resolvería a los dos. Se renombran por proyecto para que el efímero hable solo
+# con sus propios contenedores.
+#
+# Notas de plataforma:
+# - Mongo se re-bindea a 0.0.0.0 porque el compose de desarrollo lo limita a
+#   `localhost,mongo` y el puerto publicado no sería alcanzable desde el host.
+#   Los tests conectan con `directConnection=true` (el RS anuncia `mongo:27017`).
+# - Los Sentinels anuncian IPs de contenedor (no hostnames) para que un proceso
+#   del host en Linux pueda alcanzar al primario. En Docker Desktop (macOS /
+#   Windows) esa IP no es enrutable: los tests de failover Sentinel deben
+#   ejecutarse en Linux/CI.
+# - Todo el proyecto se destruye con `down -v`: sus volúmenes son efímeros.
+
+# Ajustes de Sentinel para los tests: el entrypoint compartido los aplica por
+# env. NO se reemplaza el entrypoint (una version inline anterior no resolvia el
+# secreto desde `_FILE` y los sentinels entraban en crash loop con exit 2).
+x-sentinel-env: &sentinel-env
+  SENTINEL_ANNOUNCE_HOSTNAMES: "no"
+  SENTINEL_PROTECTED_MODE: "no"
+
+# Redes propias del proyecto efímero: sin esto el DNS de un servicio resuelve
+# también contra los contenedores del stack de desarrollo, que comparten
+# `infra_data`. `QA_IT_PROJECT` lo exporta lib/deps.sh.
+networks:
+  edge:
+    name: ${QA_IT_PROJECT:?definir QA_IT_PROJECT}-edge
+  internal:
+    name: ${QA_IT_PROJECT:?definir QA_IT_PROJECT}-internal
+  data:
+    name: ${QA_IT_PROJECT:?definir QA_IT_PROJECT}-data
+
+services:
+  mongo:
+    ports:
+      - "127.0.0.1:${QA_MONGO_PORT:-27117}:27017"
+    command: ["--replSet", "rs0", "--bind_ip", "0.0.0.0", "--keyFile", "/etc/mongo/keyfile"]
+  redis-streams:
+    ports:
+      - "127.0.0.1:${QA_REDIS_PORT:-27118}:6379"
+  minio:
+    ports:
+      - "127.0.0.1:${QA_MINIO_PORT:-27119}:9000"
+    # `/health/live` responde antes de que MinIO cargue IAM; el job de init
+    # corre entonces contra un servidor a medio inicializar y falla de forma
+    # intermitente. `/health/cluster` espera a que el servidor esté listo.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/cluster"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  sentinel-1:
+    ports:
+      - "127.0.0.1:${QA_SENTINEL_PORT_1:-27120}:26379"
+    environment: *sentinel-env
+  sentinel-2:
+    ports:
+      - "127.0.0.1:${QA_SENTINEL_PORT_2:-27121}:26379"
+    environment: *sentinel-env
+  sentinel-3:
+    ports:
+      - "127.0.0.1:${QA_SENTINEL_PORT_3:-27122}:26379"
+    environment: *sentinel-env

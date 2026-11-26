@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Genera certificados locales para api.localhost y s3.localhost.
+# Genera certificados locales para api.localhost, s3.localhost y grafana.localhost.
 # Preferencia: mkcert (CA local confiable). Fallback: openssl autofirmado.
 # En produccion: ACME (Let's Encrypt staging primero).
 # Uso: ./scripts/gen-certs.sh   (desde la raiz de infra/)
@@ -14,10 +14,11 @@ if command -v mkcert >/dev/null 2>&1; then
   mkcert -install || true
   mkcert -cert-file "$CERT_DIR/api.localhost.pem" -key-file "$CERT_DIR/api.localhost-key.pem" api.localhost
   mkcert -cert-file "$CERT_DIR/s3.localhost.pem"  -key-file "$CERT_DIR/s3.localhost-key.pem"  s3.localhost
+  mkcert -cert-file "$CERT_DIR/grafana.localhost.pem" -key-file "$CERT_DIR/grafana.localhost-key.pem" grafana.localhost
 else
   echo "mkcert no disponible: usando openssl (autofirmado)."
   echo "Los clientes deberan usar -k o confiar manualmente en los PEM."
-  for host in api.localhost s3.localhost; do
+  for host in api.localhost s3.localhost grafana.localhost; do
     openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
       -keyout "$CERT_DIR/${host}-key.pem" \
       -out "$CERT_DIR/${host}.pem" \

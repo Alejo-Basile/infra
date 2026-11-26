@@ -26,6 +26,7 @@ scrape_configs:
         services:
           - svc-doc-service
           - svc-extraction-worker
+          - svc-ocr-worker
     relabel_configs:
       - source_labels: [__meta_consul_service_id]
         target_label: instance

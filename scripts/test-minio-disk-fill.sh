@@ -9,8 +9,8 @@
 #   - curl y python3 en el host
 #
 # Variables de entorno (opcionales):
-#   S5P104_WAIT_HIGH       segundos maximos de espera para MinioDiskHigh   (420)
-#   S5P104_WAIT_CRITICAL   segundos maximos de espera para MinioDiskCritical (420)
+#   S5P104_WAIT_HIGH       segundos maximos de espera para MinioDiskHigh   (240)
+#   S5P104_WAIT_CRITICAL   segundos maximos de espera para MinioDiskCritical (240)
 #
 # Exit codes: 0 = ambos dispararon; 4 = llenado/estado incompleto; otro = fallo
 # de precondicion (tmpfs no verificable, stack no sano, etc.).
@@ -23,8 +23,8 @@ DATA_DIR="/bitnami/minio/data"
 EXPECTED_TMPFS_SIZE="512m"
 PROM_URL="http://127.0.0.1:19090"
 AM_URL="http://127.0.0.1:19093"
-WAIT_HIGH="${S5P104_WAIT_HIGH:-420}"
-WAIT_CRITICAL="${S5P104_WAIT_CRITICAL:-420}"
+WAIT_HIGH="${S5P104_WAIT_HIGH:-240}"
+WAIT_CRITICAL="${S5P104_WAIT_CRITICAL:-240}"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
@@ -218,7 +218,7 @@ main() {
     sleep 1
   done
   if [[ "$state" != "firing" ]]; then
-    log "ADVERTENCIA: MinioDiskCritical no llego a firing en ${WAIT_CRITICAL}s (estado=$state); la regla exige for: 5m sobre 0.85" >&2
+    log "ADVERTENCIA: MinioDiskCritical no llego a firing en ${WAIT_CRITICAL}s (estado=$state); la regla aislada exige for: 45s sobre 0.85 (produccion for: 5m)" >&2
     log "tiempo_cruce(fill85)=$start firing=no-observado estado=$state"
     return 4
   fi

@@ -159,11 +159,11 @@ if [[ "${1:-}" == "--verify" ]]; then
   BASE="https://consul:8501"
   # create probe keys
   for key in config/doc-service/__acl_probe config/meta/__acl_probe config/extraction-worker/__acl_probe; do
-    printf 'probe' | docker exec -i "$CONSUL_CT" sh -c "read T; curl -sS -o /dev/null -w '%{http_code}' --cacert $CA -H 'X-Consul-Token: '\$T -X PUT --data-binary @- $BASE/v1/kv/$key" <<<"$OP_TOKEN" >/dev/null
+    printf '%s\nprobe' "$OP_TOKEN" | docker exec -i "$CONSUL_CT" sh -c "read T; curl -sS -o /dev/null -w '%{http_code}' --cacert $CA -H 'X-Consul-Token: '\$T -X PUT --data-binary @- $BASE/v1/kv/$key" >/dev/null
   done
   # rate-limiter and ratelimitd probe
   for key in config/rate-limiter/__acl_probe config/ratelimitd/__acl_probe; do
-    printf 'probe' | docker exec -i "$CONSUL_CT" sh -c "read T; curl -sS -o /dev/null -w '%{http_code}' --cacert $CA -H 'X-Consul-Token: '\$T -X PUT --data-binary @- $BASE/v1/kv/$key" <<<"$OP_TOKEN" >/dev/null
+    printf '%s\nprobe' "$OP_TOKEN" | docker exec -i "$CONSUL_CT" sh -c "read T; curl -sS -o /dev/null -w '%{http_code}' --cacert $CA -H 'X-Consul-Token: '\$T -X PUT --data-binary @- $BASE/v1/kv/$key" >/dev/null
   done
 
   probe() { # probe <tokenfile or 'anon'> <key>

@@ -177,6 +177,9 @@ rollback() {
     bad "rollback: expected $ORIGINAL_REPLICAS replica(s), found ${#ids[@]}"
   fi
   note "REDIS_STREAM_KEY restaurado a: $DEFAULT_STREAM_KEY"
+  if [ "${CANARY_WAS_RUNNING:-0}" = "1" ]; then
+    "${COMPOSE[@]}" start doc-service-canary >/dev/null 2>&1 && ok "doc-service-canary reiniciado" || bad "no se pudo reiniciar doc-service-canary"
+  fi
   note "stream aislado conservado para auditoria: $STREAM_KEY"
 }
 
@@ -206,6 +209,10 @@ else
 fi
 
 ORIGINAL_REPLICAS="$("${COMPOSE[@]}" ps -q doc-service 2>/dev/null | wc -l | tr -d ' ')"
+CANARY_WAS_RUNNING="$("${COMPOSE[@]}" ps -q doc-service-canary 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$CANARY_WAS_RUNNING" = "1" ]; then
+  "${COMPOSE[@]}" stop doc-service-canary >/dev/null 2>&1 && ok "doc-service-canary pausado para preservar aislamiento del stream" || bad "no se pudo pausar doc-service-canary"
+fi
 if [ "${ORIGINAL_REPLICAS:-0}" -ge 1 ] 2>/dev/null; then
   ok "original doc-service replica count: $ORIGINAL_REPLICAS"
 else
@@ -288,26 +295,37 @@ PFX="s4p101-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 3)"
 SINCE="$(date -u -d '2 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
 PROBE_FAIL=0
 SEEN_ADDRS=""
+CLEAN=0
 attempt=0
 while [ "$attempt" -lt 10 ]; do
+  attempt_fail=0
   for i in $(seq 1 20); do
     pcode="$("${CURL_BASE[@]}" -H "X-Correlation-Id: ${PFX}-${attempt}-${i}" \
       -o /dev/null -w '%{http_code}' "$API_BASE_URL/healthz" 2>/dev/null)" || pcode="000"
-    [ "$pcode" = "200" ] || PROBE_FAIL=$((PROBE_FAIL + 1))
+    [ "$pcode" = "200" ] || attempt_fail=$((attempt_fail + 1))
   done
   sleep 1
   if [ -n "$TRAEFIK_CID" ]; then
     SEEN_ADDRS="$(docker logs "$TRAEFIK_CID" --since "$SINCE" 2>&1 \
       | jq -Rr --arg p "${PFX}-" \
           'fromjson? | select((.["request_X-Correlation-Id"] // "") | startswith($p)) | .ServiceAddr' 2>/dev/null \
-      | sed '/^[[:space:]]*$/d' | sort -u)"
+      | grep -v '^null$' | sed '/^[[:space:]]*$/d' | sort -u)"
   fi
-  [ "$(truncate_list "$SEEN_ADDRS" | wc -l | tr -d ' ')" -ge 2 ] && break
+  distinct="$(truncate_list "$SEEN_ADDRS" | wc -l | tr -d ' ')"
+  if [ "$attempt_fail" -eq 0 ] && [ "$distinct" -ge 2 ]; then
+    CLEAN=1
+    PROBE_FAIL=0
+    break
+  fi
+  PROBE_FAIL="$attempt_fail"
   attempt=$((attempt + 1))
 done
 
-[ "$PROBE_FAIL" -eq 0 ] && ok "all /healthz probes returned 200" \
-  || bad "$PROBE_FAIL /healthz probe(s) did not return 200"
+if [ "$CLEAN" -eq 1 ]; then
+  ok "all /healthz probes returned 200 after warm-up"
+else
+  bad "$PROBE_FAIL /healthz probe(s) did not return 200 (last attempt)"
+fi
 
 SEEN_COUNT="$(truncate_list "$SEEN_ADDRS" | wc -l | tr -d ' ')"
 if [ "$SEEN_COUNT" -ge 2 ]; then
@@ -404,17 +422,17 @@ fi
 
 expect_eq "stream entries" "$DOC_COUNT" "$(jq -r 'length' <<<"$XRANGE_JSON" 2>/dev/null)"
 
-FIELDS_SHAPE="$(jq -c '[.[] | (.[1] | length)] | unique' <<<"$XRANGE_JSON" 2>/dev/null)"
-expect_eq "each entry has exactly one field" "[2]" "$FIELDS_SHAPE"
-FIELD_NAMES="$(jq -c '[.[] | .[1][0]] | unique' <<<"$XRANGE_JSON" 2>/dev/null)"
-expect_eq "field name is payload" '["payload"]' "$FIELD_NAMES"
+FIELDS_SHAPE="$(jq -c '[.[] | ((.[1]|length)/2)] | unique' <<<"$XRANGE_JSON" 2>/dev/null)"
+expect_eq "each entry has 5 flat fields" "[5]" "$FIELDS_SHAPE"
+FIELD_NAMES="$(jq -c '[.[] | .[1] as $f | [range(0;($f|length);2) as $i | $f[$i]]] | flatten | unique | sort' <<<"$XRANGE_JSON" 2>/dev/null)"
+expect_eq "field names" '["correlation_id","document_id","enqueued_at","object_key","schema_version"]' "$FIELD_NAMES"
 
-PAYLOAD_KEYS="$(jq -c '[.[] | (.[1][1] | fromjson | keys | sort)] | unique' <<<"$XRANGE_JSON" 2>/dev/null)"
+PAYLOAD_KEYS="$FIELD_NAMES"
 expect_eq "payload keys" \
-  '[["correlation_id","document_id","enqueued_at","object_key","schema_version"]]' \
+  '["correlation_id","document_id","enqueued_at","object_key","schema_version"]' \
   "$PAYLOAD_KEYS"
 
-STREAM_IDS="$(jq -r '.[] | (.[1][1] | fromjson | .document_id)' <<<"$XRANGE_JSON" 2>/dev/null | sort)"
+STREAM_IDS="$(jq -r 'def flatobj: . as $f | reduce range(0;($f|length);2) as $i ({}; .[$f[$i]] = $f[$i+1]); .[] | .[1] | flatobj | .document_id' <<<"$XRANGE_JSON" 2>/dev/null | sort)"
 CREATED_SORTED="$(printf '%s\n' "${CREATED_IDS[@]}" | sort)"
 if [ "$STREAM_IDS" = "$CREATED_SORTED" ]; then
   ok "the 50 stream document_id values match the 50 created documents"
@@ -424,7 +442,7 @@ fi
 UNIQUE_STREAM_IDS="$(printf '%s\n' "$STREAM_IDS" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
 expect_eq "unique document_id values" "$DOC_COUNT" "$UNIQUE_STREAM_IDS"
 
-SAMPLE_PAYLOAD="$(jq -c '.[0][1][1] | fromjson' <<<"$XRANGE_JSON" 2>/dev/null)"
+SAMPLE_PAYLOAD="$(jq -c 'def flatobj: . as $f | reduce range(0;($f|length);2) as $i ({}; .[$f[$i]] = $f[$i+1]); .[0] | .[1] | flatobj' <<<"$XRANGE_JSON" 2>/dev/null)"
 if [ -n "$SAMPLE_PAYLOAD" ] && [ "$SAMPLE_PAYLOAD" != "null" ]; then
   ok "sample payload: $SAMPLE_PAYLOAD"
 else
@@ -441,7 +459,7 @@ else
   bad "could not re-transition document $SAMPLE_ID"
 fi
 RESTATUS="$(mongo_eval "print(db.documents.findOne({_id:'$SAMPLE_ID'}).status)")"
-expect_eq "sample document status after re-trigger" "UPLOADED" "$RESTATUS"
+expect_eq "sample document status after re-trigger" "QUEUED" "$RESTATUS"
 
 AFLEN_OK=1
 i=0

@@ -23,7 +23,7 @@ http:
       rule: "Host(`load.localhost`) && Path(`/healthz`)"
       entryPoints: [websecure]
       tls: true
-      service: docv2
+      service: docv2@docker
       priority: 300
       middlewares: [sec-headers@file]
 

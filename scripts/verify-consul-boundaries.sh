@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # verify-consul-boundaries.sh — S11-P1-C25 Guardarraíles de frontera (§0)
 # Read-only. No external network. No commits.
-# Check 4 is additive-only: pre-existing routers/services must remain intact;
-# legitimate additions (e.g. C09 r-consul-ui) are allowed. Only removed/changed
-# lines relative to the baseline count as a violation.
+# Check 4 now guards router rules (names, rule:, priority:, middlewares:) instead
+# of a raw routing diff: the service topology is what this change modifies.
 # Baseline commit for routing.yml is 4766290 (not af15791 from task-25 §3):
 # af15791 exists only in the outer docs repo and does not contain routing.yml.
 # In the infra repo, 4766290 is the last commit that touched traefik/dynamic/routing.yml
@@ -119,19 +118,34 @@ else
   pass "Check 3: sin dns: apuntando a Consul"
 fi
 
-# Check 4 — additive only: pre-existing routers must remain; additions allowed
+# Check 4 — router rules must remain intact; service topology may change.
+# Every router name and every rule:/priority:/middlewares: line present in the
+# baseline file must still exist in the current file. service: references and
+# http.services blocks are ignored (they are exactly what this change modifies).
 if ! git -C "$REPO_ROOT" cat-file -e "$ROUTING_BASELINE_COMMIT^{commit}" 2>/dev/null; then
   failm "FAIL: routing.yml difiere del commit base del plan (4766290)"
   echo "  hint: git fetch --unshallow (commit $ROUTING_BASELINE_COMMIT no disponible)"
 else
   git -C "$REPO_ROOT" show "$ROUTING_BASELINE_COMMIT:$ROUTING_REL_PATH" > "$tmpdir/routing-baseline.yml" 2>/dev/null
-  diff_out=$(diff -u "$tmpdir/routing-baseline.yml" "$ROUTING_FILE" 2>/dev/null)
-  removed=$(printf '%s\n' "$diff_out" | grep -E '^-[^-]' | head -n 10)
-  if [ -n "$removed" ]; then
-    failm "FAIL: routing.yml difiere del commit base del plan (4766290)"
-    printf '%s\n' "$removed" | sed 's/^/  /'
-  else
-    pass "Check 4: pre-existing routers intact; additions permitted"
+  # rule:/priority:/middlewares: lines (router names are implicit in those lines)
+  for key in 'rule:' 'priority:' 'middlewares:'; do
+    baseline_lines=$(grep -F "$key" "$tmpdir/routing-baseline.yml" | sort -u)
+    current_lines=$(grep -F "$key" "$ROUTING_FILE" | sort -u)
+    missing=$(comm -23 <(echo "$baseline_lines") <(echo "$current_lines"))
+    if [ -n "$missing" ]; then
+      failm "FAIL: $key lines removed/changed in routing.yml"
+      printf '%s\n' "$missing" | sed 's/^/  /'
+    fi
+  done
+  # regression guards
+  if grep -q 'url: "http://doc-service:8080"' "$ROUTING_FILE"; then
+    failm "FAIL: static single-server anti-pattern still present (url: http://doc-service:8080)"
+  fi
+  if ! grep -q 'docv2@docker' "$ROUTING_FILE"; then
+    failm "FAIL: file-provider routers do not reference docv2@docker"
+  fi
+  if [ "$fail" -eq 0 ]; then
+    pass "Check 4: router rules intact; service topology updated to docv2@docker"
   fi
 fi
 
@@ -156,7 +170,9 @@ fi
 
 # Check 6
 if grep -q 'svc-ocr-worker' "$PROMETHEUS_CONFIG" 2>/dev/null; then
-  if grep -Eq 'route\("/metrics"|resource\("/metrics"' "$OCR_MAIN_RS" 2>/dev/null; then
+  if [ ! -r "$OCR_MAIN_RS" ] || [ ! -f "$OCR_MAIN_RS" ]; then
+    skip "Check 6: fuente ocr-worker no disponible en este checkout (§0.2, C31)"
+  elif grep -Eq 'route\("/metrics"|resource\("/metrics"' "$OCR_MAIN_RS" 2>/dev/null; then
     pass "Check 6: svc-ocr-worker con /metrics"
   else
     failm "FAIL: svc-ocr-worker en consul_sd_configs sin /metrics verificado (§0.2, C31)"

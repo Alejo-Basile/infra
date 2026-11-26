@@ -43,3 +43,6 @@ traefik/dynamic/*.tmp
 
 # Consul dev generated config
 compose/consul/config/*.local.hcl
+
+# Artefactos locales de la automatizacion QA (plan-automatizacion-qa.md)
+.local/

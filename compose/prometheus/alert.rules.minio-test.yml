@@ -1,0 +1,31 @@
+# S5-P1-04 — Reglas de alerta de MinIO para el stack aislado de QA.
+#
+# Los thresholds/expr son los REALES de produccion (copiados de
+# infra/compose/prometheus/alert.rules.yml). Unicamente el valor de `for` se
+# acorta a 45s SOLO para el stack aislado de QA, a fin de que la suite chaos
+# quepa en el presupuesto de tiempo. En produccion alert.rules.yml mantiene
+# for: 5m sin cambios.
+
+groups:
+  - name: s1-p1-13-infra-minio-test
+    interval: 10s
+    rules:
+      - alert: MinioDiskHigh
+        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.70
+        for: 45s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disco de MinIO sobre 70 por ciento"
+          description: "Advertir con margen: purgar huerfanos (reconciliador) y confirmar lifecycle raw-pdfs 7d / extracted-txt 30d. Con el disco lleno MinIO rechaza escrituras y el pipeline se detiene. Ver runbook."
+          runbook_url: "infra/runbooks/minio-espacio.md"
+
+      - alert: MinioDiskCritical
+        expr: (1 - minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) > 0.85
+        for: 45s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disco de MinIO sobre 85 por ciento (riesgo de rechazar escrituras)"
+          description: "Actuar ya: purgar huerfanos, verificar lifecycle y ampliar el volumen. Por encima de 85 por ciento no hay margen para una rafaga normal de PDFs de 25 MB. Ver runbook."
+          runbook_url: "infra/runbooks/minio-espacio.md"

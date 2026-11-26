@@ -1,4 +1,5 @@
 # Ruteo final (S8-P1-02). Una sola fuente de verdad del gateway.
+# Los servidores doc-service se descubren por replica via el Docker provider (docv2@docker).
 # Reemplaza los routers que vivian en labels Docker (compose).
 # Desviacion deliberada: los 11 routers del inventario conservan
 # middlewares: [rate-limit@file, sec-headers@file] porque el router `legacy` que reemplazan
@@ -109,7 +110,7 @@ http:
       rule: "Host(`api.localhost`) && Path(`/healthz`)"
       entryPoints: [websecure]
       tls: true
-      service: docv2
+      service: docv2@docker
       priority: 300
       middlewares: [sec-headers@file]
 
@@ -137,11 +138,6 @@ http:
         servers:
           - url: "http://monolito:8000"
 
-    docv2:
-      loadBalancer:
-        servers:
-          - url: "http://doc-service:8080"
-
     # docv2-canary: servicio canary ahora declarado en compose (weight 0 por
     # defecto). Promocion via set-canary-weight.sh.
     docv2-canary:
@@ -165,7 +161,7 @@ http:
         services:
           - name: legacy-monolito
             weight: 100
-          - name: docv2
+          - name: docv2@docker
             weight: 0
 
     r-inv-registros-weighted:
@@ -173,7 +169,7 @@ http:
         services:
           - name: legacy-monolito
             weight: 100
-          - name: docv2
+          - name: docv2@docker
             weight: 0
 
     r-inv-registros-id-weighted:
@@ -181,13 +177,13 @@ http:
         services:
           - name: legacy-monolito
             weight: 100
-          - name: docv2
+          - name: docv2@docker
             weight: 0
 
     r-api-v2-weighted:
       weighted:
         services:
-          - name: docv2
+          - name: docv2@docker
             weight: 100
           - name: docv2-canary
             weight: 0

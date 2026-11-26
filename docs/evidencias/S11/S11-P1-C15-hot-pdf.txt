@@ -1,0 +1,42 @@
+S11-P1-C15 — doc-service: tamaño máximo de PDF y TTLs de presign desde el snapshot vivo de Consul KV
+Fecha: 2026-11-18T04:12:00Z
+Repo: doc-service (branch feat/s11-p1-c14-consul-registration)
+
+## Tests de aceptación (C15)
+=== RUN   TestCreateDocument_UsaTTLDeSubidaVigente
+--- PASS: TestCreateDocument_UsaTTLDeSubidaVigente (0.00s)
+=== RUN   TestCreateDocument_RechazaSobreMaxVigente
+--- PASS: TestCreateDocument_RechazaSobreMaxVigente (0.00s)
+=== RUN   TestDownloadDocument_UsaTTLDescargaVigente
+--- PASS: TestDownloadDocument_UsaTTLDescargaVigente (0.00s)
+=== RUN   TestURLYaEmitidaNoCambia
+--- PASS: TestURLYaEmitidaNoCambia (0.00s)
+=== RUN   TestCreateDocument_DefaultsPreservanContrato
+--- PASS: TestCreateDocument_DefaultsPreservanContrato (0.00s)
+PASS
+ok  	github.com/Alejo-Basile/doc-service/internal/api	0.012s
+
+## Resumen de paquetes tocados
+ok  	github.com/Alejo-Basile/doc-service/internal/api	(cached)
+ok  	github.com/Alejo-Basile/doc-service/internal/config	(cached)
+ok  	github.com/Alejo-Basile/doc-service/internal/configkv	(cached)
+
+## go vet
+vet: OK (sin hallazgos)
+
+## Código eliminado (DoD)
+grep -n 'uploadWindow' doc-service/internal/api/documents.go
+(sin coincidencias)
+grep -n '5\*time.Minute' doc-service/internal/api/documents.go
+(sin coincidencias)
+
+## Nota de alcance
+La verificación runtime (bajar max_pdf_bytes en Consul KV con el stack levantado y subir un PDF mayor)
+NO se ejecutó en esta sesión: no hay stack Docker/Consul corriendo.
+El camino caliente queda probado por tests unitarios sobre el snapshot intercambiable (atomic.Pointer),
+que es el mismo mecanismo que usa el cliente KV de C11 en producción.
+
+## Fallos preexistentes del entorno (no relacionados con C15)
+internal/adapters/redis falla porque no hay Redis escuchando en 127.0.0.1:6379
+(TestWorkQueue_WaitNoBloqueaEnStandalone, TestWorkQueue_IntegracionConRedisReal).
+Mismo resultado en el commit base antes de este cambio.

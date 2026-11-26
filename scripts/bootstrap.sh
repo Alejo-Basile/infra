@@ -25,6 +25,12 @@ check "mc (MinIO)"    mc        "https://min.io/docs/minio/linux/reference/minio
 check "mkcert"        mkcert    "https://github.com/FiloSottile/mkcert#installation"
 check "trivy"         trivy     "https://aquasecurity.github.io/trivy/latest/getting-started/installation/"
 check "gitleaks"      gitleaks  "https://github.com/gitleaks/gitleaks#installing"
+check "jq"            jq        "https://jqlang.github.io/jq/download/"
+check "curl"          curl      "https://curl.se/download.html"
+check "openssl"       openssl   "https://www.openssl.org/source/"
+check "shellcheck"    shellcheck "https://www.shellcheck.net/#getting-started"
+check "yamllint"      yamllint  "pip install yamllint"
+check "gcc"           gcc       "https://gcc.gnu.org/install/"
 
 # Compose plugin real (no el binario python viejo)
 if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
